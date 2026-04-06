@@ -17,3 +17,6 @@ __MACOSX/
 *.elf
 *.map
 *.log
+
+# Secrets
+firmware/include/secrets.h
