@@ -1,0 +1,1445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>SniffMaster Pro</title>
+
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SniffMaster">
+  <meta name="theme-color" content="#050505">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body data-theme="obsidian">
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-lockup">
+        <div class="eyebrow">Remote Nose Link</div>
+        <h1>SniffMaster Pro</h1>
+        <div class="brand-subtitle">Real-time odor intelligence platform</div>
+      </div>
+      <div class="topbar-side">
+        <div class="topbar-status">
+          <div class="status-pill">
+            <span id="conn-dot" class="dot offline"></span>
+            <span id="conn-label">Waiting for first sniff...</span>
+          </div>
+          <div class="status-sub network-sub" id="header-network">Network details pending</div>
+          <div class="status-sub" id="header-city">Location syncing</div>
+          <div class="header-utility-row">
+            <div class="header-chip">
+              <span class="tiny-icon tiny-icon-weather" aria-hidden="true"></span>
+              <span id="header-weather">Weather pending</span>
+            </div>
+            <div class="header-chip">
+              <span class="tiny-icon tiny-icon-sensor" aria-hidden="true"></span>
+              <span id="header-calibration">Cal pending</span>
+            </div>
+            <div class="header-chip">
+              <span class="tiny-icon tiny-icon-presence" aria-hidden="true"></span>
+              <span id="header-presence">Presence idle</span>
+            </div>
+            <div class="header-chip">
+              <span class="tiny-icon tiny-icon-time" aria-hidden="true"></span>
+              <span id="header-time">--:--</span>
+            </div>
+            <div class="header-chip">
+              <span class="tiny-icon tiny-icon-date" aria-hidden="true"></span>
+              <span id="header-date">Date pending</span>
+            </div>
+            <div class="header-chip">
+              <span class="tiny-icon tiny-icon-theme" aria-hidden="true"></span>
+              <span id="header-theme">Theme: Obsidian Lab</span>
+            </div>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="chrome-btn" id="trajectory-launch-btn" type="button">Gatornauts</button>
+          <button class="chrome-btn accent" id="manual-refresh-btn" type="button">Refresh Now</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="section-shell">
+    <nav class="section-nav" aria-label="Dashboard sections">
+      <button class="section-btn is-active" type="button" data-view-target="dashboard">Dashboard</button>
+      <button class="section-btn" type="button" data-view-target="environment">Environment</button>
+      <button class="section-btn" type="button" data-view-target="analysis">Analysis</button>
+      <button class="section-btn" type="button" data-view-target="history">History</button>
+      <button class="section-btn" type="button" data-view-target="system">System</button>
+      <button class="section-btn" type="button" data-view-target="labs">Labs</button>
+    </nav>
+  </div>
+  <div class="view-meta-row">
+    <section class="view-intro">
+      <h2 id="view-title">Dashboard</h2>
+      <p id="view-subtitle">Live room status, core metrics, and key activity in one scan-friendly view.</p>
+    </section>
+    <div class="view-submenu" id="view-submenu-shell">
+      <button
+        class="view-submenu-toggle"
+        id="view-submenu-toggle"
+        type="button"
+        aria-expanded="false"
+        aria-controls="view-subnav-panel"
+      >
+        <span class="view-submenu-icon" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
+        <span class="view-submenu-copy">
+          <span class="view-submenu-label">On this page</span>
+          <span class="view-submenu-count" id="view-subnav-count">0 sections</span>
+        </span>
+      </button>
+      <nav class="view-submenu-panel" id="view-subnav-panel" aria-label="Current page sections" hidden></nav>
+    </div>
+  </div>
+
+  <main id="dashboard" class="dashboard">
+    <section class="card hero-panel" id="card-hero" data-view="dashboard">
+      <div class="hero-copy">
+        <div class="hero-badge-row">
+          <span class="badge glow" id="hero-hazard">Stand by</span>
+          <span class="badge subtle" id="hero-calibration">Sensor warmup</span>
+          <span class="badge subtle" id="hero-primary">Clean Air</span>
+        </div>
+        <h2 id="hero-summary">Waiting for live sensor data...</h2>
+        <p id="hero-subtitle">Real-time odor intelligence from your BME688 sensor stack will appear here.</p>
+        <div class="hero-tags">
+          <span class="tag" id="hero-tier">Tier --</span>
+          <span class="tag" id="hero-trends">IAQ -- | VOC --</span>
+          <span class="tag" id="hero-melody">Melody: --</span>
+          <span class="tag">Auto-refresh: 10s</span>
+        </div>
+        <div class="hero-detail-grid">
+          <div class="hero-brief">
+            <div class="brief-kicker">Room Summary</div>
+            <div class="brief-title" id="hero-brief-title">Waiting for a live room read.</div>
+            <div class="brief-row">
+              <span class="brief-label">Primary signal</span>
+              <span class="brief-value" id="hero-brief-primary">No dominant odor</span>
+            </div>
+            <div class="brief-row">
+              <span class="brief-label">Next move</span>
+              <span class="brief-value" id="hero-brief-next">Window guidance will appear here.</span>
+            </div>
+            <div class="brief-row">
+              <span class="brief-label">Status</span>
+              <span class="brief-value" id="hero-brief-status">Waiting for calibrated telemetry.</span>
+            </div>
+          </div>
+          <div class="hero-scope">
+            <div class="hero-scope-head">
+              <div>
+                <div class="scope-kicker">Signal Scope</div>
+                <div class="scope-title">Live room waveform</div>
+              </div>
+              <div class="scope-meta" id="hero-scope-meta">Standby trace</div>
+            </div>
+            <div class="hero-scope-stage">
+              <canvas id="hero-scope-canvas" width="960" height="240"></canvas>
+              <div class="scope-scanline"></div>
+            </div>
+            <div class="scope-legend">
+              <span class="scope-chip is-cyan" id="scope-chip-voc">VOC</span>
+              <span class="scope-chip is-mint" id="scope-chip-clean">Cleanliness</span>
+              <span class="scope-chip is-amber" id="scope-chip-dvoc">dVOC</span>
+            </div>
+            <div class="scope-insights" id="hero-scope-insights">
+              <div class="scope-insight" data-tone="neutral">Waiting for live trend context.</div>
+            </div>
+          </div>
+        </div>
+        <div class="hero-audio">
+          <button id="melody-play-btn" class="audio-btn" type="button" disabled>Replay Last Melody</button>
+          <div class="audio-copy">
+            <div class="audio-title" id="melody-title">No melody posted yet</div>
+            <div class="audio-meta" id="melody-meta">Timing and trigger details will appear here with the first melody event.</div>
+            <div class="audio-status" id="melody-status">Browser replay will appear here once the device posts a tune.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-gauge-wrap">
+        <div class="hud-stack">
+          <div class="hud-module">
+            <div class="hud-topline">
+              <span class="hud-kicker">Environmental HUD</span>
+              <span class="hud-readout" id="iaq-hud-value">-- / 500</span>
+            </div>
+            <div class="hud-title">IAQ Exposure Band</div>
+            <div class="hud-bar-shell">
+              <div class="hud-bar">
+                <div class="hud-fill" id="iaq-hud-fill"></div>
+              </div>
+              <div class="hud-scale">
+                <span>Safe</span>
+                <span>Caution</span>
+                <span>Hazard</span>
+              </div>
+            </div>
+          </div>
+          <div class="hud-module">
+            <div class="hud-topline">
+              <span class="hud-kicker">Organic Load</span>
+              <span class="hud-readout" id="voc-hud-value">-- ppm</span>
+            </div>
+            <div class="hud-title">VOC Activity Band</div>
+            <div class="hud-bar-shell">
+              <div class="hud-bar">
+                <div class="hud-fill" id="voc-hud-fill"></div>
+              </div>
+              <div class="hud-scale">
+                <span>Light</span>
+                <span>Active</span>
+                <span>Heavy</span>
+              </div>
+            </div>
+            <div class="hud-note" id="voc-hud-caption">VOC interpretation will appear with the first live packet.</div>
+          </div>
+          <div class="hud-module room-index">
+            <div class="hud-topline">
+              <span class="hud-kicker" id="air-label">Room Quality Index</span>
+              <span class="hud-readout" id="air-score">--</span>
+            </div>
+            <div class="hud-bar-shell">
+              <div class="hud-bar">
+                <div class="hud-fill" id="air-hud-fill"></div>
+              </div>
+            </div>
+            <div class="gauge-copy">
+              <div class="gauge-caption" id="air-condition-caption">Room quality context will appear here with the first snapshot.</div>
+              <div class="gauge-note" id="air-condition-note">Lower is better in this system: 0 to 20 is excellent, while high scores mean the room is getting dirtier or more chemically active.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="metric-ribbon">
+        <div class="metric-chip">
+          <span class="metric-label">IAQ</span>
+          <span class="metric-value" id="v-iaq">--</span>
+        </div>
+        <div class="metric-chip">
+          <span class="metric-label">VOC</span>
+          <span class="metric-value" id="v-voc">--</span>
+        </div>
+        <div class="metric-chip">
+          <span class="metric-label">CO2eq</span>
+          <span class="metric-value" id="v-co2">--</span>
+        </div>
+        <div class="metric-chip">
+          <span class="metric-label">Outdoor AQI</span>
+          <span class="metric-value" id="v-aqi">--</span>
+        </div>
+        <div class="metric-chip">
+          <span class="metric-label">Gas R</span>
+          <span class="metric-value" id="v-gasr">--</span>
+        </div>
+        <div class="metric-chip">
+          <span class="metric-label">dVOC</span>
+          <span class="metric-value" id="v-dvoc">--</span>
+        </div>
+      </div>
+      <div class="metric-legend">
+        <span><strong>IAQ:</strong> indoor air burden, lower is better</span>
+        <span><strong>VOC:</strong> airborne organic-gas activity</span>
+        <span><strong>CO2eq:</strong> stuffiness / ventilation proxy</span>
+        <span><strong>Outdoor AQI:</strong> outside-air quality</span>
+        <span><strong>Gas R:</strong> sensor resistance, often higher when cleaner</span>
+        <span><strong>dVOC:</strong> recent change in gas activity</span>
+      </div>
+    </section>
+
+    <section class="card status-strip" id="card-status" data-view="dashboard environment system">
+      <div class="card-header">
+        <span>System Status</span>
+        <span class="header-pill" id="status-badge">Awaiting telemetry</span>
+      </div>
+      <div class="status-grid">
+        <div class="status-item">
+          <span class="status-label">Sensor</span>
+          <span class="status-value" id="status-sensor">Offline</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">BSEC State</span>
+          <span class="status-value" id="status-bsec">Sensor warmup</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Warmup</span>
+          <span class="status-value" id="status-warmup">Waiting for the first clean sensor packets.</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Wi-Fi Relay</span>
+          <span class="status-value" id="status-link">Awaiting first sync</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Last update</span>
+          <span class="status-value" id="status-updated">No snapshot yet</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card system-card" id="card-intel" data-view="dashboard">
+      <div class="card-header">
+        <span>Metric Guide</span>
+        <span class="header-pill">Live definitions</span>
+      </div>
+      <p class="card-summary" id="intel-summary">Quick plain-English definitions for the live gas and air-quality readings in the dashboard.</p>
+      <div class="drawer-grid">
+        <div class="drawer-stat">
+          <span class="drawer-label">IAQ</span>
+          <span class="drawer-value" id="intel-iaq-range">No live reading yet</span>
+        </div>
+        <div class="drawer-stat">
+          <span class="drawer-label">VOC</span>
+          <span class="drawer-value" id="intel-voc-range">Waiting for VOC context</span>
+        </div>
+        <div class="drawer-stat">
+          <span class="drawer-label">VSC Proxy</span>
+          <span class="drawer-value" id="intel-vsc-range">Sulfur watch idle</span>
+        </div>
+        <div class="drawer-stat">
+          <span class="drawer-label">Room Index</span>
+          <span class="drawer-value" id="intel-rqi-range">Room-quality context pending</span>
+        </div>
+        <div class="drawer-stat">
+          <span class="drawer-label">Gas Resistance</span>
+          <span class="drawer-value" id="intel-gasr-range">Gas resistance baseline pending</span>
+        </div>
+      </div>
+      <div class="drawer-copy" id="intel-copy">
+        Technical context about the live gas channels will update here after the next device sync.
+      </div>
+    </section>
+
+    <section class="card office-card" id="card-office" data-view="dashboard analysis">
+      <div class="card-header">
+        <span>Office Vitality</span>
+        <span class="header-pill" id="office-badge">Derived office metrics</span>
+      </div>
+      <p class="card-summary">Human-impact readouts for focus, comfort, shared-air load, and biological persistence.</p>
+      <details class="microcopy">
+        <summary>Learn more</summary>
+        <p>These are room-condition heuristics, not medical measurements. The card translates CO2eq, IAQ, humidity, temperature, VOC activity, and drift into likely effects on attention, comfort, meeting quality, and the persistence of shared airborne junk.</p>
+      </details>
+      <div class="office-grid">
+        <div class="office-focus-panel">
+          <div class="office-kicker">Current Brain Bandwidth</div>
+          <div class="office-focus-row">
+            <div class="office-focus-value" id="office-cfi-value">100%</div>
+            <div class="office-focus-copy">
+              <div class="office-focus-band" id="office-cfi-band">Peak</div>
+              <div class="office-focus-note" id="office-cfi-note">CO2 saturation and room-air quality are both favorable.</div>
+            </div>
+          </div>
+          <div class="office-focus-bar">
+            <div class="office-focus-fill" id="office-cfi-fill"></div>
+          </div>
+        </div>
+        <div class="office-risk-panel">
+          <div class="office-kicker">Biological Outlook</div>
+          <div class="office-risk-badge" id="office-vtr-badge">SAFE</div>
+          <div class="office-risk-status" id="office-vtr-status">Ventilation and humidity are in a favorable range.</div>
+          <div class="office-risk-note" id="office-vtr-note">This signal remains quiet unless dry air and rebreathed air patterns start stacking together.</div>
+        </div>
+      </div>
+      <div class="office-context-grid">
+        <div class="office-stat">
+          <span class="office-stat-label">Temperature</span>
+          <span class="office-stat-value" id="office-temp">--</span>
+        </div>
+        <div class="office-stat">
+          <span class="office-stat-label">CO2eq</span>
+          <span class="office-stat-value" id="office-co2">--</span>
+        </div>
+        <div class="office-stat">
+          <span class="office-stat-label">IAQ</span>
+          <span class="office-stat-value" id="office-iaq">--</span>
+        </div>
+        <div class="office-stat">
+          <span class="office-stat-label">Humidity</span>
+          <span class="office-stat-value" id="office-humidity">--</span>
+        </div>
+        <div class="office-stat">
+          <span class="office-stat-label">Room load</span>
+          <span class="office-stat-value" id="office-room-load">--</span>
+        </div>
+        <div class="office-stat office-stat-wide">
+          <span class="office-stat-label">Ventilation context</span>
+          <span class="office-stat-value" id="office-context">Fresh-air guidance will appear here once the room posts a live snapshot.</span>
+        </div>
+      </div>
+      <div class="office-effects-grid">
+        <div class="office-effect-card">
+          <span class="office-effect-label">Attention drag</span>
+          <span class="office-effect-title" id="office-attention-title">Waiting for live room context</span>
+          <span class="office-effect-note" id="office-attention-note">This will summarize whether the air is likely making focused work feel easier or more expensive.</span>
+        </div>
+        <div class="office-effect-card">
+          <span class="office-effect-label">Thermal comfort</span>
+          <span class="office-effect-title" id="office-comfort-title">Standby</span>
+          <span class="office-effect-note" id="office-comfort-note">Temperature and humidity context will land here with the first live snapshot.</span>
+        </div>
+        <div class="office-effect-card">
+          <span class="office-effect-label">Meeting readiness</span>
+          <span class="office-effect-title" id="office-collab-title">Standby</span>
+          <span class="office-effect-note" id="office-collab-note">Shared-air load and room turnover guidance will show up here.</span>
+        </div>
+        <div class="office-effect-card">
+          <span class="office-effect-label">Odor distraction</span>
+          <span class="office-effect-title" id="office-odor-title">Standby</span>
+          <span class="office-effect-note" id="office-odor-note">Odor-based distraction assessment will appear with the first live snapshot.</span>
+        </div>
+        <div class="office-effect-card">
+          <span class="office-effect-label">Fatigue drift</span>
+          <span class="office-effect-title" id="office-fatigue-title">Standby</span>
+          <span class="office-effect-note" id="office-fatigue-note">Long-session fatigue pressure will show up here.</span>
+        </div>
+        <div class="office-effect-card">
+          <span class="office-effect-label">Infection persistence</span>
+          <span class="office-effect-title" id="office-persistence-title">Standby</span>
+          <span class="office-effect-note" id="office-persistence-note">This will explain whether room air is helping particles clear or hang around.</span>
+        </div>
+      </div>
+      <div class="office-briefing" id="office-briefing">Office impact briefing will appear here once the room posts a live snapshot.</div>
+      <div class="source-caption">Source: BME688 device telemetry · BSEC2-derived proxies · local comfort, cognition, and persistence heuristics</div>
+    </section>
+
+    <section class="card" id="card-dadabase" data-view="labs">
+      <div class="card-header">
+        <span>Dadabase</span>
+        <span class="header-pill" id="dadabase-badge">Daily joke</span>
+      </div>
+      <div class="dadabase-current-shell">
+        <div class="dadabase-head">
+          <div>
+            <div class="dadabase-kicker">Dad Joke Of The Day</div>
+            <div class="dadabase-status" id="dadabase-status">Daily joke generator standing by.</div>
+          </div>
+          <button class="chrome-btn" id="dadabase-refresh-btn" type="button">Refresh Joke</button>
+        </div>
+        <p class="dadabase-current" id="dadabase-current">A fresh daily dad joke will appear here.</p>
+        <div class="dadabase-meta" id="dadabase-meta">Generated joke timing and source will appear here.</div>
+      </div>
+      <details class="dadabase-details">
+        <summary>Open Dadabase archive</summary>
+        <div class="dadabase-tools">
+          <input id="dadabase-search" class="dadabase-search" type="search" placeholder="Search the dadabase">
+          <div class="dadabase-count" id="dadabase-count">0 jokes in rotation</div>
+        </div>
+        <div class="dadabase-archive" id="dadabase-archive">
+          <div class="archive-empty">The searchable Dadabase will show up here.</div>
+        </div>
+      </details>
+      <div class="source-caption" id="source-dadabase">Source: Dadabase daily joke engine</div>
+    </section>
+
+    <section class="card melody-card" id="card-melody" data-view="labs">
+      <div class="card-header">
+        <span>Melody Library</span>
+        <span class="header-pill" id="melody-library-badge">0 tracks</span>
+      </div>
+      <div class="melody-browser-shell">
+        <div class="melody-browser-head">
+          <div>
+            <div class="melody-kicker">Browser catalog</div>
+            <div class="melody-selected-title" id="melody-library-selected-title">Choose a track</div>
+            <div class="melody-selected-meta" id="melody-library-selected-meta">Search the catalog, preview it in the browser, or send it straight to the device jukebox.</div>
+          </div>
+          <div class="melody-browser-actions">
+            <div class="melody-action-group">
+              <button class="chrome-btn accent" id="melody-library-play-selected" type="button" disabled>Preview selected</button>
+              <button class="chrome-btn" id="melody-library-play-device" type="button" disabled>Play on device</button>
+            </div>
+            <div class="melody-browser-count" id="melody-library-count">Loading melody bank...</div>
+          </div>
+        </div>
+        <div class="melody-browser-tools">
+          <label class="melody-search-wrap" for="melody-library-search">
+            <span>Search</span>
+            <input id="melody-library-search" type="search" placeholder="Title, source, or tag">
+          </label>
+          <div class="melody-filter-row" id="melody-library-filters"></div>
+        </div>
+        <div class="melody-selected-tags" id="melody-library-selected-tags"></div>
+        <div class="melody-browser-status" id="melody-library-status">Melody bank is loading from the portal.</div>
+        <div class="melody-device-note" id="melody-library-device-note">Unlock remote controls on the System page to queue a tune on the device.</div>
+        <div class="melody-library-list" id="melody-library-list">
+          <div class="melody-empty">Melody catalog loading...</div>
+        </div>
+        <div class="melody-library-empty" id="melody-library-empty" hidden>No matching tracks yet.</div>
+      </div>
+      <div class="source-caption">Source: public melody_library.h · browser synth playback · secure portal command relay</div>
+    </section>
+
+    <section class="card orbital-card" id="card-space" data-view="dashboard space">
+      <div class="card-header">
+        <span>Space Coast Launch Deck</span>
+        <span class="header-pill" id="launch-badge">No launch feed</span>
+      </div>
+      <div class="space-hero">
+        <div class="space-radar" aria-hidden="true">
+          <div class="space-radar-ring is-outer"></div>
+          <div class="space-radar-ring is-mid"></div>
+          <div class="space-radar-ring is-inner"></div>
+          <div class="space-radar-track"></div>
+          <div class="space-marker space-history-marker" id="space-history-marker"></div>
+          <div class="space-marker space-launch-marker" id="space-launch-marker"></div>
+          <div class="space-core"></div>
+        </div>
+        <div class="space-hero-copy">
+          <div class="space-kicker">Cape Snapshot</div>
+          <div class="space-title" id="space-title">Waiting for Cape launch data...</div>
+          <p class="space-sub" id="space-sub">Next launch timing and daybook context will appear here with the next live snapshot.</p>
+          <div class="space-stat-row">
+            <div class="space-stat">
+              <span class="space-stat-label">Next Window</span>
+              <span class="space-stat-value" id="space-stat-window">--</span>
+            </div>
+            <div class="space-stat">
+              <span class="space-stat-label">This Year</span>
+              <span class="space-stat-value" id="space-stat-count">--</span>
+            </div>
+            <div class="space-stat">
+              <span class="space-stat-label">History Mark</span>
+              <span class="space-stat-value" id="space-stat-history">--</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="report-stack" id="space-report">
+        <div class="report-empty">Waiting for Cape launch data...</div>
+      </div>
+      <div class="launch-stack" id="launch-stack"></div>
+      <div class="source-caption">Source: Cape launch feed · on-device launch parser · curated Space Coast daybook</div>
+    </section>
+
+    <section class="card" id="card-history" data-view="dashboard space">
+      <div class="card-header">
+        <span>Today in Space History</span>
+        <span class="header-pill" id="history-badge">On this day</span>
+      </div>
+      <div class="history-date" id="mission-history-date">Awaiting date sync</div>
+      <div class="history-headline" id="mission-history-title">Today in Space History will appear here after the next time-synced snapshot.</div>
+      <p class="history-context" id="mission-history-context">Cape-focused milestones populate from the device feed and the built-in Space Coast daybook.</p>
+      <div class="history-list" id="mission-history-list">
+        <div class="history-empty">Historical entries are standing by.</div>
+      </div>
+      <div class="source-caption">Source: device date sync · built-in Space Coast history set</div>
+    </section>
+
+    <section class="card odor-card" id="card-odor" data-view="analysis">
+      <div class="card-header">
+        <span>Current Classification</span>
+        <span class="header-pill" id="odor-badge">Classifier idle</span>
+      </div>
+      <div class="odor-hero">
+        <div class="odor-bloom" id="odor-bloom" aria-hidden="true">
+          <div class="odor-bloom-ring is-outer"></div>
+          <div class="odor-bloom-ring is-mid"></div>
+          <div class="odor-bloom-ring is-inner"></div>
+          <div class="odor-bloom-pulse"></div>
+          <div class="odor-bloom-core"></div>
+        </div>
+        <div class="odor-hero-copy">
+          <div class="odor-kicker">Classifier Lead</div>
+          <div class="odor-title" id="odor-title">Waiting for classification data...</div>
+          <p class="odor-sub" id="odor-sub">Primary odor, confidence, and room interpretation will appear here when the classifier posts a live read.</p>
+          <div class="odor-stat-row">
+            <div class="odor-stat">
+              <span class="odor-stat-label">Confidence</span>
+              <span class="odor-stat-value" id="odor-stat-confidence">--</span>
+            </div>
+            <div class="odor-stat">
+              <span class="odor-stat-label">Stank Score</span>
+              <span class="odor-stat-value" id="odor-stat-vsc">--</span>
+            </div>
+            <div class="odor-stat">
+              <span class="odor-stat-label">Tier</span>
+              <span class="odor-stat-value" id="odor-stat-tier">--</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="odor-channel-stack" id="odor-channel-stack">
+        <div class="odor-channel-empty">Top classifier channels will appear here once the device posts a live odor read.</div>
+      </div>
+      <div class="report-stack" id="odor-report">
+        <div class="report-empty">Waiting for classification data...</div>
+      </div>
+      <div class="source-caption">Source: BME688 gas response · BSEC2 runtime outputs · on-device odor classifier</div>
+    </section>
+
+    <section class="card pipeline-card" id="card-telemetry" data-view="environment">
+      <div class="card-header">
+        <span>Raw Inputs</span>
+        <span class="header-pill" id="city-pill">Sensor stream</span>
+      </div>
+      <p class="card-summary">Direct sensor and device signals before classification.</p>
+      <details class="microcopy">
+        <summary>Learn more</summary>
+        <p>These values come straight from the device or its immediate sensor processing layer. They describe the live physical environment rather than the classifier output.</p>
+      </details>
+      <div class="telemetry-grid">
+        <div class="telemetry-item">
+          <span class="t-label">Temperature</span>
+          <span class="t-value" id="v-temp">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Humidity</span>
+          <span class="t-value" id="v-hum">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Pressure</span>
+          <span class="t-value" id="v-press">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Gas Resistance</span>
+          <span class="t-value" id="v-gasr-raw">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Comp Gas</span>
+          <span class="t-value" id="v-compgas">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Gas %</span>
+          <span class="t-value" id="v-gaspct">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Local Time</span>
+          <span class="t-value" id="v-local-time-card">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Uptime</span>
+          <span class="t-value" id="v-uptime-card">--</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card pipeline-card" id="card-derived" data-view="environment">
+      <div class="card-header">
+        <span>Derived Metrics</span>
+        <span class="header-pill" id="derived-badge">Inference layer</span>
+      </div>
+      <p class="card-summary">Processed air-quality metrics derived from the sensor stream.</p>
+      <details class="microcopy">
+        <summary>Learn more</summary>
+        <p>These metrics combine sensor responses with Bosch runtime models and project-specific scoring. They are useful for room interpretation, but they are not direct lab measurements.</p>
+      </details>
+      <div class="telemetry-grid derived-grid">
+        <div class="telemetry-item">
+          <span class="t-label">IAQ</span>
+          <span class="t-value" id="derived-iaq">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">VOC</span>
+          <span class="t-value" id="derived-voc">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">CO2eq</span>
+          <span class="t-value" id="derived-co2">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Room Quality</span>
+          <span class="t-value" id="derived-room">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">dVOC</span>
+          <span class="t-value" id="derived-dvoc">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Outdoor AQI</span>
+          <span class="t-value" id="derived-aqi">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Primary Class</span>
+          <span class="t-value" id="derived-primary">--</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="t-label">Confidence</span>
+          <span class="t-value" id="derived-confidence">--</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card system-card hardware-card" id="card-device" data-view="system">
+      <div class="card-header">
+        <span>Hardware Stack</span>
+      </div>
+      <p class="card-summary">The core hardware path: XIAO controller, Grove carrier, and Bosch gas sensing over I2C.</p>
+      <div class="hardware-hero-grid">
+        <article class="hardware-tile">
+          <div class="hardware-figure">
+            <img
+              class="hardware-image"
+              src="https://media-cdn.seeedstudio.com/media/catalog/product/cache/1_small_image/600x/06e3ff17e49ba294a4755bd9a74f9c26/1/-/1-102010550-seeeds-studio-xiao-esp32s3-font_1.jpg"
+              alt="Seeed Studio XIAO ESP32-S3 development board"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+              onerror="this.onerror=null;this.style.background='#0a1622';this.style.minHeight='120px';this.alt='XIAO ESP32-S3 (image unavailable)'"
+            >
+          </div>
+          <div class="hardware-copy">
+            <div class="hardware-kicker">Controller</div>
+            <h3 class="hardware-name">Seeed Studio XIAO ESP32-S3</h3>
+            <p class="hardware-note">Runs the local sensing loop, BLE presence layer, event logic, melody engine, OLED UI, and secure web relay.</p>
+            <div class="hardware-chip-row">
+              <span class="hardware-chip">240 MHz ESP32-S3</span>
+              <span class="hardware-chip">Wi-Fi + BLE</span>
+              <span class="hardware-chip">USB-C / battery friendly</span>
+            </div>
+            <ul class="hardware-specs">
+              <li><strong>Role:</strong> sensor fusion, edge logic, display updates, portal sync</li>
+              <li><strong>Interfaces:</strong> I2C to BME688, GPIO/button/buzzer, OLED on Grove expansion base</li>
+              <li><strong>Why it fits:</strong> enough compute for BSEC2, BLE proximity, and lightweight inference without cloud dependence</li>
+            </ul>
+          </div>
+        </article>
+        <article class="hardware-tile">
+          <div class="hardware-figure">
+            <img
+              class="hardware-image"
+              src="https://cdn-shop.adafruit.com/970x728/5046-05.jpg"
+              alt="Bosch BME688 gas sensing breakout board"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+              onerror="this.onerror=null;this.style.background='#0a1622';this.style.minHeight='120px';this.alt='BME688 Sensor (image unavailable)'"
+            >
+          </div>
+          <div class="hardware-copy">
+            <div class="hardware-kicker">Sensor</div>
+            <h3 class="hardware-name">Bosch BME688</h3>
+            <p class="hardware-note">Supplies the direct environmental channels and gas-response behavior that drive odor classification and room-state inference.</p>
+            <div class="hardware-chip-row">
+              <span class="hardware-chip">Temp / RH / Pressure</span>
+              <span class="hardware-chip">MOX gas element</span>
+              <span class="hardware-chip">BSEC2 + AI-Studio ready</span>
+            </div>
+            <ul class="hardware-specs">
+              <li><strong>Measured directly:</strong> temperature, humidity, barometric pressure, gas resistance</li>
+              <li><strong>Derived in stack:</strong> IAQ, VOC proxy, CO2eq proxy, odor-channel confidence, room score</li>
+              <li><strong>Why it matters:</strong> one sensor package captures both ambient conditions and volatile-response patterns for event detection</li>
+            </ul>
+          </div>
+        </article>
+      </div>
+      <div class="hardware-signal-strip">
+        <div class="hardware-signal-block">
+          <span class="hardware-signal-label">Carrier</span>
+          <span class="hardware-signal-value">Grove Expansion Base</span>
+          <span class="hardware-signal-note">Power, Grove connectors, OLED, buzzer, and button routing</span>
+        </div>
+        <div class="hardware-signal-block">
+          <span class="hardware-signal-label">Bus</span>
+          <span class="hardware-signal-value">I2C telemetry path</span>
+          <span class="hardware-signal-note">Fast sensor polling with BSEC2 virtual outputs layered on top</span>
+        </div>
+        <div class="hardware-signal-block">
+          <span class="hardware-signal-label">Portal feed</span>
+          <span class="hardware-signal-value">Secure HTTPS snapshots</span>
+          <span class="hardware-signal-note">Edge-computed room intelligence pushed to the hosted dashboard</span>
+        </div>
+      </div>
+      <div class="source-caption">Source: Seeed Studio XIAO ESP32-S3 docs and product image · Bosch BME688 documentation · BME688 breakout image for sensor reference · project firmware architecture</div>
+    </section>
+
+    <section class="card" id="card-breath" data-view="analysis">
+      <div class="card-header">
+        <span>Breath Analysis</span>
+        <span class="header-pill" id="breath-badge">4x press on device</span>
+      </div>
+      <div class="breath-kicker">Close-range test mode</div>
+      <div class="breath-verdict" id="breath-verdict">Ambient alcohol proxy standing by</div>
+      <p class="breath-note" id="breath-note">Use 4x press on the device for a close-range breath screening. The web view shows ambient proxy context only.</p>
+      <div class="breath-grid">
+        <div class="breath-stat">
+          <span class="breath-label">Alcohol Channel</span>
+          <span class="breath-value" id="breath-alcohol">--%</span>
+        </div>
+        <div class="breath-stat">
+          <span class="breath-label">VOC</span>
+          <span class="breath-value" id="breath-voc">--</span>
+        </div>
+        <div class="breath-stat">
+          <span class="breath-label">IAQ</span>
+          <span class="breath-value" id="breath-iaq">--</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="card-fart" data-view="analysis">
+      <div class="card-header">
+        <span>Odor Intensity</span>
+        <span class="header-pill" id="fart-badge">Stank score</span>
+      </div>
+      <div class="fart-hero">
+        <div class="fart-count-shell">
+          <div class="fart-count-label">Flatulent events today</div>
+          <div class="fart-count" id="fart-count">0</div>
+        </div>
+        <div>
+          <div class="fart-status" id="fart-status">No biological drama yet</div>
+          <div class="fart-sub" id="fart-sub">Odor intensity and biological channels will light up here when the room turns suspicious.</div>
+        </div>
+      </div>
+      <div class="stank-gauge-shell">
+        <div class="stank-topline">
+          <div>
+            <div class="stank-eyebrow">Odor intensity</div>
+            <div class="stank-title">Stank Score · sulfur proxy</div>
+          </div>
+          <div class="stank-value" id="stank-value">0%</div>
+        </div>
+        <div class="stank-bar">
+          <div class="stank-fill" id="stank-fill"></div>
+        </div>
+        <div class="stank-meta">
+          <span id="stank-label">Sulfur/VSC watch is idle</span>
+          <span id="stank-time">Waiting for a priority sulfur event</span>
+        </div>
+        <p class="stank-caption" id="stank-caption">This score tracks sulfur/VSC intensity and jumps when the device posts a priority odor event.</p>
+      </div>
+      <div class="fart-metrics">
+        <div class="mini-stat">
+          <span class="mini-label">Fart</span>
+          <span class="mini-value" id="fart-score">0%</span>
+        </div>
+        <div class="mini-stat">
+          <span class="mini-label">Sulfur</span>
+          <span class="mini-value" id="fart-sulfur">0%</span>
+        </div>
+        <div class="mini-stat">
+          <span class="mini-label">Garbage</span>
+          <span class="mini-value" id="fart-garbage">0%</span>
+        </div>
+        <div class="mini-stat">
+          <span class="mini-label">Pet</span>
+          <span class="mini-value" id="fart-pet">0%</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card haunting-card" id="card-paranormal" data-view="labs">
+      <div class="card-header">
+        <span>Paranormal Diagnostic</span>
+        <span class="header-pill" id="paranormal-badge">No scan yet</span>
+      </div>
+      <div class="paranormal-visual-row">
+        <div class="ghost-radar" id="ghost-radar">
+          <div class="ghost-radar-grid"></div>
+          <div class="ghost-radar-sweep"></div>
+          <div class="ghost-blip" id="ghost-blip-a"></div>
+          <div class="ghost-blip ghost-blip-b" id="ghost-blip-b"></div>
+          <div class="ghost-core"></div>
+        </div>
+        <div class="ghost-panel">
+          <div class="ghost-kicker">Paranormal Signal</div>
+          <div class="ghost-value" id="ghost-signal-value">Background static</div>
+          <div class="ghost-meter">
+            <div class="ghost-meter-fill" id="ghost-signal-fill"></div>
+          </div>
+          <div class="ghost-note" id="ghost-signal-note">No cached paranormal anomalies yet.</div>
+        </div>
+      </div>
+      <div class="phase-correlation-shell">
+        <div class="phase-canvas-shell">
+          <canvas id="phase-correlation-canvas" width="420" height="320" aria-label="Phase correlation spider chart"></canvas>
+        </div>
+        <div class="phase-copy">
+          <div class="phase-kicker">Phase Correlation</div>
+          <div class="phase-title" id="phase-title">Tight room signature</div>
+          <p class="phase-note" id="phase-note">Healthy rooms stay compact. Distorted polygons point to stronger gas, presence, static, or pressure activity.</p>
+          <div class="phase-axis-grid">
+            <div class="phase-axis-stat">
+              <span class="phase-axis-label">VOC / Gas</span>
+              <span class="phase-axis-value" id="phase-axis-gas">--</span>
+            </div>
+            <div class="phase-axis-stat">
+              <span class="phase-axis-label">RSSI / Presence</span>
+              <span class="phase-axis-value" id="phase-axis-presence">--</span>
+            </div>
+            <div class="phase-axis-stat">
+              <span class="phase-axis-label">EMF / Static</span>
+              <span class="phase-axis-value" id="phase-axis-emf">Standby</span>
+            </div>
+            <div class="phase-axis-stat">
+              <span class="phase-axis-label">Pa / Pressure</span>
+              <span class="phase-axis-value" id="phase-axis-pressure">--</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="report-stack" id="paranormal-report">Press the device button 5 times to run a deep-field paranormal diagnostic. The latest anomaly readout will appear here.</div>
+      <div class="source-caption">Source: experimental synthesis of live gas, room, and device telemetry</div>
+    </section>
+
+    <section class="card" id="card-chart" data-view="history">
+      <div class="card-header">
+        <span>Daily Rhythm</span>
+        <span class="header-pill" id="chart-badge">Hourly heat map</span>
+      </div>
+      <p class="card-summary">A weekday-by-hour heat map of room burden. Darker red cells point to repeat problem windows.</p>
+      <div class="heatmap-legend">
+        <span class="heatmap-legend-label">Cleaner</span>
+        <span class="heatmap-legend-swatch is-l0"></span>
+        <span class="heatmap-legend-swatch is-l1"></span>
+        <span class="heatmap-legend-swatch is-l2"></span>
+        <span class="heatmap-legend-swatch is-l3"></span>
+        <span class="heatmap-legend-swatch is-l4"></span>
+        <span class="heatmap-legend-swatch is-l5"></span>
+        <span class="heatmap-legend-label">Dirtier</span>
+      </div>
+      <div id="history-chart" class="heatmap-shell">
+        <div class="heatmap-empty">Waiting for enough history to build the daily rhythm grid.</div>
+      </div>
+      <div class="heatmap-detail" id="heatmap-detail">Select a time block to inspect that weekday/hour pattern in more detail.</div>
+      <div class="chart-summary">
+        <div class="chart-stat">
+          <span class="chart-label">Hot Block</span>
+          <span class="chart-value" id="chart-latest">--</span>
+        </div>
+        <div class="chart-stat">
+          <span class="chart-label">Cleanest Block</span>
+          <span class="chart-value" id="chart-best">--</span>
+        </div>
+        <div class="chart-stat">
+          <span class="chart-label">Coverage</span>
+          <span class="chart-value" id="chart-voc">--</span>
+        </div>
+      </div>
+      <div class="source-caption">Source: relay snapshot history aggregated by weekday and hour</div>
+    </section>
+
+    <section class="card" id="card-weather-intel" data-view="environment">
+      <div class="card-header">
+        <span>Local Weather</span>
+        <span class="header-pill" id="weather-intel-badge">Outdoor conditions</span>
+      </div>
+      <div class="weather-visual-row">
+        <div class="sky-widget">
+          <div class="sky-stage" id="sky-stage">
+            <div class="sky-orb" id="sky-orb"></div>
+          </div>
+          <div>
+            <div class="sky-title" id="sky-visual-title">Sky signal pending</div>
+            <div class="sky-sub" id="sky-visual-sub">Outdoor chemistry has not posted yet, so the ventilation visual stays in standby.</div>
+          </div>
+        </div>
+        <div class="moon-widget">
+          <div class="moon-stage">
+            <div class="moon-stars">
+              <div class="moon-star star-a"></div>
+              <div class="moon-star star-b"></div>
+              <div class="moon-star star-c"></div>
+            </div>
+            <div class="moon-disc">
+              <div class="moon-shadow" id="moon-shadow"></div>
+            </div>
+          </div>
+          <div>
+            <div class="moon-title" id="moon-visual-title">Moon phase pending</div>
+            <div class="moon-sub" id="moon-visual-sub">The current lunar phase and illumination will appear here from the live weather context.</div>
+          </div>
+        </div>
+      </div>
+      <div class="report-stack" id="weather-report">
+        <div class="report-empty">Waiting for local weather...</div>
+      </div>
+      <div class="weather-intel-grid">
+        <div class="weather-intel-copy">
+          <p class="weather-insight" id="weather-insight">Current outdoor conditions and ventilation guidance will appear here once the device posts a weather snapshot.</p>
+          <div class="weather-brief-card">
+            <div class="weather-brief-kicker">Local Forecast Insight</div>
+            <p class="weather-brief-text" id="weather-briefing-text">A local-area forecast briefing will appear here once the dashboard has a weather fix.</p>
+            <div class="weather-brief-mode" id="weather-briefing-mode">Deterministic local forecast standby</div>
+          </div>
+          <div class="weather-forecast-shell">
+            <div class="weather-forecast-head">
+              <div class="weather-forecast-kicker">3-Day Outlook</div>
+              <div class="weather-forecast-summary" id="weather-forecast-summary">Forecast guidance pending</div>
+            </div>
+            <div class="weather-forecast-grid" id="weather-forecast-grid">
+              <div class="forecast-tile">
+                <div class="forecast-day">Day 1</div>
+                <div class="forecast-condition">Waiting for forecast</div>
+                <div class="forecast-temps">-- / --</div>
+                <div class="forecast-meta">Precip -- · Wind --</div>
+              </div>
+              <div class="forecast-tile">
+                <div class="forecast-day">Day 2</div>
+                <div class="forecast-condition">Waiting for forecast</div>
+                <div class="forecast-temps">-- / --</div>
+                <div class="forecast-meta">Precip -- · Wind --</div>
+              </div>
+              <div class="forecast-tile">
+                <div class="forecast-day">Day 3</div>
+                <div class="forecast-condition">Waiting for forecast</div>
+                <div class="forecast-temps">-- / --</div>
+                <div class="forecast-meta">Precip -- · Wind --</div>
+              </div>
+            </div>
+          </div>
+          <div class="weather-detail-grid">
+            <div class="weather-detail">
+              <span class="weather-detail-label">Condition</span>
+              <span class="weather-detail-value" id="v-weather-condition">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Temperature</span>
+              <span class="weather-detail-value" id="v-weather-temp">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Feels Like</span>
+              <span class="weather-detail-value" id="v-weather-feels">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Humidity</span>
+              <span class="weather-detail-value" id="v-weather-hum">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Wind</span>
+              <span class="weather-detail-value" id="v-weather-wind">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Coordinates</span>
+              <span class="weather-detail-value" id="v-coords">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Local Time</span>
+              <span class="weather-detail-value" id="v-local-time">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Window Call</span>
+              <span class="weather-detail-value" id="v-window-call">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Outdoor AQI</span>
+              <span class="weather-detail-value" id="v-weather-aqi">--</span>
+            </div>
+            <div class="weather-detail">
+              <span class="weather-detail-label">Pressure Read</span>
+              <span class="weather-detail-value" id="v-pressure-read">--</span>
+            </div>
+          </div>
+        </div>
+        <div class="map-shell">
+          <div id="weather-map" aria-label="Interactive weather and environmental layers map"></div>
+          <div class="map-fallback" id="map-fallback">Map will appear once the device posts a location fix.</div>
+          <div class="map-overlay">
+            <div class="map-title" id="map-city">Location pending</div>
+            <a id="map-link" href="https://www.openstreetmap.org" target="_blank" rel="noreferrer">Open street map</a>
+          </div>
+        </div>
+      </div>
+      <div class="source-caption" id="source-weather">Source: device weather snapshot · Open-Meteo forecast · OpenStreetMap map · RainViewer radar</div>
+    </section>
+
+    <section class="card" id="card-classifier" data-view="analysis">
+      <div class="card-header">
+        <span>Model Channels</span>
+        <span class="header-pill" id="matrix-badge">Confidence map</span>
+      </div>
+      <div class="matrix-note" id="matrix-note">Classifier channels ranked by confidence.</div>
+      <div class="odor-matrix" id="odor-matrix"></div>
+      <div class="source-caption">Source: Bosch AI-Studio odor model · 20 channel confidence output · local inference logic</div>
+    </section>
+
+    <section class="card bro-card" id="card-bro" data-view="analysis">
+      <div class="card-header">
+        <span>Locker-Room Readout</span>
+        <span class="header-pill" id="bro-badge">Stand by</span>
+      </div>
+      <div class="bro-summary-shell">
+        <div class="bro-summary" id="bro-summary">A straight read on the room will show up here once live data is flowing.</div>
+      </div>
+      <details class="bro-details" open>
+        <summary>Open full readout</summary>
+        <div id="bro-report" class="bro-report-shell">A full room readout will appear here once the device has enough data to react to.</div>
+      </details>
+    </section>
+
+    <section class="card" id="card-events" data-view="history">
+      <div class="card-header">
+        <span>Event Log</span>
+        <span class="header-pill" id="events-badge">Building timeline</span>
+      </div>
+      <div class="events-table-shell">
+        <table class="events-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Event</th>
+              <th>Sound Profile</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody id="events-list">
+            <tr>
+              <td colspan="4" class="event-empty">Recent timestamped events will appear here once the dashboard has enough history to build a timeline.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="source-caption">Source: device snapshots · priority odor events · relay history in Upstash Redis</div>
+    </section>
+
+    <section class="card system-card" id="card-specs" data-view="system">
+      <div class="card-header">
+        <span>Technical Specifications</span>
+      </div>
+      <p class="card-summary">Key engineering parameters for the SniffMaster Pro v4.0 sensing platform.</p>
+      <div style="overflow-x:auto">
+      <table class="access-table">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>MCU</td><td>ESP32-S3 @ 240 MHz</td><td>Dual-core Xtensa LX7, 512 KB SRAM, 8 MB Flash</td></tr>
+          <tr><td>Sensor</td><td>Bosch BME688</td><td>Temp/RH/Pressure + MOX gas element, I2C @ 0x76</td></tr>
+          <tr><td>Display</td><td>SSD1306 128×64 OLED</td><td>I2C @ 0x3C, 7 auto-cycling pages + special modes</td></tr>
+          <tr><td>Sample Rate</td><td>LP: 3s / ULP: 300s</td><td>BSEC2 low-power mode for continuous monitoring</td></tr>
+          <tr><td>IAQ Range</td><td>0–500</td><td>Bosch BSEC2 composite index, accuracy 0–3</td></tr>
+          <tr><td>VOC Range</td><td>0.5–50+ ppm eq.</td><td>Breath VOC equivalent, EMA-smoothed</td></tr>
+          <tr><td>Gas Resistance</td><td>10 kΩ – 2 MΩ</td><td>MOX response: low R = reducing gases, high R = clean air</td></tr>
+          <tr><td>Odor Channels</td><td>12 base + 8 derived</td><td>SmellNet TFLite model + cross-correlation post-processing</td></tr>
+          <tr><td>ML Model</td><td>SmellNet v1 (TFLite)</td><td>7-feature input, 12-class output, ~4 KB quantized</td></tr>
+          <tr><td>Connectivity</td><td>WiFi 802.11 b/g/n + BLE 5</td><td>Multi-SSID failover, HTTPS to Vercel + OpenAI + AIO</td></tr>
+          <tr><td>Power</td><td>USB-C 5V, ~120 mA active</td><td>WiFi + BLE + sensor + OLED + buzzer</td></tr>
+          <tr><td>Stack Size</td><td>16 KB loop task</td><td>Increased from 8 KB default for HTTPS + JSON payloads</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </section>
+
+    <section class="card system-card" id="card-method" data-view="system">
+      <div class="card-header">
+        <span>Detection Pipeline</span>
+      </div>
+      <p class="card-summary">How raw signals become room-level classifications and scores.</p>
+      <details class="microcopy" open>
+        <summary>Signal processing chain</summary>
+        <p><strong>I2C acquisition:</strong> the XIAO ESP32-S3 polls the Bosch BME688 over I2C for gas resistance, temperature, humidity, and pressure at the BSEC2 sample rate.</p>
+        <p><strong>BSEC2 virtual sensors:</strong> Bosch's proprietary library derives IAQ (0–500), VOC equivalent (ppm), CO2 equivalent, stabilization status, and calibration accuracy from raw resistance patterns.</p>
+        <p><strong>EMA smoothing:</strong> VOC readings pass through an exponential moving average filter to suppress single-sample noise while preserving rapid events like farts or cooking.</p>
+        <p><strong>SmellNet classification:</strong> A TensorFlow Lite model trained with Bosch AI-Studio on labeled gas-response patterns scores 12 odor channels simultaneously (fart, cooking, alcohol, smoke, perfume, etc.).</p>
+        <p><strong>Cross-correlation:</strong> Post-processor resolves misclassification by checking gasR patterns, CO2 correlation, humidity, and timing context against each odor hypothesis.</p>
+        <p><strong>Home baseline:</strong> Device builds an EMA of quiet indoor readings over time. False positives are suppressed by comparing current readings against the learned home profile.</p>
+        <p><strong>Composite scoring:</strong> Room Quality Score (0–100) fuses IAQ, VOC, CO2, humidity, odor detections, and outdoor AQI into a single actionable number.</p>
+      </details>
+    </section>
+
+    <section class="card system-card" id="card-pseudocode" data-view="system">
+      <div class="card-header">
+        <span>Sensor Pipeline Pseudocode</span>
+      </div>
+      <p class="card-summary">Simplified logic flow for the main sensing loop running on the ESP32.</p>
+      <pre class="pseudocode"><code>// ── SniffMaster Pro v4.0 Main Loop ──────────────────────
+
+loop():
+  handleButton()                    // gesture state machine
+  bsecRan = envSensor.run()         // poll BME688 via BSEC2
+  melTick()                         // background melody engine
+  blePresenceTick()                 // BLE proximity scanner
+  maintainWiFi()                    // multi-SSID failover
+  pollPortalCommand()               // check for remote actions
+
+  if newDataReady:
+    // ── Raw → Derived ──
+    vocSmooth = pushAndSmooth(vocRaw)     // EMA filter
+    tier      = smellTier(vocSmooth)      // 0-5 severity
+    scores[]  = scoreOdors(voc, iaq, co2, // SmellNet inference
+                           temp, hum, gasR, dVoc)
+
+    // ── Post-processing ──
+    correctOdorScores(scores, gasR, co2)  // cross-correlation
+    updateHomeBaseline(readings)          // learn quiet indoor
+    applyHomeMlTuning(scores, baseline)   // suppress false pos
+    deriveExpandedOdors(scores, context)  // 8 derived families
+    stabilizePrimaryOdor(scores)          // 2-sample persistence
+
+    // ── Composite assessment ──
+    airScore = computeAirScore(iaq, voc, co2,
+                               hum, scores, outdoorAqi)
+
+    // ── Event detection ──
+    if fartSpike(scores, dVoc, gasR):
+      fartCount++; playAlert(); pushEvent()
+    if dVocSpike or airScoreJump:
+      playOdorChangeMelody(oldTier, newTier)
+
+    // ── Cloud sync (gated by RSSI) ──
+    if pendingAiFetch and rssi > -82:
+      fetchGPTSassyMsg(snapshot)          // 5-15s HTTPS POST
+    if webPostDue:
+      sendToWebDashboard(snapshot)        // Vercel + Upstash
+
+    // ── Display ──
+    renderPage(displayPage)               // 7 auto-cycling pages</code></pre>
+    </section>
+
+    <section class="card system-card" id="card-confidence" data-view="system">
+      <div class="card-header">
+        <span>Signal Confidence Model</span>
+      </div>
+      <ul class="system-list">
+        <li><strong>Direct measurement (high confidence):</strong> temperature (±1°C), humidity (±3% RH), pressure (±1 hPa), gas resistance (relative)</li>
+        <li><strong>BSEC2 derived (medium-high):</strong> IAQ (calibration-dependent, accuracy 0–3), VOC equivalent, CO2 equivalent, stabilization status</li>
+        <li><strong>ML classifier (medium):</strong> 12 odor channels scored 0–100%, cross-correlated with gasR/CO2/timing, 2-sample persistence filter</li>
+        <li><strong>Composite scores (medium):</strong> Room Quality (0–100), CFI ventilation index, smell tier (0–5) — fuses multiple signals</li>
+        <li><strong>AI commentary (low-medium):</strong> GPT-generated environmental analysis — entertaining but not a measurement</li>
+        <li><strong>Experimental (low):</strong> paranormal scan, fart attribution, breath screening — novelty features</li>
+      </ul>
+    </section>
+
+    <section class="card system-card" id="card-architecture" data-view="system">
+      <div class="card-header">
+        <span>System Architecture</span>
+      </div>
+      <p class="card-summary">Data flow from sensor to dashboard.</p>
+      <pre class="pseudocode"><code>┌─────────────┐    I2C     ┌──────────────┐
+│  BME688     │───────────→│  ESP32-S3    │
+│  Gas/Env    │  0x76      │  BSEC2 +     │
+│  Sensor     │            │  SmellNet ML │
+└─────────────┘            └──────┬───────┘
+                                  │
+                    ┌─────────────┼─────────────┐
+                    │             │             │
+              ┌─────▼─────┐ ┌────▼────┐ ┌─────▼─────┐
+              │  SSD1306  │ │ Buzzer  │ │   WiFi    │
+              │  OLED     │ │ Melody  │ │   HTTPS   │
+              │  128×64   │ │ Engine  │ │   Relay   │
+              └───────────┘ └─────────┘ └─────┬─────┘
+                                              │
+                          ┌───────────────────┼────────┐
+                          │                   │        │
+                    ┌─────▼─────┐  ┌──────────▼──┐ ┌──▼───┐
+                    │  OpenAI   │  │   Vercel    │ │ AIO  │
+                    │  GPT-4    │  │   + Upstash │ │ MQTT │
+                    │  Analysis │  │   Dashboard │ │      │
+                    └───────────┘  └─────────────┘ └──────┘</code></pre>
+    </section>
+
+    <section class="card system-card" id="card-usecases" data-view="system">
+      <div class="card-header">
+        <span>Applications</span>
+      </div>
+      <ul class="system-list">
+        <li><strong>Indoor air quality:</strong> continuous IAQ/VOC/CO2 monitoring with trend analysis and ventilation recommendations</li>
+        <li><strong>Occupancy sensing:</strong> CO2 accumulation rate and BLE proximity for meeting-room vitality assessment</li>
+        <li><strong>HVAC diagnostics:</strong> room-to-room comparison of ventilation effectiveness using CFI and VTR indices</li>
+        <li><strong>Odor classification:</strong> real-time 12-channel odor scoring with cross-correlation and home baseline suppression</li>
+        <li><strong>Event detection:</strong> sub-second response to rapid VOC spikes (cooking, cleaning products, biological events)</li>
+        <li><strong>Research platform:</strong> custom odor training via Bosch AI-Studio, labeled data export, ML model iteration</li>
+      </ul>
+    </section>
+
+    <section class="card system-card" id="card-theme" data-view="system">
+      <div class="card-header">
+        <span>Theme Studio</span>
+        <span class="header-pill" id="theme-badge">Obsidian Lab</span>
+      </div>
+      <p class="card-summary">Switch between the refined HUD and a deliberately flashy early-90s workstation skin.</p>
+      <div class="theme-shell">
+        <div class="theme-switch-row">
+          <div class="theme-switch-copy">
+            <div class="theme-switch-title" id="theme-current-title">Obsidian Lab</div>
+            <div class="theme-switch-note" id="theme-current-note">Refined dark HUD with cyan telemetry, crisp hierarchy, and fast scan readability.</div>
+          </div>
+          <label class="theme-switch" for="theme-retro-toggle">
+            <input id="theme-retro-toggle" type="checkbox" role="switch" aria-label="Toggle Retro 90s theme">
+            <span class="theme-switch-track" aria-hidden="true">
+              <span class="theme-switch-thumb"></span>
+            </span>
+            <span class="theme-switch-label" id="theme-current-tag">Default mode active</span>
+          </label>
+        </div>
+        <div class="theme-preview-grid" id="theme-preview-panel" data-theme="obsidian">
+          <div class="theme-preview-card is-primary">
+            <div class="theme-preview-kicker">Current look</div>
+            <div class="theme-preview-title">Obsidian Lab</div>
+            <div class="theme-preview-note">Dark glass, cyan telemetry, and cleaner contrast.</div>
+          </div>
+          <div class="theme-preview-card is-retro">
+            <div class="theme-preview-kicker">Alternate look</div>
+            <div class="theme-preview-title">Retro '92</div>
+            <div class="theme-preview-note">Teal, magenta, chrome, and a confident early-90s workstation attitude.</div>
+          </div>
+        </div>
+      </div>
+      <div class="theme-status" id="theme-status">Current portal theme: Obsidian Lab.</div>
+    </section>
+
+    <section class="card system-card" id="card-controls" data-view="system">
+      <div class="card-header">
+        <span>Control Guide</span>
+      </div>
+      <p class="card-summary">Hardware shortcuts plus secure remote actions from this portal.</p>
+      <div class="remote-controls-shell">
+        <div class="remote-controls-head">
+          <div>
+            <div class="remote-controls-title">Remote Device Actions</div>
+            <div class="remote-controls-note">Unlock this tab with the owner key, then queue a live device action without touching the hardware.</div>
+          </div>
+          <span class="header-pill" id="remote-controls-pill" data-tone="neutral">Locked</span>
+        </div>
+        <div class="remote-auth-row">
+          <input
+            class="remote-key-input"
+            id="remote-owner-key"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Owner key for this browser tab"
+          >
+          <button class="chrome-btn" id="remote-owner-save-btn" type="button">Unlock</button>
+          <button class="chrome-btn" id="remote-owner-clear-btn" type="button">Clear</button>
+        </div>
+        <div class="remote-controls-status" id="remote-controls-status">
+          Locked. View access is public, but remote device actions require the owner key for this tab.
+        </div>
+        <div class="remote-actions-grid">
+          <button class="chrome-btn remote-action-btn" data-remote-action="refresh" type="button" disabled>Sync Device Now</button>
+          <button class="chrome-btn remote-action-btn" data-remote-action="breath_check" type="button" disabled>Run Breath Check</button>
+          <button class="chrome-btn remote-action-btn" data-remote-action="ghost_scan" type="button" disabled>Run Ghost Scan</button>
+          <button class="chrome-btn remote-action-btn" data-remote-action="presence_probe" type="button" disabled>Run Presence Probe</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+      <table class="access-table">
+        <thead>
+          <tr>
+            <th>Control</th>
+            <th>Action</th>
+            <th>Hardware Path</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1-2x Press</td>
+            <td>Cycle pages: Odor → Env → Data → Summary → Weather</td>
+            <td>D1 button</td>
+          </tr>
+          <tr>
+            <td>3x Press</td>
+            <td>Show the daily dad joke</td>
+            <td>D1 button</td>
+          </tr>
+          <tr>
+            <td>4x Press</td>
+            <td>Run breath checker / breathalyzer mode</td>
+            <td>D1 button</td>
+          </tr>
+          <tr>
+            <td>5x Press</td>
+            <td>Run deep-field paranormal diagnostic</td>
+            <td>D1 button</td>
+          </tr>
+          <tr>
+            <td>6x Press</td>
+            <td>Open odor intensity / fart analysis page</td>
+            <td>D1 button</td>
+          </tr>
+          <tr>
+            <td>7x Press</td>
+            <td>Mute or unmute non-critical jingles</td>
+            <td>D1 button → Buzzer D3</td>
+          </tr>
+          <tr>
+            <td>Long Press</td>
+            <td>Show launches and play a random melody</td>
+            <td>D1 button → Buzzer D3</td>
+          </tr>
+          <tr>
+            <td>Double-Long Press</td>
+            <td>Trigger portal refresh and hosted relay sync</td>
+            <td>D1 button</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="arcade-overlay" id="trajectory-overlay" hidden aria-hidden="true">
+    <button class="arcade-close-x" id="trajectory-close-x" type="button" aria-label="Close game">&times;</button>
+    <div class="arcade-backdrop" id="trajectory-backdrop"></div>
+    <section class="arcade-shell" role="dialog" aria-modal="true" aria-labelledby="trajectory-title">
+      <div class="arcade-head">
+        <div>
+          <div class="arcade-kicker">Hidden Mission</div>
+          <h2 class="arcade-title" id="trajectory-title">Gatornauts</h2>
+          <p class="arcade-subtitle">Launch New Glenn from LC-36, separate cleanly, clear alien gators, and stick the lunar landing in full FTL-flavored pixel style.</p>
+        </div>
+        <div class="arcade-head-actions">
+          <button class="chrome-btn" id="trajectory-restart-btn" type="button">Restart mission</button>
+          <button class="chrome-btn" id="trajectory-close-btn" type="button">Close</button>
+        </div>
+      </div>
+
+      <div class="arcade-cabinet">
+        <div class="arcade-screen-shell">
+          <canvas id="trajectory-canvas" width="960" height="640" aria-label="Trajectory hidden arcade game"></canvas>
+          <div class="arcade-scanlines" aria-hidden="true"></div>
+          <div class="arcade-glow" aria-hidden="true"></div>
+        </div>
+
+        <div class="arcade-sidecar">
+          <div class="arcade-panel">
+            <div class="arcade-panel-kicker">Mission Brief</div>
+            <div class="arcade-panel-copy" id="trajectory-brief">
+              Arcade flight director mode: launch hard, separate on time, chain gator kills for combo points, then land softly on the Moon for a clean-run bonus.
+            </div>
+          </div>
+          <div class="arcade-panel">
+            <div class="arcade-panel-kicker">Controls</div>
+            <div class="arcade-control-list">
+              <div><strong>Up:</strong> thrust</div>
+              <div><strong>Left / Right:</strong> rotate</div>
+              <div><strong>Space:</strong> detach booster / fire laser</div>
+              <div><strong>R / Enter:</strong> quick restart</div>
+              <div><strong>Goal:</strong> protect hull, build combo, nail the landing</div>
+            </div>
+          </div>
+          <div class="arcade-panel">
+            <div class="arcade-panel-kicker">Telemetry</div>
+            <div class="arcade-telemetry" id="trajectory-mission-status">Mission screen standing by.</div>
+          </div>
+          <div class="arcade-panel">
+            <div class="arcade-panel-kicker">Cabinet Notes</div>
+            <div class="arcade-panel-copy">Predictive trajectory, cislunar mini-map, screen shake, best-run tracking, and sharper CRT cabinet styling are enabled in this enhanced build.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="arcade-mobile-controls" id="trajectory-mobile-controls">
+        <button class="arcade-touch-btn" type="button" data-trajectory-action="left">Left</button>
+        <button class="arcade-touch-btn thrust" type="button" data-trajectory-action="up">Thrust</button>
+        <button class="arcade-touch-btn" type="button" data-trajectory-action="right">Right</button>
+        <button class="arcade-touch-btn detach" type="button" data-trajectory-action="detach">Detach / Fire</button>
+      </div>
+    </section>
+  </div>
+
+  <footer class="footer-bar">
+    <span id="last-update">No data yet</span>
+    <span id="v-uptime">Waiting for uptime</span>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/esri-leaflet@3.0.14/dist/esri-leaflet.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
