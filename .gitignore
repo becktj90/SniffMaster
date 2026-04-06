@@ -1,0 +1,19 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# Node/Vercel
+web/node_modules/
+web/.vercel/
+web/.env.local
+web/.env
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Build artifacts
+*.bin
+*.elf
+*.map
+*.log
