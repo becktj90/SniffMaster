@@ -132,7 +132,7 @@ async function generateOpenAiBrief(snapshot, forecast, fallback) {
   const apiKey = `${process.env.OPENAI_API_KEY || ""}`.trim();
   if (!apiKey || !forecast.length) return null;
 
-  const model = `${process.env.OPENAI_WEATHER_MODEL || "gpt-5-mini"}`.trim();
+  const model = `${process.env.OPENAI_WEATHER_MODEL || "gpt-5.4-nano"}`.trim();
   const prompt = [
     "Write a concise local weather forecast insight for a professional sensor dashboard.",
     "Keep it to 2 or 3 sentences, under 90 words.",
