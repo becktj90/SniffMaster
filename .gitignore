@@ -18,5 +18,6 @@ __MACOSX/
 *.map
 *.log
 
-# Secrets
+# Secrets & Credentials (never commit these)
 firmware/include/secrets.h
+firmware/include/web_dashboard_config.h

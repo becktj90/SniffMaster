@@ -3,7 +3,7 @@
     Local machine copy for the deployed hosted dashboard.                */
 
 // Your deployed web dashboard URL (must be HTTPS, no trailing slash).
-#define WEB_DASHBOARD_URL  "https://sniffmaster-web.vercel.app"
+#define WEB_DASHBOARD_URL  "https://web-9aceg2us4-sniff-master-pro.vercel.app"
 
 // Shared API key — must match SNIFFMASTER_API_KEY in Vercel.
-#define WEB_DASHBOARD_KEY  "64098124b3d235a8242744f9a6ac518c"
+#define WEB_DASHBOARD_KEY  "2342d4a6231538e8034f343cf619e663"

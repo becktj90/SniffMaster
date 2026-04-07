@@ -176,7 +176,7 @@ static bsecSensor sensorListLpSafe[] = {
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_XIAO_ESP32C3)
 static const uint8_t bsecIaqLpConfig[] = {
-  #include "../libraries/bsec2/src/config/bme680/bme680_iaq_33v_3s_4d/bsec_iaq.txt"
+  #include <config/bme680/bme680_iaq_33v_3s_4d/bsec_iaq.txt>
 };
 #endif
 // Note: this BSEC2 build does not expose a literal VSC enum. Until a Bosch

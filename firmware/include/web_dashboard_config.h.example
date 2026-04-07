@@ -1,0 +1,26 @@
+#pragma once
+/*  web_dashboard_config.h.example — SniffMaster Pro web dashboard credentials.
+    
+    SETUP INSTRUCTIONS:
+    1. Copy this file to web_dashboard_config.h:
+       cp firmware/include/web_dashboard_config.h.example firmware/include/web_dashboard_config.h
+    
+    2. Update the values below with your deployed dashboard URL and API key
+    3. Rebuild and flash the firmware
+    
+    ⚠️  SECURITY WARNING:
+    - Do NOT commit web_dashboard_config.h to git!
+    - The .gitignore file blocks this, but verify before pushing.
+    - Treat the API key like a password.
+*/
+
+// Your deployed web dashboard URL (must be HTTPS, no trailing slash).
+// Example: "https://sniffmaster-web-12345.vercel.app"
+#define WEB_DASHBOARD_URL  "https://your-app-name.vercel.app"
+
+// Shared API key — must match SNIFFMASTER_API_KEY in Vercel environment variables.
+// Generate with: openssl rand -hex 16
+// Then set this same value in Vercel:
+//   vercel env add SNIFFMASTER_API_KEY <your-key>
+//   vercel env pull
+#define WEB_DASHBOARD_KEY  "generate-with-openssl-rand-hex-16"
