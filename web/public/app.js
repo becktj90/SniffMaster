@@ -4468,25 +4468,22 @@ function applySniffEvent(event) {
   }
 }
 
-
 async function fetchLatest() {
   try {
     const res = await fetch("/api/latest", { cache: "no-store" });
-
     if (res.status === 204) return;
     if (!res.ok) throw new Error(`latest ${res.status}`);
 
     const data = await res.json();
-
-    lastData = data;   // 🔥 critical
+    lastData = data;
     render(data);
-
   } catch (err) {
     console.error("fetchLatest failed:", err);
     $("conn-dot").className = "dot offline";
     $("conn-label").textContent = "Feed unavailable";
   }
 }
+
 
 async function manualRefreshDashboard() {
   if (manualRefreshPending) return;
