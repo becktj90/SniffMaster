@@ -5,7 +5,36 @@
  * Polls /api/latest every 10 seconds, refreshes history periodically,
  * and listens for priority sulfur/VSC events over SSE.
  */
-
+// ── PWA Service Worker Registration + Automatic Update Prompt ──
+// (Paste this at the absolute top of app.js)
+if ("serviceWorker" in navigator) {
+ navigator.serviceWorker.register("/sw.js")
+   .then((reg) => {
+     console.log("%cService Worker registered (v41)", "color:#0f0; font-family:monospace");
+     // Listen for a new service worker becoming available
+     reg.addEventListener("updatefound", () => {
+       const newWorker = reg.installing;
+       if (!newWorker) return;
+       newWorker.addEventListener("statechange", () => {
+         if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+           // New version is ready
+           const reload = window.confirm(
+             "🎉 SniffMaster just got a fresh update!\n\n" +
+             "Reload now to see the new dashboard layout and fixes?"
+           );
+           if (reload) {
+             newWorker.postMessage({ type: "SKIP_WAITING" });
+             // Force reload after the new SW takes over
+             navigator.serviceWorker.addEventListener("controllerchange", () => {
+               window.location.reload();
+             });
+           }
+         }
+       });
+     });
+   })
+   .catch((err) => console.error("SW registration failed:", err));
+}
 const ODOR_NAMES = [
   "Fart", "Musty", "Cigarette", "Alcohol", "Weed", "Cleaning",
   "Gasoline", "Smoke", "Cooking", "Coffee", "Garbage", "Sweat/BO",
