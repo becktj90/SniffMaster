@@ -3102,6 +3102,11 @@ function renderMissionHistory(d) {
   `).join("");
   setHeaderPill("history-badge", `${entries.length} milestones`, "good");
 }
+function renderStructuredReport(data) {
+  // TODO: implement structured report
+  console.log("renderStructuredReport called", data);
+  return "";
+}
 
 function renderSpaceCard(d) {
   const launches = Array.isArray(d.launches) ? d.launches : [];
