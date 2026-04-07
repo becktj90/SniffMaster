@@ -43,7 +43,7 @@
 // #define USE_ADAFRUIT_IO
 
 // ── Web Dashboard — uncomment after deploying sniffmaster_web + editing config
-#define USE_WEB_DASHBOARD
+// #define USE_WEB_DASHBOARD
 
 // ══════════════════════════════════════════════════════════════
 // Section 2: Includes
@@ -815,7 +815,6 @@ const  unsigned long  CLOUD_RADIO_QUIET_MS = 20000UL;
 // Web Dashboard update interval — posts JSON snapshot to hosted relay.
 // Uses HTTPS POST, so each call takes ~1–3 seconds.  Every 10 minutes
 // keeps Upstash free tier well under 10k commands/day.
-#ifdef USE_WEB_DASHBOARD
 static unsigned long lastWebPostMillis = 0;
 static unsigned long lastWebAttemptMillis = 0;
 static bool pendingWebSend = false;
@@ -838,7 +837,6 @@ const  unsigned long SNIFF_POST_COOLDOWN = 45000UL;
 static int    queuedSniffIaq = 0;
 static float  queuedSniffConf = 0.0f;
 static char   queuedSniffLabel[24] = "";
-#endif
 
 static void queueEventPush() {
   unsigned long now = millis();
@@ -6250,7 +6248,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Wire.begin();
-  Wire.setTimeOut(50);
+  Wire.setTimeOut(60000);
   Wire.setClock(100000);
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(BTN_PIN, INPUT_PULLUP);
@@ -6336,6 +6334,7 @@ void setup() {
     Wire.end();
     delay(200);
     Wire.begin();
+    Wire.setTimeOut(60000);
     Wire.setClock(100000);
     delay(100);
     if (!envSensor.begin(BME68X_I2C_ADDR_LOW, Wire, safeBmeDelayUs)) {
