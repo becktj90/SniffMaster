@@ -1,5 +1,5 @@
 // Service Worker — enables PWA install + offline shell caching
-const CACHE_NAME = "sniffmaster-v39";
+const CACHE_NAME = "sniffmaster-v40";
 const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/melody_library.h"];
 
 self.addEventListener("install", (e) => {
