@@ -2640,7 +2640,7 @@ async function ensureWeatherBriefing(d) {
 
         if (lastData) {
             renderWeatherForecast(lastData, weatherBriefingState.data);
-            $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(lastData, weatherBriefingState.data));
+           $("weather-report").innerHTML = formatDiagnosticReport(buildWeatherReport(lastData, weatherBriefingState.data));
         }
     })();
 }
@@ -3376,7 +3376,7 @@ function renderSpaceCard(d) {
 
     if (launchMarker) launchMarker.style.opacity = first ? "1" : "0.28";
     if (historyMarker) historyMarker.style.opacity = historyYear ? "0.9" : "0.45";
-    if (report) report.innerHTML = renderStructuredReport(buildSpaceReport(d));
+    if (report) report.innerHTML = formatDiagnosticReport(buildSpaceReport(d));
 }
 
 function odorAccentRgb(d) {
@@ -3776,7 +3776,7 @@ function renderWeatherIntel(d) {
     } else {
         mapLink.href = "https://www.openstreetmap.org";
     }
-    $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(d, weatherBriefingState.data));
+    $("weather-report").innerHTML = formatDiagnosticReport(buildWeatherReport(d, weatherBriefingState.data));
     renderMoonVisual(d);
     renderSkyVisual(d);
     syncWeatherMapPosition(d);
@@ -4700,7 +4700,7 @@ function render(data) {
     renderMelodyLibrary(merged);
 
     $("bro-summary").textContent = buildBroSummary(merged);
-    $("bro-report").innerHTML = renderStructuredReport(buildBroReport(merged));
+    $("bro-report").innerHTML = formatDiagnosticReport(buildBroReport(merged));
 
     setHeaderPill("launch-badge", Array.isArray(merged.launches) && merged.launches.length ? `${merged.launches.length} Cape launches` : "No launch data", Array.isArray(merged.launches) && merged.launches.length ? "good" : "neutral");
     setHeaderPill("odor-badge", `${currentPrimary(merged)} · ${Math.round(num(merged.primaryConf))}%`, num(merged.primaryConf) >= 45 ? "warn" : num(merged.primaryConf) >= 20 ? "neutral" : "good");
