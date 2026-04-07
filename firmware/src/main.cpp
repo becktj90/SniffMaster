@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════
 // SniffMaster Pro — Cleaned & Stabilized Firmware (v4.1 stable)
-// Hardware: Seeed XIAO ESP32-C3/S3 + BME688 + SSD1306 OLED + Buzzer + Button
+// Hardware: Seeed XIAO ESP32-C3/S3 + BME688 + SSD1306 + Buzzer + Button
 // Features kept: BME688 (BSEC2), OLED pages, button gestures, melodies, Wi-Fi + Web Dashboard
 // Removed: ML scoring, BLE presence, Blynk, Adafruit IO, NeoPixel, all unused stubs
 // Fixes applied:
@@ -11,6 +11,7 @@
 // Global variables from the original main.cpp are now fully included below.
 // Bumped for stability — flash this and enjoy a rock-solid device!
 // ══════════════════════════════════════════════════════════════
+
 /***********************************************************
  SniffMaster Pro v4.1 - Clean Stable Build
  Button gestures (unchanged):
@@ -23,12 +24,14 @@
    long press   = launches + random melody
    double-long  = portal refresh
 ***********************************************************/
+
 // ══════════════════════════════════════════════════════════════
 // Section 1: Feature Flags (only what we need)
 // ══════════════════════════════════════════════════════════════
 #define USE_WEB_DASHBOARD     // Hosted PWA relay — required
+
 // ══════════════════════════════════════════════════════════════
-// Section 2: Includes (minimal & clean)
+// Section 2: Includes
 // ══════════════════════════════════════════════════════════════
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -39,9 +42,9 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include "bsec2.h"
-#include "secrets.h"            // ← your WiFi + web config
-#include "melody_library.h"     // melodies + jingles
-#include "web_dashboard_config.h" // web portal URLs / keys
+#include "secrets.h"            // ← your WiFi + web config (WIFI_CREDS / WIFI_NUM_NETWORKS)
+#include "melody_library.h"     // melodies + jingles + 3 alerts
+
 // ══════════════════════════════════════════════════════════════
 // Section 3: Hardware Definitions
 // ══════════════════════════════════════════════════════════════
@@ -52,7 +55,9 @@
 #define SCREEN_HEIGHT  64
 #define OLED_RESET    -1
 #define OLED_ADDR     0x3C
+
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
 // ══════════════════════════════════════════════════════════════
 // Section 4: Display & Page Constants (from original)
 // ══════════════════════════════════════════════════════════════
@@ -60,10 +65,12 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define NUM_AUTO_PAGES  8
 #define LAUNCHES_PAGE   8
 #define DAD_JOKE_PAGE   9
+
 // ══════════════════════════════════════════════════════════════
 // Section 5: BSEC2 Sensor Setup (unchanged from original)
 // ══════════════════════════════════════════════════════════════
 Bsec2 envSensor;
+
 bsecSensor sensorList[] = {
  BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
  BSEC_OUTPUT_IAQ,
@@ -78,20 +85,25 @@ bsecSensor sensorList[] = {
  BSEC_OUTPUT_STABILIZATION_STATUS,
  BSEC_OUTPUT_RUN_IN_STATUS,
 };
+
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) (sizeof(a) / sizeof(a[0]))
 #endif
+
 // ══════════════════════════════════════════════════════════════
 // Section 6: ALL Global Variables (pulled directly from original main.cpp)
 // These were scattered throughout the original file and are now centralized here.
 // ══════════════════════════════════════════════════════════════
 // Timing / cloud sync
 unsigned long lastWebPostMillis = 0;
+
 // Fart Tracker page globals
 int fartCount = 0;
 float biggestFartVoc = 0.0f;
+
 // Smell Sentence / GPT quip buffer
 char dcSmellQuip[256] = {0};   // holds the GPT-generated smell quip
+
 // Weather struct (used by renderWeatherPage)
 struct WeatherData {
  bool valid = false;
@@ -102,18 +114,22 @@ struct WeatherData {
  // Add any extra fields your fetchWeather() function populates (humidity, wind, etc.)
 };
 WeatherData weather;
+
 // Odor scores array (used by renderSmellSentencePage and similar pages)
 #define ODOR_COUNT 20
 uint8_t odorScores[ODOR_COUNT] = {0};
+
 // Current air quality / IAQ values (used across multiple render pages)
 int currentIAQ = 0;
 float currentVOC = 0.0f;
 float currentTempC = 0.0f;
 float currentHumidity = 0.0f;
 float currentPressure = 0.0f;
+
 // Page state
 uint8_t currentPageIndex = 0;   // 0-7 auto-cycle
 bool muteJingles = false;
+
 // ══════════════════════════════════════════════════════════════
 // Section 7: Lightweight Scheduler (the stability fix)
 // ══════════════════════════════════════════════════════════════
@@ -130,8 +146,9 @@ static inline bool dueEvery(unsigned long now, unsigned long &last, unsigned lon
  }
  return false;
 }
+
 // ══════════════════════════════════════════════════════════════
-// Forward declarations for your existing helper/render functions
+// Section 8: Forward declarations for your existing helper/render functions
 // (These stay exactly as they were in the original main.cpp)
 // ══════════════════════════════════════════════════════════════
 void handleButton();
@@ -149,75 +166,225 @@ void maintainWiFi();
 void queueWeatherCloudTasks();
 void drawHeader(const char* title);
 void drawWrappedSentence(const char* text, uint8_t maxLines);
-// (add any other functions you have, e.g. fetchLocation, fetchGPTSassyMsg, etc.)
+
+// ══════════════════════════════════════════════════════════════
+// Section 9: Wi-Fi + Reconnect Logic (original style, updated)
+// ══════════════════════════════════════════════════════════════
+
+// ── Wi-Fi variables ─────────────────────────────────────────────────
+static int            wifiRetryIndex = 0;
+static int            wifiPreferredIndex = 0;
+static bool           wifiBootstrapPending = true;
+static unsigned long  wifiOfflineSinceMillis = 0;
+static bool           wifiConnectAttemptActive = false;
+static unsigned long  wifiConnectStartMillis = 0;
+static int            wifiConnectIndex = -1;
+static unsigned long  lastWiFiRetryMillis = 0;
+static wl_status_t    lastWiFiLoopStatus = WL_IDLE_STATUS;
+
+// ── Wi-Fi Connect Attempt ───────────────────────────────────────────
+static bool startWiFiConnectAttempt(int networkIndex, bool announce) {
+  if (networkIndex < 0 || networkIndex >= WIFI_NUM_NETWORKS) return false;
+
+  const char* ssid = WIFI_CREDS[networkIndex][0];
+  const char* pass = WIFI_CREDS[networkIndex][1];
+
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass);
+  wifiConnectAttemptActive = true;
+  wifiConnectStartMillis = millis();
+  wifiConnectIndex = networkIndex;
+
+  if (announce) {
+    Serial.printf("[WiFi] Reconnect attempt %d/%d -> %s\n",
+                  networkIndex + 1, WIFI_NUM_NETWORKS, ssid);
+  }
+  return true;
+}
+
+// ── Wi-Fi Reconnect State Machine ──────────────────────────────────
+void maintainWiFi() {
+  wl_status_t status = WiFi.status();
+  unsigned long now = millis();
+
+  if (status == WL_CONNECTED) {
+    if (lastWiFiLoopStatus != WL_CONNECTED) {
+      WiFi.setSleep(false);
+      Serial.printf("[WiFi] Recovered: %s  IP=%s\n",
+                    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+      lastWiFiRetryMillis = 0;
+      wifiOfflineSinceMillis = 0;
+      wifiConnectAttemptActive = false;
+      wifiConnectStartMillis = 0;
+      wifiConnectIndex = -1;
+      int currentIdx = 0;
+      for (int i = 0; i < WIFI_NUM_NETWORKS; i++) {
+        if (strcmp(WiFi.SSID().c_str(), WIFI_CREDS[i][0]) == 0) {
+          currentIdx = i;
+          break;
+        }
+      }
+      wifiPreferredIndex = currentIdx;
+      wifiRetryIndex = currentIdx;
+      if (wifiBootstrapPending) {
+        // configTime(0, 0, "pool.ntp.org", "time.nist.gov"); // optional
+        wifiBootstrapPending = false;
+      }
+    }
+    lastWiFiLoopStatus = status;
+    return;
+  }
+
+  if (lastWiFiLoopStatus == WL_CONNECTED) {
+    Serial.println(F("[WiFi] Link lost; enabling background reconnect."));
+    wifiOfflineSinceMillis = now;
+    wifiConnectAttemptActive = false;
+    wifiConnectStartMillis = 0;
+    wifiConnectIndex = -1;
+  }
+  lastWiFiLoopStatus = status;
+
+  if (wifiOfflineSinceMillis == 0) wifiOfflineSinceMillis = now;
+  if (now - wifiOfflineSinceMillis < 10000UL) return;  // 10s debounce
+
+  if (wifiConnectAttemptActive) {
+    if (now - wifiConnectStartMillis < 8000UL) return;
+    const char* timedOutSsid =
+        (wifiConnectIndex >= 0 && wifiConnectIndex < WIFI_NUM_NETWORKS)
+      ? WIFI_CREDS[wifiConnectIndex][0]
+      : "(unknown)";
+    Serial.printf("[WiFi] %s did not reconnect after %lums (status=%d)\n",
+                  timedOutSsid, now - wifiConnectStartMillis, (int)WiFi.status());
+    wifiConnectAttemptActive = false;
+    wifiConnectStartMillis = 0;
+    wifiConnectIndex = -1;
+  }
+
+  if (now - lastWiFiRetryMillis < 30000UL) return;
+  lastWiFiRetryMillis = now;
+
+  if (WIFI_NUM_NETWORKS <= 0) return;
+
+  int retryIndex = wifiPreferredIndex;
+  if (retryIndex < 0 || retryIndex >= WIFI_NUM_NETWORKS) retryIndex = 0;
+  if (now - wifiOfflineSinceMillis >= 120000UL) {
+    retryIndex = wifiRetryIndex;
+    wifiRetryIndex = (wifiRetryIndex + 1) % WIFI_NUM_NETWORKS;
+  } else {
+    wifiRetryIndex = wifiPreferredIndex;
+  }
+
+  startWiFiConnectAttempt(retryIndex, true);
+}
+
 // ══════════════════════════════════════════════════════════════
 // SETUP
 // ══════════════════════════════════════════════════════════════
 void setup() {
- Serial.begin(115200);
- pinMode(BTN_PIN, INPUT_PULLUP);
- pinMode(BUZZER_PIN, OUTPUT);
- // OLED
- if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-   Serial.println(F("SSD1306 allocation failed"));
-   for (;;);
- }
- display.clearDisplay();
- display.setTextColor(SSD1306_WHITE);
- display.setTextSize(1);
- display.setCursor(0, 0);
- display.println(F("SniffMaster Pro"));
- display.println(F("v4.1 clean build"));
- display.display();
- // BSEC2 sensor (your original config stays here)
- envSensor.begin(BME68X_I2C_ADDR_LOW, Wire);
- // (paste your original BSEC subscription / config code here if it was in setup)
- // WiFi
- WiFi.begin(WIFI_SSID, WIFI_PASS);   // from secrets.h
- Serial.println(F("WiFi connecting..."));
- Serial.println(F("Setup complete — running clean scheduler"));
+  Serial.begin(115200);
+  pinMode(BTN_PIN, INPUT_PULLUP);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  // OLED
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;);
+  }
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println(F("SniffMaster Pro"));
+  display.println(F("v4.1 clean build"));
+  display.display();
+
+  // BSEC2 sensor
+  envSensor.begin(BME68X_I2C_ADDR_LOW, Wire);
+
+  // WiFi bootstrap
+  WiFi.disconnect(true);
+  delay(50);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  wifiOfflineSinceMillis = millis() - 10000UL;
+  lastWiFiRetryMillis = 0;
+  lastWiFiLoopStatus = WL_IDLE_STATUS;
+  wifiConnectAttemptActive = false;
+  wifiConnectStartMillis = 0;
+  wifiConnectIndex = -1;
+  wifiPreferredIndex = 0;
+  wifiRetryIndex = (WIFI_NUM_NETWORKS > 1) ? 1 : 0;
+  wifiBootstrapPending = true;
+
+  // Show boot WiFi state
+  display.clearDisplay();
+  drawHeader("-- WiFi --");
+  display.setTextSize(1);
+  if (WIFI_NUM_NETWORKS > 0) {
+    display.setCursor(0, 12);
+    display.print(F("Starting async WiFi"));
+    display.setCursor(0, 22);
+    display.print(WIFI_CREDS[wifiPreferredIndex][0]);
+    display.setCursor(0, 36);
+    display.print(F("Boot continues now"));
+    display.display();
+    startWiFiConnectAttempt(wifiPreferredIndex, true);
+  } else {
+    display.setCursor(0, 20);
+    display.print(F("WiFi not configured"));
+    display.display();
+  }
+
+  Serial.println(F("Setup complete — running clean scheduler"));
 }
+
 // ══════════════════════════════════════════════════════════════
 // LOOP — CLEAN NON-BLOCKING SCHEDULER
 // ══════════════════════════════════════════════════════════════
 void loop() {
- unsigned long now = millis();
- // ── Always-responsive core tasks (never starved) ─────────────────────
- handleButton();           // button gestures
- melTick();                // melody playback
- // ── BSEC sensor (must run every loop for accurate gas readings) ───────
- bool bsecRan = envSensor.run();
- // ── Throttled maintenance ────────────────────────────────────────────
- if (dueEvery(now, lastWiFiMaintainMs, 30000UL)) {   // every 30 s
-   maintainWiFi();
- }
+  unsigned long now = millis();
+
+  // ── Always-responsive core tasks (never starved) ─────────────────────
+  handleButton();           // button gestures
+  melTick();                // melody playback
+
+  // ── BSEC sensor (must run every loop for accurate gas readings) ───────
+  bool bsecRan = envSensor.run();
+
+  // ── Throttled maintenance ────────────────────────────────────────────
+  if (dueEvery(now, lastWiFiMaintainMs, 30000UL)) {   // every 30 s
+    maintainWiFi();
+  }
 #ifdef USE_WEB_DASHBOARD
- if (dueEvery(now, lastCloudServiceMs, CLOUD_SERVICE_INTERVAL_MS)) {
-   pollPortalCommand();
-   // weather / other cloud tasks are queued here (non-blocking)
- }
+  if (dueEvery(now, lastCloudServiceMs, CLOUD_SERVICE_INTERVAL_MS)) {
+    pollPortalCommand();
+    // weather / other cloud tasks are queued here (non-blocking)
+  }
 #endif
- // ── Display update — throttled to 400 ms (big stability win) ─────────
- if (dueEvery(now, lastDisplayMs, DISPLAY_REFRESH_MS)) {
-   uint8_t page = getCurrentPage();
-   switch (page) {
-     case 0:  renderAirQualityPage(); break;
-     case 1:  renderNetworkPage(); break;
-     case 2:  renderOdorDetailPage(); break;
-     case 3:  renderGasAnalysisPage(); break;
-     case 4:  renderSmellSentencePage(); break;
-     case 5:  renderFartTrackerPage(); break;
-     case 6:  renderWeatherPage(); break;
-     case 7:  /* your 7th auto page if any */ break;
-     case LAUNCHES_PAGE: /* long-press launches */ break;
-     case DAD_JOKE_PAGE: /* dad joke */ break;
-     default: renderAirQualityPage(); break;
-   }
- }
- // ── Optional debug (throttled) ───────────────────────────────────────
- if (dueEvery(now, lastBsecLogMs, 15000UL)) {
-   if (!bsecRan) {
-     Serial.printf("[BSEC] issue — status=%d\n", (int)envSensor.status);
-   }
- }
+
+  // ── Display update — throttled to 400 ms (big stability win) ─────────
+  if (dueEvery(now, lastDisplayMs, DISPLAY_REFRESH_MS)) {
+    uint8_t page = getCurrentPage();
+    switch (page) {
+      case 0:  renderAirQualityPage(); break;
+      case 1:  renderNetworkPage(); break;
+      case 2:  renderOdorDetailPage(); break;
+      case 3:  renderGasAnalysisPage(); break;
+      case 4:  renderSmellSentencePage(); break;
+      case 5:  renderFartTrackerPage(); break;
+      case 6:  renderWeatherPage(); break;
+      case 7:  /* your 7th auto page if any */ break;
+      case LAUNCHES_PAGE: /* long-press launches */ break;
+      case DAD_JOKE_PAGE: /* dad joke */ break;
+      default: renderAirQualityPage(); break;
+    }
+  }
+
+  // ── Optional debug (throttled) ───────────────────────────────────────
+  if (dueEvery(now, lastBsecLogMs, 15000UL)) {
+    if (!bsecRan) {
+      Serial.printf("[BSEC] issue — status=%d\n", (int)envSensor.status);
+    }
+  }
 }
