@@ -4468,34 +4468,21 @@ function applySniffEvent(event) {
   }
 }
 
+
 async function fetchLatest() {
   try {
     const res = await fetch("/api/latest", { cache: "no-store" });
+
     if (res.status === 204) return;
     if (!res.ok) throw new Error(`latest ${res.status}`);
-    cconst raw = await res.json();
 
-const data = {
-  ...raw,
+    const data = await res.json();
 
-  // normalize to UI-friendly keys
-  IAQ: raw.iaq,
-  VOC: raw.voc,
-  CO2: raw.co2,
-  TEMPERATURE: raw.tempF,
-  HUMIDITY: raw.humidity,
-  PRESSURE: raw.pressHpa,
-  GAS_RESISTANCE: raw.gasR,
+    lastData = data;   // 🔥 critical
+    render(data);
 
-  ODOR: raw.primary,
-  ODOR_CONFIDENCE: raw.primaryConf,
-  SNIFFMASTER_MESSAGE: raw.sassy,
-
-  RECEIVED_AT: raw.receivedAt,
-};
-
-render(data);
-  } catch (_) {
+  } catch (err) {
+    console.error("fetchLatest failed:", err);
     $("conn-dot").className = "dot offline";
     $("conn-label").textContent = "Feed unavailable";
   }
