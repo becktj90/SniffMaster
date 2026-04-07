@@ -4473,8 +4473,28 @@ async function fetchLatest() {
     const res = await fetch("/api/latest", { cache: "no-store" });
     if (res.status === 204) return;
     if (!res.ok) throw new Error(`latest ${res.status}`);
-    const data = await res.json();
-    render(data);
+    cconst raw = await res.json();
+
+const data = {
+  ...raw,
+
+  // normalize to UI-friendly keys
+  IAQ: raw.iaq,
+  VOC: raw.voc,
+  CO2: raw.co2,
+  TEMPERATURE: raw.tempF,
+  HUMIDITY: raw.humidity,
+  PRESSURE: raw.pressHpa,
+  GAS_RESISTANCE: raw.gasR,
+
+  ODOR: raw.primary,
+  ODOR_CONFIDENCE: raw.primaryConf,
+  SNIFFMASTER_MESSAGE: raw.sassy,
+
+  RECEIVED_AT: raw.receivedAt,
+};
+
+render(data);
   } catch (_) {
     $("conn-dot").className = "dot offline";
     $("conn-label").textContent = "Feed unavailable";
