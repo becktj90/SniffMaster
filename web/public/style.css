@@ -41,6 +41,26 @@
   --theme-panel-border: rgba(0, 242, 255, 0.16);
 }
 
+/* Add to your style.css */
+.system-card table {
+  max-width: 100%;
+  table-layout: fixed;
+  word-wrap: break-word;
+}
+
+.system-card td, .system-card th {
+  word-break: break-word;
+  hyphens: auto;
+}
+
+@media (max-width: 768px) {
+  .access-table th:nth-child(3),
+  .access-table td:nth-child(3) {
+    display: none;
+  }
+}
+
+
 body[data-theme="retro90s"] {
   --bg: #120d2a;
   --bg2: #0d1720;
