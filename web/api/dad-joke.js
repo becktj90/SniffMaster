@@ -90,7 +90,7 @@ async function generateOpenAiJoke(seedKey, previous = []) {
   const apiKey = `${process.env.OPENAI_API_KEY || ""}`.trim();
   if (!apiKey) return null;
 
-  const model = `${process.env.OPENAI_DAD_JOKE_MODEL || "gpt-5-mini"}`.trim();
+  const model = `${process.env.OPENAI_DAD_JOKE_MODEL || "gpt-5.4-nano"}`.trim();
   const prompt = [
     "Write one original dad joke for a premium environmental sensor dashboard called Dadabase.",
     "Keep it clean, genuinely groan-worthy, and concise.",
