@@ -43,7 +43,7 @@
 // #define USE_ADAFRUIT_IO
 
 // ── Web Dashboard — uncomment after deploying sniffmaster_web + editing config
-// #define USE_WEB_DASHBOARD
+#define USE_WEB_DASHBOARD
 
 // ══════════════════════════════════════════════════════════════
 // Section 2: Includes
