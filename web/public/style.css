@@ -60,6 +60,20 @@
   }
 }
 
+/* Add to your style.css */
+.pseudocode {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+@media (max-width: 768px) {
+  .pseudocode {
+    font-size: 0.85rem;
+  }
+}
+
 
 body[data-theme="retro90s"] {
   --bg: #120d2a;
