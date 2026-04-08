@@ -80,7 +80,7 @@ const HEATMAP_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const POLL_MS = 10000;
 const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
-const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
+const WEATHER_BRIEFING_TTL_MS = 60 * 60 * 1000; // 1-hour cadence for AI weather prediction
 const DADABASE_TTL_MS = 15 * 60 * 1000;
 const DURATION_MACROS = {
   ML_WHOLE: (bpm) => 240000 / bpm,
@@ -160,9 +160,6 @@ const THEME_META = {
 const DEFAULT_THEME = "obsidian";
 const DEFAULT_MAP_LAYERS = {
   radar: true,
-  night: false,
-  epa: false,
-  crime: false,
 };
 const VIEW_META = {
   dashboard: {
@@ -269,8 +266,6 @@ let mapLayerPrefs = loadMapLayerPrefs();
 let activeView = loadViewPref();
 let mapLayers = {
   radar: null,
-  night: null,
-  epa: null,
 };
 let rainViewerState = {
   fetchedAt: 0,
@@ -316,29 +311,11 @@ function escapeHtml(value) {
 }
 
 function loadMapLayerPrefs() {
-  try {
-    const raw = localStorage.getItem(MAP_PREF_KEY);
-    if (!raw) return { ...DEFAULT_MAP_LAYERS };
-    const parsed = JSON.parse(raw);
-    return {
-      radar: Boolean(parsed.radar ?? DEFAULT_MAP_LAYERS.radar),
-      night: false,
-      epa: false,
-      crime: false,
-    };
-  } catch (_) {
-    return { ...DEFAULT_MAP_LAYERS };
-  }
+  return { radar: true };
 }
 
 function saveMapLayerPrefs() {
-  try {
-    localStorage.setItem(MAP_PREF_KEY, JSON.stringify({
-      radar: Boolean(mapLayerPrefs.radar),
-      night: Boolean(mapLayerPrefs.night),
-      epa: Boolean(mapLayerPrefs.epa),
-    }));
-  } catch (_) {}
+  // radar is always-on; no user preferences to persist
 }
 
 function loadViewPref() {
@@ -2135,25 +2112,17 @@ function weatherMapLinks(d) {
   };
 }
 
-function setMapLayerStatus(text) {
-  const el = $("map-layer-status");
-  if (el) el.textContent = text;
+function setMapLayerStatus(_text) {
+  // no-op: layer status element removed from UI
 }
 
 function renderMapLayerButtons() {
-  document.querySelectorAll(".map-layer-chip").forEach((button) => {
-    const key = button.dataset.layer;
-    const active = Boolean(mapLayerPrefs[key]);
-    button.classList.toggle("is-active", active);
-    const unavailable = key === "crime";
-    button.classList.toggle("is-unavailable", unavailable && !active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  });
+  // no-op: layer toggle buttons removed from UI (radar is always-on)
 }
 
 async function fetchRainViewerTileUrl() {
   const now = Date.now();
-  if (rainViewerState.tileUrl && now - rainViewerState.fetchedAt < 8 * 60 * 1000) {
+  if (rainViewerState.tileUrl && now - rainViewerState.fetchedAt < 5 * 60 * 1000) {
     return rainViewerState.tileUrl;
   }
 
@@ -2192,76 +2161,6 @@ async function ensureRadarLayer() {
   return mapLayers.radar;
 }
 
-function ensureNightLightsLayer() {
-  if (mapLayers.night) return mapLayers.night;
-  if (!window.L) return null;
-
-  mapLayers.night = window.L.tileLayer.wms("https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi", {
-    layers: "VIIRS_Black_Marble",
-    format: "image/png",
-    transparent: true,
-    opacity: 0.48,
-    attribution: "Night lights © NASA GIBS",
-    maxZoom: 12,
-  });
-  return mapLayers.night;
-}
-
-function epaMarkerTone(props) {
-  const serious = `${props.FAC_CURR_SNC_FLG || ""}`.toUpperCase() === "Y";
-  const count = num(props.CURRENT_VIO_CNT, 0);
-  if (serious || count >= 2) return { color: "#e74c3c", radius: 7 };
-  if (count >= 1) return { color: "#f1c40f", radius: 6 };
-  return { color: "#00f2ff", radius: 5 };
-}
-
-function ensureEpaLayer() {
-  if (mapLayers.epa) return mapLayers.epa;
-  if (!(window.L && window.L.esri)) return null;
-
-  mapLayers.epa = window.L.esri.featureLayer({
-    url: "https://echogeo.epa.gov/arcgis/rest/services/ECHO/Facilities/MapServer/0",
-    where: "CURRENT_VIO_CNT > 0 OR FAC_CURR_SNC_FLG = 'Y'",
-    fields: [
-      "FAC_NAME",
-      "FAC_CITY",
-      "FAC_STATE",
-      "FAC_CURR_SNC_FLG",
-      "CURRENT_VIO_CNT",
-      "FAC_3YR_COMPLIANCE_STATUS",
-      "FAC_PROGRAMS_IN_SNC",
-    ],
-    pointToLayer(geojson, latlng) {
-      const tone = epaMarkerTone(geojson.properties || {});
-      return window.L.circleMarker(latlng, {
-        radius: tone.radius,
-        color: "rgba(9, 12, 16, 0.92)",
-        weight: 1.6,
-        fillColor: tone.color,
-        fillOpacity: 0.88,
-        className: "epa-marker",
-      });
-    },
-  });
-
-  mapLayers.epa.bindPopup((layer) => {
-    const props = layer.feature?.properties || {};
-    const count = Math.round(num(props.CURRENT_VIO_CNT, 0));
-    const snc = `${props.FAC_CURR_SNC_FLG || ""}`.toUpperCase() === "Y" ? "Yes" : "No";
-    const programs = Math.round(num(props.FAC_PROGRAMS_IN_SNC, 0));
-    return `
-      <strong>${escapeHtml(props.FAC_NAME || "EPA facility")}</strong><br>
-      ${escapeHtml(props.FAC_CITY || "")}${props.FAC_STATE ? `, ${escapeHtml(props.FAC_STATE)}` : ""}<br>
-      Current violations: ${count}<br>
-      Significant noncompliance: ${snc}<br>
-      Programs in SNC: ${programs}<br>
-      3-year status: ${escapeHtml(props.FAC_3YR_COMPLIANCE_STATUS || "Unknown")}
-    `;
-  });
-
-  return mapLayers.epa;
-}
-
 function ensureWeatherMap() {
   if (weatherMap || !window.L) return weatherMap;
   const el = $("weather-map");
@@ -2292,45 +2191,9 @@ function ensureWeatherMap() {
 
 async function syncMapLayers() {
   if (!weatherMap) return;
-
-  const active = [];
-
-  if (mapLayerPrefs.radar) {
-    const radarLayer = await ensureRadarLayer();
-    if (radarLayer && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
-    if (radarLayer) active.push("Radar");
-  } else if (mapLayers.radar && weatherMap.hasLayer(mapLayers.radar)) {
-    weatherMap.removeLayer(mapLayers.radar);
-  }
-
-  if (mapLayerPrefs.night) {
-    const nightLayer = ensureNightLightsLayer();
-    if (nightLayer && !weatherMap.hasLayer(nightLayer)) nightLayer.addTo(weatherMap);
-    if (nightLayer) active.push("Night Lights");
-  } else if (mapLayers.night && weatherMap.hasLayer(mapLayers.night)) {
-    weatherMap.removeLayer(mapLayers.night);
-  }
-
-  if (mapLayerPrefs.epa) {
-    const epaLayer = ensureEpaLayer();
-    if (epaLayer && !weatherMap.hasLayer(epaLayer)) epaLayer.addTo(weatherMap);
-    if (epaLayer) active.push("EPA Watch");
-  } else if (mapLayers.epa && weatherMap.hasLayer(mapLayers.epa)) {
-    weatherMap.removeLayer(mapLayers.epa);
-  }
-
-  let note = active.length
-    ? `${active.join(", ")} weather layer active.`
-    : "Base weather map active.";
-
-  if (mapLayerPrefs.crime) {
-    mapLayerPrefs.crime = false;
-    saveMapLayerPrefs();
-    note = `${note} Experimental overlays are disabled in the simplified weather view.`;
-  }
-
-  renderMapLayerButtons();
-  setMapLayerStatus(note);
+  // Radar (RainViewer) is the only weather layer — always active
+  const radarLayer = await ensureRadarLayer();
+  if (radarLayer && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
 }
 
 // Default map location: Cape Canaveral Space Force Station, FL
@@ -6993,6 +6856,12 @@ setInterval(fetchSniffHistory, POLL_MS * 4);
 setInterval(tickAge, 1000);
 setInterval(() => ensureDadabase(false), DADABASE_TTL_MS);
 setInterval(() => renderDadabase(), 60000);
+// Hourly AI weather prediction refresh — force-expire cache so briefing
+// regenerates even when device data is not flowing.
+setInterval(() => {
+  weatherBriefingState.key = "";
+  if (lastData) ensureWeatherBriefing(lastData);
+}, WEATHER_BRIEFING_TTL_MS);
 
 $("melody-play-btn")?.addEventListener("click", () => {
   playMelodyFromSnapshot();
@@ -7077,21 +6946,6 @@ $("melody-library-play-device")?.addEventListener("click", async () => {
   renderMelodyLibrary(lastData);
 });
 
-document.querySelectorAll(".map-layer-chip").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const key = button.dataset.layer;
-    if (!key) return;
-    mapLayerPrefs[key] = !mapLayerPrefs[key];
-    if (key === "crime") {
-      renderMapLayerButtons();
-      setMapLayerStatus("Crime toggle acknowledged, but no free anonymous nationwide U.S. crime map feed is wired into this dashboard yet.");
-      return;
-    }
-    saveMapLayerPrefs();
-    renderMapLayerButtons();
-    await syncMapLayers();
-  });
-});
 
 (function initWeatherMapFullscreen() {
   const btn = $("map-fullscreen-btn");
