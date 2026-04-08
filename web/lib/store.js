@@ -50,10 +50,13 @@ const KEY_COMMAND_HISTORY = "sniffmaster:command_history";
 const KEY_COMMAND_SEQ = "sniffmaster:command_seq";
 const KEY_DAD_JOKE = "sniffmaster:dad_joke";
 const KEY_DAD_JOKE_HISTORY = "sniffmaster:dad_joke_history";
+const KEY_BLE_OCCUPANCY = "sniffmaster:ble_occupancy";
+const KEY_BLE_OCCUPANCY_HISTORY = "sniffmaster:ble_occupancy_history";
 const MAX_HISTORY = 1008; // 7 days at 10-minute intervals
 const MAX_SNIFF_HISTORY = 96;
 const MAX_COMMAND_HISTORY = 48;
 const MAX_DAD_JOKE_HISTORY = 60;
+const MAX_BLE_OCCUPANCY_HISTORY = 288; // 24 hours at 5-minute intervals
 
 /**
  * Store a new sensor snapshot.
@@ -273,4 +276,53 @@ export async function getStorageHealth() {
       error: err?.message || String(err),
     };
   }
+}
+
+/**
+ * Store a BLE occupancy snapshot for the history ring buffer.
+ * Called from the /api/update handler whenever the snapshot includes BLE data.
+ */
+export async function putBleOccupancyEntry(data) {
+  const redis = getRedis();
+  const entry = {
+    deviceCount: data.bleDeviceCount ?? 0,
+    occupancyIndex: data.bleOccupancyIndex ?? 0,
+    avgRssi: data.bleAvgRssi ?? -100,
+    strongestRssi: data.bleStrongestRssi ?? -100,
+    seenRecently: Boolean(data.bleSeenRecently),
+    enabled: Boolean(data.blePresenceEnabled),
+    receivedAt: data.receivedAt || Date.now(),
+  };
+  const json = JSON.stringify(entry);
+
+  await Promise.all([
+    redis.set(KEY_BLE_OCCUPANCY, json),
+    redis.lpush(KEY_BLE_OCCUPANCY_HISTORY, json),
+  ]);
+
+  await redis.ltrim(KEY_BLE_OCCUPANCY_HISTORY, 0, MAX_BLE_OCCUPANCY_HISTORY - 1);
+  return entry;
+}
+
+/**
+ * Get the most recent BLE occupancy snapshot.
+ */
+export async function getLatestBleOccupancy() {
+  const redis = getRedis();
+  const raw = await redis.get(KEY_BLE_OCCUPANCY);
+  if (!raw) return null;
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+/**
+ * Get recent BLE occupancy history (newest first).
+ * @param {number} count — max entries to return (default 48)
+ */
+export async function getBleOccupancyHistory(count = 48) {
+  const redis = getRedis();
+  const n = Math.min(count, MAX_BLE_OCCUPANCY_HISTORY);
+  const items = await redis.lrange(KEY_BLE_OCCUPANCY_HISTORY, 0, n - 1);
+  return items.map((item) =>
+    typeof item === "string" ? JSON.parse(item) : item
+  );
 }
