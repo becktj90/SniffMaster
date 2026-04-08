@@ -5270,7 +5270,6 @@ body *::after {
   font-family: "JetBrains Mono", monospace;
 }
 
-
 .arcade-shell::before {
   content: "";
   position: absolute;
