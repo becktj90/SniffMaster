@@ -117,7 +117,7 @@
           <span class="badge subtle" id="hero-primary">Clean Air</span>
         </div>
         <h2 id="hero-summary">Waiting for live sensor data...</h2>
-        <p id="hero-subtitle">Real-time odor intelligence from your BME688 sensor stack will appear here.</p>
+        <p id="hero-subtitle">Your space, monitored continuously.</p>
         <div class="hero-tags">
           <span class="tag" id="hero-tier">Tier --</span>
           <span class="tag" id="hero-trends">IAQ -- | VOC --</span>
@@ -254,14 +254,17 @@
           <span class="metric-value" id="v-dvoc">--</span>
         </div>
       </div>
-      <div class="metric-legend">
-        <span><strong>IAQ:</strong> indoor air burden, lower is better</span>
-        <span><strong>VOC:</strong> airborne organic-gas activity</span>
-        <span><strong>CO2eq:</strong> stuffiness / ventilation proxy</span>
-        <span><strong>Outdoor AQI:</strong> outside-air quality</span>
-        <span><strong>Gas R:</strong> sensor resistance, often higher when cleaner</span>
-        <span><strong>dVOC:</strong> recent change in gas activity</span>
-      </div>
+      <details class="metric-legend">
+        <summary>Metric glossary</summary>
+        <div class="metric-legend-items">
+          <span><strong>IAQ:</strong> indoor air burden, lower is better</span>
+          <span><strong>VOC:</strong> airborne organic-gas activity</span>
+          <span><strong>CO2eq:</strong> stuffiness / ventilation proxy</span>
+          <span><strong>Outdoor AQI:</strong> outside-air quality</span>
+          <span><strong>Gas R:</strong> sensor resistance, often higher when cleaner</span>
+          <span><strong>dVOC:</strong> recent change in gas activity</span>
+        </div>
+      </details>
     </section>
 
     <section class="card status-strip" id="card-status" data-view="dashboard environment system">
@@ -275,7 +278,7 @@
           <span class="status-value" id="status-sensor">Offline</span>
         </div>
         <div class="status-item">
-          <span class="status-label">BSEC State</span>
+          <span class="status-label">Sensor State</span>
           <span class="status-value" id="status-bsec">Sensor warmup</span>
         </div>
         <div class="status-item">
@@ -283,7 +286,7 @@
           <span class="status-value" id="status-warmup">Waiting for the first clean sensor packets.</span>
         </div>
         <div class="status-item">
-          <span class="status-label">Wi-Fi Relay</span>
+          <span class="status-label">Connection</span>
           <span class="status-value" id="status-link">Awaiting first sync</span>
         </div>
         <div class="status-item">
