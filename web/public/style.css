@@ -2265,6 +2265,76 @@ body[data-theme="retro90s"] .footer-bar {
   color: var(--text);
 }
 
+/* ── Cause Engine Card ──────────────────────────────── */
+.cause-primary-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+@media (max-width: 600px) {
+  .cause-primary-row { grid-template-columns: 1fr; }
+}
+.cause-kicker {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.cause-driver-block,
+.cause-action-block {
+  background: var(--panel-raised, rgba(255,255,255,0.03));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.cause-driver-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.cause-driver-note {
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.cause-action-value {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--accent);
+  line-height: 1.5;
+}
+.cause-factors-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .cause-factors-grid { grid-template-columns: 1fr 1fr; }
+}
+.cause-factor {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--panel-raised, rgba(255,255,255,0.03));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.cause-factor-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.cause-factor-value {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .card-summary {
   margin-bottom: 12px;
 }
