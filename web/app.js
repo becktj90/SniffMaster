@@ -3624,7 +3624,11 @@ function renderOccupancyCard(d) {
       const bars = recent.map((h) => {
         const pct = Math.round((num(h.occupancyIndex) / maxIdx) * 100);
         const ts  = h.receivedAt ? fmtStamp(h.receivedAt) : "";
-        const tip = `${num(h.occupancyIndex)}% · ${num(h.deviceCount)} device${num(h.deviceCount) !== 1 ? "s" : ""}${ts ? " · " + ts : ""}`;
+        const count = num(h.deviceCount);
+        const deviceLabel = `${count} device${count !== 1 ? "s" : ""}`;
+        const tip = ts
+          ? `${num(h.occupancyIndex)}% · ${deviceLabel} · ${ts}`
+          : `${num(h.occupancyIndex)}% · ${deviceLabel}`;
         return `<div class="occupancy-bar-col" style="height:${Math.max(4, pct)}%" title="${tip.replace(/"/g, "&quot;")}"></div>`;
       }).join("");
       chartShell.innerHTML = `<div class="occupancy-bar-chart">${bars}</div>`;
