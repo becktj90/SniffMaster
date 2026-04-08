@@ -2,12 +2,20 @@
  * GET /api/weather-briefing — returns a local forecast bundle plus
  * a concise weather insight. Uses Open-Meteo for forecast data and,
  * when OPENAI_API_KEY is configured, an OpenAI-generated local briefing.
+ * Falls back to Cape Canaveral Space Force Station coordinates when the
+ * device snapshot has no GPS fix.
  */
 
 import { getLatest } from "../lib/store.js";
 
 const OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast";
+const OPEN_METEO_AQ_BASE = "https://air-quality-api.open-meteo.com/v1/air-quality";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+
+// Default location: Cape Canaveral Space Force Station, FL
+const DEFAULT_LAT = 28.4889;
+const DEFAULT_LON = -80.5778;
+const DEFAULT_CITY = "Cape Canaveral, FL";
 
 function num(value, fallback = 0) {
   const parsed = Number(value);
@@ -18,6 +26,23 @@ function hasLocationFix(snapshot) {
   const lat = num(snapshot?.lat, NaN);
   const lon = num(snapshot?.lon, NaN);
   return Number.isFinite(lat) && Number.isFinite(lon) && (Math.abs(lat) > 0.0001 || Math.abs(lon) > 0.0001);
+}
+
+function getEffectiveLocation(snapshot) {
+  if (hasLocationFix(snapshot)) {
+    return {
+      lat: num(snapshot.lat),
+      lon: num(snapshot.lon),
+      city: snapshot.city || "",
+      usingDefault: false,
+    };
+  }
+  return {
+    lat: DEFAULT_LAT,
+    lon: DEFAULT_LON,
+    city: DEFAULT_CITY,
+    usingDefault: true,
+  };
 }
 
 function weatherCodeLabel(code) {
@@ -44,6 +69,24 @@ function dayLabel(isoDate) {
   }).format(new Date(`${isoDate}T12:00:00Z`));
 }
 
+function windDirLabel(deg) {
+  const d = num(deg, NaN);
+  if (!Number.isFinite(d)) return "";
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return dirs[Math.round((d % 360) / 45) % 8] || "";
+}
+
+function aqiLevel(aqi) {
+  const v = num(aqi, NaN);
+  if (!Number.isFinite(v) || v <= 0) return "";
+  if (v <= 50) return "Good";
+  if (v <= 100) return "Moderate";
+  if (v <= 150) return "Sensitive Groups";
+  if (v <= 200) return "Unhealthy";
+  if (v <= 300) return "Very Unhealthy";
+  return "Hazardous";
+}
+
 function conditionSummary(forecast) {
   if (!forecast.length) return "Forecast guidance pending";
   const warmest = [...forecast].sort((a, b) => num(b.highF) - num(a.highF))[0];
@@ -63,19 +106,19 @@ function ventilationWindow(snapshot, forecast) {
   return `${best.label} currently looks like the easiest ventilation window, with ${Math.round(num(best.precipChance, 0))}% rain risk and winds near ${Math.round(num(best.windMph, 0))} mph.`;
 }
 
-function fallbackBriefing(snapshot, forecast) {
-  const city = snapshot?.city || "This area";
+function fallbackBriefing(snapshot, forecast, outdoorAqi) {
+  const city = snapshot?.city || DEFAULT_CITY;
   const current = snapshot?.weatherCondition || "conditions in flux";
-  const outdoor = num(snapshot?.outdoorAqi, NaN);
+  const outdoor = num(outdoorAqi, NaN);
   const outdoorLine = Number.isFinite(outdoor) && outdoor > 0
-    ? `Outdoor AQI is ${Math.round(outdoor)}${snapshot?.outdoorLevel ? ` (${snapshot.outdoorLevel})` : ""}.`
-    : "Outdoor AQI is still syncing from the device feed.";
+    ? `Outdoor AQI is ${Math.round(outdoor)} (${aqiLevel(outdoor)}).`
+    : "Outdoor AQI is still syncing.";
   return `${city} is trending ${current.toLowerCase()} right now. ${conditionSummary(forecast)} ${ventilationWindow(snapshot, forecast)} ${outdoorLine}`.trim();
 }
 
-function sourceCaption(mode, hasForecast) {
-  const parts = ["device weather snapshot"];
-  if (hasForecast) parts.push("Open-Meteo forecast");
+function sourceCaption(mode, hasForecast, usingDefault) {
+  const parts = usingDefault ? ["Cape Canaveral default location"] : ["device weather snapshot"];
+  if (hasForecast) parts.push("Open-Meteo forecast", "Open-Meteo air quality");
   parts.push("OpenStreetMap map", "RainViewer radar");
   parts.push(mode === "openai" ? "OpenAI local forecast brief" : "deterministic local forecast logic");
   return `Source: ${parts.join(" · ")}`;
@@ -97,12 +140,10 @@ function extractOutputText(responseJson) {
   return parts.join("\n").trim();
 }
 
-async function fetchForecast(snapshot) {
-  if (!hasLocationFix(snapshot)) return [];
-
+async function fetchForecastAndCurrent(loc) {
   const params = new URLSearchParams({
-    latitude: num(snapshot.lat).toFixed(4),
-    longitude: num(snapshot.lon).toFixed(4),
+    latitude: loc.lat.toFixed(4),
+    longitude: loc.lon.toFixed(4),
     timezone: "auto",
     forecast_days: "3",
     temperature_unit: "fahrenheit",
@@ -114,21 +155,51 @@ async function fetchForecast(snapshot) {
   const res = await fetch(`${OPEN_METEO_BASE}?${params.toString()}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`open-meteo ${res.status}`);
   const json = await res.json();
-  const daily = json?.daily;
-  if (!daily?.time?.length) return [];
 
-  return daily.time.map((date, index) => ({
-    date,
-    label: dayLabel(date),
-    condition: weatherCodeLabel(daily.weather_code?.[index]),
-    highF: num(daily.temperature_2m_max?.[index], NaN),
-    lowF: num(daily.temperature_2m_min?.[index], NaN),
-    precipChance: num(daily.precipitation_probability_max?.[index], 0),
-    windMph: num(daily.wind_speed_10m_max?.[index], 0),
-  })).slice(0, 3);
+  const daily = json?.daily;
+  const forecast = daily?.time?.length
+    ? daily.time.map((date, index) => ({
+        date,
+        label: dayLabel(date),
+        condition: weatherCodeLabel(daily.weather_code?.[index]),
+        highF: num(daily.temperature_2m_max?.[index], NaN),
+        lowF: num(daily.temperature_2m_min?.[index], NaN),
+        precipChance: num(daily.precipitation_probability_max?.[index], 0),
+        windMph: num(daily.wind_speed_10m_max?.[index], 0),
+      })).slice(0, 3)
+    : [];
+
+  const cur = json?.current;
+  const current = cur ? {
+    condition: weatherCodeLabel(cur.weather_code),
+    tempF: num(cur.temperature_2m, NaN),
+    feelsLikeF: num(cur.apparent_temperature, NaN),
+    humidity: num(cur.relative_humidity_2m, NaN),
+    windSpeed: num(cur.wind_speed_10m, NaN) > 0 ? `${Math.round(num(cur.wind_speed_10m))} mph` : "",
+    windDir: windDirLabel(cur.wind_direction_10m),
+    pressHpa: num(cur.pressure_msl, NaN),
+    isDay: Boolean(cur.is_day),
+  } : null;
+
+  return { forecast, current };
 }
 
-async function generateOpenAiBrief(snapshot, forecast, fallback) {
+async function fetchAirQuality(loc) {
+  const params = new URLSearchParams({
+    latitude: loc.lat.toFixed(4),
+    longitude: loc.lon.toFixed(4),
+    current: "us_aqi",
+  });
+
+  const res = await fetch(`${OPEN_METEO_AQ_BASE}?${params.toString()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`open-meteo-aq ${res.status}`);
+  const json = await res.json();
+  const aqi = num(json?.current?.us_aqi, NaN);
+  if (!Number.isFinite(aqi) || aqi < 0) return null;
+  return { aqi: Math.round(aqi), level: aqiLevel(aqi) };
+}
+
+async function generateOpenAiBrief(snapshot, loc, forecast, outdoorAqi, fallback) {
   const apiKey = `${process.env.OPENAI_API_KEY || ""}`.trim();
   if (!apiKey || !forecast.length) return null;
 
@@ -138,8 +209,8 @@ async function generateOpenAiBrief(snapshot, forecast, fallback) {
     "Keep it to 2 or 3 sentences, under 90 words.",
     "Focus on local comfort, ventilation timing, rain risk, and anything notable over the next 3 days.",
     "Do not mention AI, models, or probabilities unless they are useful. Do not be chatty.",
-    `Location: ${snapshot.city || "Local area"}.`,
-    `Current outdoor context: ${snapshot.weatherCondition || "Conditions syncing"}, ${Math.round(num(snapshot.tempF, NaN))}F, humidity ${Math.round(num(snapshot.humidity, NaN))}%, AQI ${Number.isFinite(num(snapshot.outdoorAqi, NaN)) ? Math.round(num(snapshot.outdoorAqi)) : "unknown"}.`,
+    `Location: ${loc.city || snapshot.city || "Local area"}.`,
+    `Current outdoor context: ${snapshot.weatherCondition || "Conditions syncing"}, ${Math.round(num(snapshot.tempF, NaN))}F, humidity ${Math.round(num(snapshot.humidity, NaN))}%, AQI ${Number.isFinite(num(outdoorAqi, NaN)) ? Math.round(num(outdoorAqi)) : "unknown"}.`,
     `Forecast: ${forecast.map((day) => `${day.label}: ${day.condition}, high ${Math.round(num(day.highF, 0))}F, low ${Math.round(num(day.lowF, 0))}F, precip ${Math.round(num(day.precipChance, 0))}%, wind ${Math.round(num(day.windMph, 0))} mph`).join(" | ")}`,
     `If the forecast is unremarkable, say so cleanly. Baseline fallback: ${fallback}`,
   ].join("\n");
@@ -180,19 +251,36 @@ export default async function handler(req, res) {
     const snapshot = await getLatest();
     if (!snapshot) return res.status(204).end();
 
+    const loc = getEffectiveLocation(snapshot);
+
     let forecast = [];
+    let currentConditions = null;
     try {
-      forecast = await fetchForecast(snapshot);
+      const result = await fetchForecastAndCurrent(loc);
+      forecast = result.forecast;
+      currentConditions = result.current;
     } catch (err) {
       console.error("weather-briefing forecast error:", err);
     }
 
-    const fallback = fallbackBriefing(snapshot, forecast);
+    let outdoorAqi = num(snapshot.outdoorAqi, NaN);
+    let outdoorLevel = snapshot.outdoorLevel || "";
+    try {
+      const aq = await fetchAirQuality(loc);
+      if (aq) {
+        outdoorAqi = aq.aqi;
+        outdoorLevel = aq.level;
+      }
+    } catch (err) {
+      console.error("weather-briefing AQ error:", err);
+    }
+
+    const fallback = fallbackBriefing(snapshot, forecast, outdoorAqi);
     let briefing = fallback;
     let mode = "deterministic";
 
     try {
-      const aiBrief = await generateOpenAiBrief(snapshot, forecast, fallback);
+      const aiBrief = await generateOpenAiBrief(snapshot, loc, forecast, outdoorAqi, fallback);
       if (aiBrief) {
         briefing = aiBrief;
         mode = "openai";
@@ -202,16 +290,20 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({
-      city: snapshot.city || "",
-      lat: hasLocationFix(snapshot) ? num(snapshot.lat) : null,
-      lon: hasLocationFix(snapshot) ? num(snapshot.lon) : null,
+      city: loc.city || snapshot.city || "",
+      lat: loc.lat,
+      lon: loc.lon,
+      usingDefault: loc.usingDefault,
       briefing,
       mode,
       summary: conditionSummary(forecast),
       forecast,
+      current: currentConditions,
+      outdoorAqi: Number.isFinite(outdoorAqi) && outdoorAqi > 0 ? outdoorAqi : null,
+      outdoorLevel: outdoorLevel || null,
       receivedAt: snapshot.receivedAt || null,
       generatedAt: Date.now(),
-      sourceCaption: sourceCaption(mode, forecast.length > 0),
+      sourceCaption: sourceCaption(mode, forecast.length > 0, loc.usingDefault),
     });
   } catch (err) {
     console.error("weather-briefing error:", err);
