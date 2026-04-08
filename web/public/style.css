@@ -5524,3 +5524,54 @@ body *::after {
   mix-blend-mode: screen;
   opacity: 0.35;
 }
+
+/* ── BLE Occupancy Card ─────────────────────────────────────────────────── */
+
+.occupancy-bar-shell {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(171, 181, 193, 0.12);
+  border-radius: 14px;
+  min-height: 80px;
+}
+
+.occupancy-bar-empty {
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 16px 0;
+}
+
+.occupancy-bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 64px;
+}
+
+.occupancy-bar-col {
+  flex: 1 1 0;
+  min-width: 4px;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, #3f6eff 0%, #41236f 100%);
+  transition: height 0.3s ease;
+  cursor: default;
+  position: relative;
+}
+
+.occupancy-bar-col[title] {
+  cursor: help;
+}
+
+.occupancy-briefing {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(63, 110, 255, 0.14);
+  background:
+    radial-gradient(circle at top right, rgba(63, 110, 255, 0.07), transparent 30%),
+    rgba(255, 255, 255, 0.025);
+  color: var(--muted-strong);
+  line-height: 1.58;
+}

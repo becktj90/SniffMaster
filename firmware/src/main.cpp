@@ -67,6 +67,9 @@
   #include "web_dashboard_config.h"
 #endif
 
+// ── BLE Occupancy scanner ────────────────────────────────────────────────────
+#include "sniffmaster_ble_presence.h"
+
 // ── Optional NeoPixel ────────────────────────────────────────────────────────
 // #define HAVE_RGB
 #ifdef HAVE_RGB
@@ -937,7 +940,8 @@ static void maybeRecoverWebRelay(unsigned long now) {
 }
 
 static void quietBleForCloud() {
-  // BLE is disabled in this build; no radio quiet period is required.
+  // Pause the BLE scanner during cloud TLS calls to avoid radio contention.
+  blePresencePauseFor(8000UL);  // 8 s — covers typical TLS handshake + HTTP round-trip
 }
 
 static int wifiIndexForSsid(const String& ssid) {
@@ -4006,6 +4010,20 @@ bool sendToWebDashboard() {
   }
 
   doc["uptime"] = (unsigned long)(millis() / 1000UL);
+
+  // BLE occupancy snapshot
+  {
+    BlePresenceSnapshot bsnap = blePresenceGetSnapshot();
+    doc["blePresenceEnabled"]  = bsnap.enabled;
+    doc["blePresenceState"]    = blePresenceStateLabel(bsnap.state);
+    doc["blePresenceConf"]     = (int)bsnap.confidence;
+    doc["bleDeviceCount"]      = bsnap.deviceCount;
+    doc["bleOccupancyIndex"]   = bsnap.occupancyIndex;
+    doc["bleAvgRssi"]          = (bsnap.deviceCount > 0)
+                                   ? (int)bsnap.avgRssi : -100;
+    doc["bleStrongestRssi"]    = bsnap.lastRssi;
+    doc["bleSeenRecently"]     = bsnap.seenRecently;
+  }
   if (outdoorAqi.valid) {
     doc["outdoorAqi"] = outdoorAqi.aqi;
     doc["outdoorLevel"] = outdoorAqi.level;
@@ -4666,9 +4684,19 @@ void renderNetworkPage() {
     }
     display.print(buf);
 
-    // Line 5: BLE disabled
+    // Line 5: BLE occupancy
     display.setCursor(0, 48);
-    display.print(F("BLE disabled"));
+    {
+      BlePresenceSnapshot bsnap = blePresenceGetSnapshot();
+      if (bsnap.enabled && bsnap.deviceCount > 0) {
+        char bleBuf[24];
+        snprintf(bleBuf, sizeof(bleBuf), "BLE:%d dev occ=%d%%",
+                 bsnap.deviceCount, bsnap.occupancyIndex);
+        display.print(bleBuf);
+      } else {
+        display.print(F("BLE occ: idle"));
+      }
+    }
 
     // Line 6: Heap + uptime
     display.setCursor(0, 57);
@@ -4984,13 +5012,29 @@ void renderDadJokePage() {
 
 // ── Presence Probe ───────────────────────────────────────────────────────────
 void runPresenceProbe() {
+  BlePresenceSnapshot bsnap = blePresenceGetSnapshot();
   display.clearDisplay();
-  drawHeader("-- BLE disabled --");
+  drawHeader("-- BLE Occupancy --");
   display.setTextSize(1);
   display.setCursor(0, 22);
-  display.print(F("BLE presence removed"));
-  display.setCursor(0, 32);
-  display.print(F("from this build."));
+  if (bsnap.enabled) {
+    char ln1[24], ln2[24];
+    snprintf(ln1, sizeof(ln1), "Devices: %d", bsnap.deviceCount);
+    snprintf(ln2, sizeof(ln2), "Occ index: %d%%", bsnap.occupancyIndex);
+    display.print(ln1);
+    display.setCursor(0, 32);
+    display.print(ln2);
+    if (bsnap.deviceCount > 0) {
+      char ln3[24];
+      snprintf(ln3, sizeof(ln3), "Avg RSSI: %d dBm", (int)bsnap.avgRssi);
+      display.setCursor(0, 42);
+      display.print(ln3);
+    }
+  } else {
+    display.print(F("BLE scanner init"));
+    display.setCursor(0, 32);
+    display.print(F("failed or no lib."));
+  }
   display.display();
   delay(1200);
   displayPage = 0;
@@ -5928,6 +5972,14 @@ void setup() {
 #else
   Serial.println(F("Heuristic scoring active"));
 #endif
+
+  // Initialise BLE occupancy scanner (passive scan, no target)
+  if (blePresenceBegin()) {
+    Serial.println(F("[BLE] Occupancy scanner ready"));
+  } else {
+    Serial.println(F("[BLE] Scanner unavailable — occupancy will show 0"));
+  }
+
   Serial.println(F("SniffMaster Pro v4.0 ready"));
   delay(1000);
 
@@ -5963,6 +6015,7 @@ void loop() {
   handleButton();
   bool bsecRan = envSensor.run();
   melTick();
+  blePresenceTick();  // BLE passive scan — updates occupancy index
 
   // Wi-Fi maintenance was previously called every loop and can starve the
   // OLED/UI path when cloud work is active. Duty-cycle it so the loop stays
