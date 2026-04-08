@@ -4379,17 +4379,17 @@ function drawHeroScope(current, history) {
   }
 
   ctx.textAlign = "left";
-  if (showVoc) {
-    ctx.fillStyle = "rgba(73, 232, 255, 0.74)";
-    ctx.fillText("VOC", padL + 6, padT + 14);
-  }
-  if (showClean) {
-    ctx.fillStyle = "rgba(112, 248, 193, 0.74)";
-    ctx.fillText("CLEAN", showVoc ? padL + 42 : padL + 6, padT + 14);
-  }
-  if (showDvoc) {
-    ctx.fillStyle = "rgba(255, 208, 92, 0.78)";
-    ctx.fillText("dVOC", showVoc || showClean ? padL + 94 : padL + 6, padT + 14);
+  const legendLabels = [
+    showVoc   && { text: "VOC",   color: "rgba(73, 232, 255, 0.74)" },
+    showClean && { text: "CLEAN", color: "rgba(112, 248, 193, 0.74)" },
+    showDvoc  && { text: "dVOC",  color: "rgba(255, 208, 92, 0.78)" },
+  ].filter(Boolean);
+  ctx.font = "11px JetBrains Mono, monospace";
+  let legendX = padL + 6;
+  for (const lbl of legendLabels) {
+    ctx.fillStyle = lbl.color;
+    ctx.fillText(lbl.text, legendX, padT + 14);
+    legendX += ctx.measureText(lbl.text).width + 10;
   }
 }
 
