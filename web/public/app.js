@@ -2478,6 +2478,10 @@ async function syncMapLayers() {
     setMapLayerStatus(note);
 }
 
+// Default map location: Cape Canaveral Space Force Station, FL
+const CAPE_MAP_LAT = 28.2062;
+const CAPE_MAP_LON = -80.6874;
+
 function syncWeatherMapPosition(d) {
     const map = ensureWeatherMap();
     const fallback = $("map-fallback");
@@ -2487,19 +2491,19 @@ function syncWeatherMapPosition(d) {
         return;
     }
 
-    if (!hasLocationFix(d)) {
-        if (fallback) fallback.style.display = "flex";
-        setMapLayerStatus("Map will appear once the device posts a location fix.");
-        return;
-    }
-
+    // Always show the map — use device GPS when available, otherwise default to
+    // Cape Canaveral so live weather layers are visible without a GPS fix.
     if (fallback) fallback.style.display = "none";
-    const lat = num(d.lat);
-    const lon = num(d.lon);
+
+    const lat = hasLocationFix(d) ? num(d.lat) : CAPE_MAP_LAT;
+    const lon = hasLocationFix(d) ? num(d.lon) : CAPE_MAP_LON;
+    const label = hasLocationFix(d)
+        ? (d.city || "SniffMaster location")
+        : "Cape Canaveral, FL (default)";
     const target = [lat, lon];
     if (weatherMarker) {
         weatherMarker.setLatLng(target);
-        weatherMarker.bindTooltip(`${escapeHtml(d.city || "SniffMaster location")}<br>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+        weatherMarker.bindTooltip(`${escapeHtml(label)}<br>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
     }
 
     const center = weatherMap.getCenter();
@@ -2528,12 +2532,12 @@ function weatherInsightText(d) {
     return `${d.city || "This location"} is reading ${temp.toFixed(0)}F with ${humidity.toFixed(0)}% humidity, so the room-side comfort read is ${dewComfort(dew)}. ${feelLine} ${outdoorLine} ${windowCall(d)}. ${pressureRead(num(d.pressHpa))}. ${heatLine}`.trim();
 }
 
-function weatherBriefingKey(d) {
-    const lat = Number.isFinite(num(d?.lat, NaN)) ? num(d.lat).toFixed(2) : "na";
-    const lon = Number.isFinite(num(d?.lon, NaN)) ? num(d.lon).toFixed(2) : "na";
-    const city = `${d?.city || ""}`.trim().toLowerCase();
+function weatherBriefingKey() {
+    // The weather API always uses the Cape Canaveral default — device GPS is not
+    // used server-side, so the key must not include lat/lon to avoid unnecessary
+    // re-fetches (and AI briefing loss) when the device GPS reading fluctuates.
     const bucket = Math.floor(Date.now() / WEATHER_BRIEFING_TTL_MS);
-    return `${lat}|${lon}|${city}|${bucket}`;
+    return `cape-canaveral|${bucket}`;
 }
 
 function defaultWeatherBriefing(d) {
@@ -2604,7 +2608,7 @@ function renderWeatherForecast(d, briefing) {
 async function ensureWeatherBriefing(d) {
     if (!d) return;
 
-    const key = weatherBriefingKey(d);
+    const key = weatherBriefingKey();
     const cached = weatherBriefingState.data &&
         weatherBriefingState.key === key &&
         Date.now() - weatherBriefingState.fetchedAt < WEATHER_BRIEFING_TTL_MS;
@@ -3780,9 +3784,7 @@ function renderWeatherIntel(d) {
     renderMoonVisual(d);
     renderSkyVisual(d);
     syncWeatherMapPosition(d);
-    if (hasLocationFix(d)) {
-        syncMapLayers();
-    }
+    syncMapLayers();
 }
 
 function gasPhaseAxis(d) {
@@ -4755,8 +4757,15 @@ async function fetchLatest() {
         render(data);
     } catch (err) {
         console.error("fetchLatest failed:", err);
-        $("conn-dot").className = "dot offline";
-        $("conn-label").textContent = "Feed unavailable";
+        // Keep the status amber (stale) instead of red (offline) when we already
+        // have data from a previous successful fetch — only go red on true no-data.
+        if (lastData?.receivedAt) {
+            $("conn-dot").className = "dot stale";
+            $("conn-label").textContent = `Feed unavailable · ${fmtAge(lastData.receivedAt)}`;
+        } else {
+            $("conn-dot").className = "dot offline";
+            $("conn-label").textContent = "Feed unavailable";
+        }
     }
 }
 
@@ -5022,7 +5031,10 @@ function setDashboardView(view) {
         }
         if (nextView === "environment" && weatherMap) {
             weatherMap.invalidateSize();
-            if (lastData) syncWeatherMapPosition(lastData);
+            if (lastData) {
+                syncWeatherMapPosition(lastData);
+                syncMapLayers();
+            }
         }
         if (nextView === "history" && historyData.length) {
             drawChart(historyData);
@@ -7470,6 +7482,32 @@ document.querySelectorAll(".map-layer-chip").forEach((button) => {
         await syncMapLayers();
     });
 });
+
+(function initWeatherMapFullscreen() {
+    const btn = $("map-fullscreen-btn");
+    const shell = document.querySelector(".map-shell");
+    if (!btn || !shell) return;
+
+    btn.addEventListener("click", () => {
+        if (!document.fullscreenElement) {
+            shell.requestFullscreen().catch(() => {});
+        } else {
+            document.exitFullscreen().catch(() => {});
+        }
+    });
+
+    document.addEventListener("fullscreenchange", () => {
+        const isFs = Boolean(document.fullscreenElement);
+        btn.textContent = isFs ? "✕" : "⛶";
+        btn.title = isFs ? "Exit fullscreen" : "Fullscreen map";
+        btn.setAttribute("aria-label", btn.title);
+        if (weatherMap) {
+            // Leaflet needs a brief delay to let the browser finish the fullscreen
+            // CSS transition before recalculating tile layout and viewport bounds.
+            setTimeout(() => weatherMap.invalidateSize(), 100);
+        }
+    });
+})();
 
 window.addEventListener("resize", () => {
     if (historyData.length) drawChart(historyData);
