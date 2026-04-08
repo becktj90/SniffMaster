@@ -248,6 +248,11 @@ let weatherBriefingState = {
   data: null,
   pending: null,
 };
+let occupancyBriefingState = {
+  fetchedAt: 0,
+  data: null,
+  pending: null,
+};
 let launchState = {
   fetchedAt: 0,
   data: null,
@@ -2540,6 +2545,31 @@ async function ensureLaunchData() {
   })();
 }
 
+const OCCUPANCY_BRIEFING_TTL_MS = 5 * 60 * 1000; // refresh every 5 minutes
+
+async function ensureOccupancyBriefing() {
+  const cached = occupancyBriefingState.data
+    && Date.now() - occupancyBriefingState.fetchedAt < OCCUPANCY_BRIEFING_TTL_MS;
+  if (cached) return;
+  if (occupancyBriefingState.pending) return;
+
+  occupancyBriefingState.pending = (async () => {
+    try {
+      const res = await fetch("/api/occupancy-briefing", { cache: "no-store" });
+      if (res.status === 204) return; // no BLE data yet
+      if (!res.ok) throw new Error(`occupancy-briefing ${res.status}`);
+      occupancyBriefingState.data = await res.json();
+      occupancyBriefingState.fetchedAt = Date.now();
+    } catch (_) {
+      // silent — render will fall back to snapshot fields
+    } finally {
+      occupancyBriefingState.pending = null;
+    }
+
+    if (lastData) renderOccupancyCard(lastData);
+  })();
+}
+
 function derivedEventTimestamp(d, uptimeKey) {
   const receivedAt = num(d.receivedAt, NaN);
   const uptime = num(d.uptime, NaN);
@@ -3528,6 +3558,107 @@ function renderOfficeCard(d) {
     ? `${vtrLabel} · Focus ${cfiPercent}%`
     : `Focus ${cfiPercent}% · ${vtrLabel}`;
   setHeaderPill("office-badge", officeBadgeText, officeTone);
+}
+
+function renderOccupancyCard(d) {
+  // Prefer data from the dedicated occupancy briefing API; fall back to snapshot fields
+  const briefingData = occupancyBriefingState.data;
+  const index    = clamp(num(briefingData?.occupancyIndex ?? d?.bleOccupancyIndex), 0, 100);
+  const devices  = Math.max(0, num(briefingData?.deviceCount ?? d?.bleDeviceCount));
+  const avgRssi  = briefingData?.avgRssi ?? num(d?.bleAvgRssi, NaN);
+  const label    = briefingData?.densityLabel ?? occupancyDensityLabel(index);
+  const note     = briefingData?.densityNote  ?? occupancyDensityNote(index);
+  const trend    = briefingData?.trend        ?? { direction: "stable", delta: 0 };
+  const enabled  = briefingData?.enabled      ?? Boolean(d?.blePresenceEnabled);
+  const history  = Array.isArray(briefingData?.history) ? briefingData.history : [];
+  const briefing = briefingData?.briefing     ?? "";
+
+  const indexEl = $("occupancy-index-value");
+  if (indexEl) indexEl.textContent = enabled || devices > 0 ? `${index}` : "--";
+
+  const fillEl = $("occupancy-index-fill");
+  if (fillEl) {
+    fillEl.style.width = `${Math.max(3, index)}%`;
+    const hue = index <= 30 ? "#3f6eff" : index <= 65 ? "#e89b0f" : "#e84040";
+    fillEl.style.background = `linear-gradient(90deg, #41236f 0%, ${hue} 100%)`;
+  }
+
+  const densityLabelEl = $("occupancy-density-label");
+  if (densityLabelEl) densityLabelEl.textContent = enabled || devices > 0 ? label : "No BLE feed";
+
+  const densityNoteEl = $("occupancy-density-note");
+  if (densityNoteEl) densityNoteEl.textContent = enabled || devices > 0 ? note : "BLE occupancy data has not arrived yet.";
+
+  const rssiBadgeEl = $("occupancy-rssi-badge");
+  if (rssiBadgeEl) {
+    rssiBadgeEl.textContent = Number.isFinite(avgRssi) ? `${Math.round(avgRssi)} dBm` : "--";
+    rssiBadgeEl.dataset.tone = Number.isFinite(avgRssi) && avgRssi > -70 ? "good" : "neutral";
+  }
+
+  const deviceCountEl = $("occupancy-device-count");
+  if (deviceCountEl) {
+    deviceCountEl.textContent = devices > 0
+      ? `${devices} device${devices !== 1 ? "s" : ""} detected in the scan window`
+      : "No devices detected in the scan window";
+  }
+
+  const trendNoteEl = $("occupancy-trend-note");
+  if (trendNoteEl) {
+    if (trend.direction === "rising") {
+      trendNoteEl.textContent = `Occupancy is rising (↑${Math.abs(trend.delta)} points since last reading).`;
+    } else if (trend.direction === "falling") {
+      trendNoteEl.textContent = `Occupancy is falling (↓${Math.abs(trend.delta)} points since last reading).`;
+    } else {
+      trendNoteEl.textContent = "Occupancy is holding steady.";
+    }
+  }
+
+  // Bar chart from history
+  const chartShell = $("occupancy-bar-chart");
+  if (chartShell) {
+    if (history.length === 0) {
+      chartShell.innerHTML = "<div class=\"occupancy-bar-empty\">Waiting for BLE occupancy history.</div>";
+    } else {
+      const recent = history.slice(0, 32).reverse();
+      const maxIdx = Math.max(...recent.map((h) => num(h.occupancyIndex)), 1);
+      const bars = recent.map((h) => {
+        const pct = Math.round((num(h.occupancyIndex) / maxIdx) * 100);
+        const ts  = h.receivedAt ? fmtStamp(h.receivedAt) : "";
+        const count = num(h.deviceCount);
+        const deviceLabel = `${count} device${count !== 1 ? "s" : ""}`;
+        const tip = ts
+          ? `${num(h.occupancyIndex)}% · ${deviceLabel} · ${ts}`
+          : `${num(h.occupancyIndex)}% · ${deviceLabel}`;
+        return `<div class="occupancy-bar-col" style="height:${Math.max(4, pct)}%" title="${tip.replace(/"/g, "&quot;")}"></div>`;
+      }).join("");
+      chartShell.innerHTML = `<div class="occupancy-bar-chart">${bars}</div>`;
+    }
+  }
+
+  const briefingEl = $("occupancy-briefing");
+  if (briefingEl) {
+    briefingEl.textContent = briefing || "Occupancy briefing will appear once the device posts BLE scan data.";
+  }
+
+  const badgeTone = index > 70 ? "warn" : index > 30 ? "neutral" : "good";
+  const badgeText = enabled || devices > 0 ? `${label} · ${devices} device${devices !== 1 ? "s" : ""}` : "No BLE data";
+  setHeaderPill("occupancy-badge", badgeText, badgeTone);
+}
+
+function occupancyDensityLabel(index) {
+  if (index <= 5)  return "Empty";
+  if (index <= 25) return "Low";
+  if (index <= 55) return "Moderate";
+  if (index <= 80) return "Busy";
+  return "Packed";
+}
+
+function occupancyDensityNote(index) {
+  if (index <= 5)  return "No BLE devices detected. The space appears unoccupied or all devices are out of range.";
+  if (index <= 25) return "A small number of devices are present. The space is likely lightly occupied.";
+  if (index <= 55) return "Several devices detected. Moderate occupancy — typical for a normal work session.";
+  if (index <= 80) return "High device density. The space is busy and shared-air buildup will accelerate.";
+  return "Very high device density. The space is at or near capacity.";
 }
 
 function renderStankGauge(d) {
@@ -4576,6 +4707,7 @@ function render(data) {
   drawHeroScope(merged, historyData);
   renderStatusStrip(merged);
   renderOfficeCard(merged);
+  renderOccupancyCard(merged);
   renderTelemetry(merged);
   renderDerivedMetrics(merged);
   renderFartCard(merged);
@@ -4615,6 +4747,7 @@ function render(data) {
 
   ensureWeatherBriefing(merged);
   ensureLaunchData();
+  ensureOccupancyBriefing();
 
   if (historyData.length) {
     drawChart(historyData);
@@ -4679,6 +4812,8 @@ async function manualRefreshDashboard() {
       weatherBriefingState.fetchedAt = 0;
       weatherBriefingState.key = "";
       await ensureWeatherBriefing(lastData);
+      occupancyBriefingState.fetchedAt = 0;
+      await ensureOccupancyBriefing();
     }
   } finally {
     manualRefreshPending = false;
