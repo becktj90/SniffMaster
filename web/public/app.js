@@ -2466,10 +2466,18 @@ async function ensureWeatherBriefing(d) {
 
   if (weatherBriefingState.pending && weatherBriefingState.key === key) return;
 
-    const key = weatherBriefingKey();
-    const cached = weatherBriefingState.data &&
-        weatherBriefingState.key === key &&
-        Date.now() - weatherBriefingState.fetchedAt < WEATHER_BRIEFING_TTL_MS;
+  weatherBriefingState.pending = (async () => {
+    try {
+      const res = await fetch("/api/weather-briefing", { cache: "no-store" });
+      if (!res.ok) throw new Error(`weather-briefing ${res.status}`);
+      weatherBriefingState.data = await res.json();
+      weatherBriefingState.fetchedAt = Date.now();
+      weatherBriefingState.key = key;
+    } catch (_) {
+      // silent — render will fall back to snapshot fields
+    } finally {
+      weatherBriefingState.pending = null;
+    }
 
     // Fresh briefing just arrived — merge it into lastData and re-render the affected panels.
     if (lastData) {
@@ -4570,7 +4578,6 @@ async function fetchLatest() {
             $("conn-label").textContent = "Feed unavailable";
         }
     }
-  }
 }
 
 async function manualRefreshDashboard() {
