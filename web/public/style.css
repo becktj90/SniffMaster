@@ -625,6 +625,12 @@ textarea {
   transform: translateY(-1px);
 }
 
+.view-submenu-item.is-active {
+  background: var(--accent-dim, rgba(0, 255, 200, 0.10));
+  color: var(--accent);
+  border-left: 2px solid var(--accent);
+}
+
 .view-submenu-item-eyebrow {
   font-size: 0.58rem;
   letter-spacing: 0.16em;
@@ -1083,7 +1089,7 @@ body[data-theme="retro90s"] .footer-bar {
 }
 
 #dashboard > [data-view] {
-  scroll-margin-top: 152px;
+  scroll-margin-top: 130px;
 }
 
 .card {
@@ -4735,6 +4741,10 @@ body[data-theme="retro90s"] .footer-bar {
 @media (max-width: 820px) {
   :root {
     --sticky-rail-top: calc(var(--safe-top) + 98px);
+  }
+
+  body {
+    padding-top: calc(var(--safe-top) + 98px);
   }
 
   .section-shell {
