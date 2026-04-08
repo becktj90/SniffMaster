@@ -73,7 +73,7 @@ function windDirLabel(deg) {
   const d = num(deg, NaN);
   if (!Number.isFinite(d)) return "";
   const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-  return dirs[Math.round((d % 360) / 45) % 8] || "";
+  return dirs[Math.round(d / 45) % 8] || "";
 }
 
 function aqiLevel(aqi) {
