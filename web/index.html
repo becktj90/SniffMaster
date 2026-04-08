@@ -27,7 +27,7 @@
       <div class="brand-lockup">
         <div class="eyebrow">Remote Nose Link</div>
         <h1>SniffMaster Pro</h1>
-        <div class="brand-subtitle">Real-time odor intelligence platform</div>
+        <div class="brand-subtitle">Environmental intelligence, decoded</div>
       </div>
       <div class="topbar-side">
         <div class="topbar-status">
@@ -78,7 +78,6 @@
       <button class="section-btn" type="button" data-view-target="environment">Environment</button>
       <button class="section-btn" type="button" data-view-target="analysis">Analysis</button>
       <button class="section-btn" type="button" data-view-target="history">History</button>
-      <button class="section-btn" type="button" data-view-target="system">System</button>
       <button class="section-btn" type="button" data-view-target="labs">Labs</button>
     </nav>
   </div>
@@ -291,39 +290,6 @@
           <span class="status-label">Last update</span>
           <span class="status-value" id="status-updated">No snapshot yet</span>
         </div>
-      </div>
-    </section>
-
-    <section class="card system-card" id="card-intel" data-view="dashboard">
-      <div class="card-header">
-        <span>Metric Guide</span>
-        <span class="header-pill">Live definitions</span>
-      </div>
-      <p class="card-summary" id="intel-summary">Quick plain-English definitions for the live gas and air-quality readings in the dashboard.</p>
-      <div class="drawer-grid">
-        <div class="drawer-stat">
-          <span class="drawer-label">IAQ</span>
-          <span class="drawer-value" id="intel-iaq-range">No live reading yet</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">VOC</span>
-          <span class="drawer-value" id="intel-voc-range">Waiting for VOC context</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">VSC Proxy</span>
-          <span class="drawer-value" id="intel-vsc-range">Sulfur watch idle</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">Room Index</span>
-          <span class="drawer-value" id="intel-rqi-range">Room-quality context pending</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">Gas Resistance</span>
-          <span class="drawer-value" id="intel-gasr-range">Gas resistance baseline pending</span>
-        </div>
-      </div>
-      <div class="drawer-copy" id="intel-copy">
-        Technical context about the live gas channels will update here after the next device sync.
       </div>
     </section>
 
@@ -1047,16 +1013,6 @@
         </div>
       </div>
       <div class="source-caption" id="source-weather">Source: device weather snapshot · Open-Meteo forecast · OpenStreetMap map · RainViewer radar</div>
-    </section>
-
-    <section class="card" id="card-classifier" data-view="analysis">
-      <div class="card-header">
-        <span>Model Channels</span>
-        <span class="header-pill" id="matrix-badge">Confidence map</span>
-      </div>
-      <div class="matrix-note" id="matrix-note">Classifier channels ranked by confidence.</div>
-      <div class="odor-matrix" id="odor-matrix"></div>
-      <div class="source-caption">Source: Bosch AI-Studio odor model · 20 channel confidence output · local inference logic</div>
     </section>
 
     <section class="card bro-card" id="card-bro" data-view="analysis">
