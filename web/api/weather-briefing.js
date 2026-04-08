@@ -2,8 +2,8 @@
  * GET /api/weather-briefing — returns a local forecast bundle plus
  * a concise weather insight. Uses Open-Meteo for forecast data and,
  * when OPENAI_API_KEY is configured, an OpenAI-generated local briefing.
- * Falls back to Cape Canaveral Space Force Station coordinates when the
- * device snapshot has no GPS fix.
+ * Always uses the manually configured Cape Canaveral coordinates — does not
+ * rely on device WiFi-derived geolocation for weather API calls.
  */
 
 import { getLatest } from "../lib/store.js";
@@ -13,6 +13,8 @@ const OPEN_METEO_AQ_BASE = "https://air-quality-api.open-meteo.com/v1/air-qualit
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 
 // Default location: Cape Canaveral Space Force Station, FL
+// This is also the manual location always used for weather data — the app does
+// not rely on the device's WiFi-derived geolocation for weather API calls.
 const DEFAULT_LAT = 28.4889;
 const DEFAULT_LON = -80.5778;
 const DEFAULT_CITY = "Cape Canaveral, FL";
@@ -22,21 +24,11 @@ function num(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function hasLocationFix(snapshot) {
-  const lat = num(snapshot?.lat, NaN);
-  const lon = num(snapshot?.lon, NaN);
-  return Number.isFinite(lat) && Number.isFinite(lon) && (Math.abs(lat) > 0.0001 || Math.abs(lon) > 0.0001);
-}
-
-function getEffectiveLocation(snapshot) {
-  if (hasLocationFix(snapshot)) {
-    return {
-      lat: num(snapshot.lat),
-      lon: num(snapshot.lon),
-      city: snapshot.city || "",
-      usingDefault: false,
-    };
-  }
+function getEffectiveLocation() {
+  // Always use the manually configured location for weather data.
+  // Device coordinates derived from WiFi geolocation are unreliable, so
+  // weather API calls are pinned to the hardcoded Cape Canaveral position.
+  // To change the location, update DEFAULT_LAT / DEFAULT_LON / DEFAULT_CITY above.
   return {
     lat: DEFAULT_LAT,
     lon: DEFAULT_LON,
@@ -251,7 +243,7 @@ export default async function handler(req, res) {
     const snapshot = await getLatest();
     if (!snapshot) return res.status(204).end();
 
-    const loc = getEffectiveLocation(snapshot);
+    const loc = getEffectiveLocation();
 
     let forecast = [];
     let currentConditions = null;
