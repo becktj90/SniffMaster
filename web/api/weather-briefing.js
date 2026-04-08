@@ -202,7 +202,7 @@ async function generateOpenAiBrief(snapshot, loc, forecast, outdoorAqi, fallback
     "Focus on local comfort, ventilation timing, rain risk, and anything notable over the next 3 days.",
     "Do not mention AI, models, or probabilities unless they are useful. Do not be chatty.",
     `Location: ${loc.city || snapshot.city || "Local area"}.`,
-    `Current outdoor context: ${snapshot.weatherCondition || "Conditions syncing"}, ${Math.round(num(snapshot.tempF, NaN))}F, humidity ${Math.round(num(snapshot.humidity, NaN))}%, AQI ${Number.isFinite(num(outdoorAqi, NaN)) ? Math.round(num(outdoorAqi)) : "unknown"}.`,
+    `Current outdoor context: ${snapshot.weatherCondition || "Conditions syncing"}, ${Number.isFinite(num(snapshot.tempF, NaN)) ? `${Math.round(num(snapshot.tempF))}F` : "temp unknown"}, humidity ${Number.isFinite(num(snapshot.humidity, NaN)) ? `${Math.round(num(snapshot.humidity))}%` : "unknown"}, AQI ${Number.isFinite(num(outdoorAqi, NaN)) ? Math.round(num(outdoorAqi)) : "unknown"}.`,
     `Forecast: ${forecast.map((day) => `${day.label}: ${day.condition}, high ${Math.round(num(day.highF, 0))}F, low ${Math.round(num(day.lowF, 0))}F, precip ${Math.round(num(day.precipChance, 0))}%, wind ${Math.round(num(day.windMph, 0))} mph`).join(" | ")}`,
     `If the forecast is unremarkable, say so cleanly. Baseline fallback: ${fallback}`,
   ].join("\n");
