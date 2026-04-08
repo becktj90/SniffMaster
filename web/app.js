@@ -82,9 +82,6 @@ const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
 const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
 const DADABASE_TTL_MS = 15 * 60 * 1000;
-// Default map center: Cape Canaveral Space Force Station, FL — matches weather-briefing.js default
-const DEFAULT_MAP_LAT = 28.4889;
-const DEFAULT_MAP_LON = -80.5778;
 const DURATION_MACROS = {
   ML_WHOLE: (bpm) => 240000 / bpm,
   ML_HALF: (bpm) => 120000 / bpm,
@@ -2381,11 +2378,11 @@ function weatherInsightText(d) {
 }
 
 function weatherBriefingKey() {
-    // The weather API always uses the Cape Canaveral default — device GPS is not
-    // used server-side, so the key must not include lat/lon to avoid unnecessary
-    // re-fetches (and AI briefing loss) when the device GPS reading fluctuates.
-    const bucket = Math.floor(Date.now() / WEATHER_BRIEFING_TTL_MS);
-    return `cape-canaveral|${bucket}`;
+  // The weather API always uses the Cape Canaveral default — device GPS is not
+  // used server-side, so the key must not include lat/lon to avoid unnecessary
+  // re-fetches (and AI briefing loss) when the device GPS reading fluctuates.
+  const bucket = Math.floor(Date.now() / WEATHER_BRIEFING_TTL_MS);
+  return `cape-canaveral|${bucket}`;
 }
 
 function defaultWeatherBriefing(d) {
@@ -2456,7 +2453,7 @@ function renderWeatherForecast(d, briefing) {
 async function ensureWeatherBriefing(d) {
   if (!d) return;
 
-  const key = weatherBriefingKey(d);
+  const key = weatherBriefingKey();
   const cached = weatherBriefingState.data
     && weatherBriefingState.key === key
     && Date.now() - weatherBriefingState.fetchedAt < WEATHER_BRIEFING_TTL_MS;
@@ -6872,29 +6869,29 @@ document.querySelectorAll(".map-layer-chip").forEach((button) => {
 });
 
 (function initWeatherMapFullscreen() {
-    const btn = $("map-fullscreen-btn");
-    const shell = document.querySelector(".map-shell");
-    if (!btn || !shell) return;
+  const btn = $("map-fullscreen-btn");
+  const shell = document.querySelector(".map-shell");
+  if (!btn || !shell) return;
 
-    btn.addEventListener("click", () => {
-        if (!document.fullscreenElement) {
-            shell.requestFullscreen().catch(() => {});
-        } else {
-            document.exitFullscreen().catch(() => {});
-        }
-    });
+  btn.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      shell.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  });
 
-    document.addEventListener("fullscreenchange", () => {
-        const isFs = Boolean(document.fullscreenElement);
-        btn.textContent = isFs ? "✕" : "⛶";
-        btn.title = isFs ? "Exit fullscreen" : "Fullscreen map";
-        btn.setAttribute("aria-label", btn.title);
-        if (weatherMap) {
-            // Leaflet needs a brief delay to let the browser finish the fullscreen
-            // CSS transition before recalculating tile layout and viewport bounds.
-            setTimeout(() => weatherMap.invalidateSize(), 100);
-        }
-    });
+  document.addEventListener("fullscreenchange", () => {
+    const isFs = Boolean(document.fullscreenElement);
+    btn.textContent = isFs ? "✕" : "⛶";
+    btn.title = isFs ? "Exit fullscreen" : "Fullscreen map";
+    btn.setAttribute("aria-label", btn.title);
+    if (weatherMap) {
+      // Leaflet needs a brief delay to let the browser finish the fullscreen
+      // CSS transition before recalculating tile layout and viewport bounds.
+      setTimeout(() => weatherMap.invalidateSize(), 100);
+    }
+  });
 })();
 
 window.addEventListener("resize", () => {
