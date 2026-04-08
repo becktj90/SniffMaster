@@ -18,7 +18,7 @@
  */
 
 import { requireDeviceAuth, sanitizePostedBody } from "../lib/auth.js";
-import { putSnapshot } from "../lib/store.js";
+import { putSnapshot, putBleOccupancyEntry } from "../lib/store.js";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -42,6 +42,14 @@ export default async function handler(req, res) {
 
   try {
     const stored = await putSnapshot(data);
+    // Persist BLE occupancy snapshot when device sends occupancy data
+    if (typeof data.bleDeviceCount === "number" || typeof data.bleOccupancyIndex === "number") {
+      try {
+        await putBleOccupancyEntry({ ...data, receivedAt: stored.receivedAt });
+      } catch (bleErr) {
+        console.error("putBleOccupancyEntry error:", bleErr);
+      }
+    }
     return res.status(200).json({ ok: true, receivedAt: stored.receivedAt });
   } catch (err) {
     console.error("putSnapshot error:", err);
