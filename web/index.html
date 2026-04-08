@@ -74,10 +74,10 @@
 
   <div class="section-shell">
     <nav class="section-nav" aria-label="Dashboard sections">
-      <button class="section-btn is-active" type="button" data-view-target="dashboard">Dashboard</button>
-      <button class="section-btn" type="button" data-view-target="environment">Environment</button>
-      <button class="section-btn" type="button" data-view-target="analysis">Analysis</button>
-      <button class="section-btn" type="button" data-view-target="history">History</button>
+      <button class="section-btn is-active" type="button" data-view-target="dashboard">Overview</button>
+      <button class="section-btn" type="button" data-view-target="environment">Local Area</button>
+      <button class="section-btn" type="button" data-view-target="analysis">Air & Signal</button>
+      <button class="section-btn" type="button" data-view-target="history">Trends</button>
       <button class="section-btn" type="button" data-view-target="labs">Labs</button>
     </nav>
   </div>
@@ -272,7 +272,7 @@
 
     <section class="card status-strip" id="card-status" data-view="dashboard environment system">
       <div class="card-header">
-        <span>System Status</span>
+        <span>System</span>
         <span class="header-pill" id="status-badge">Awaiting telemetry</span>
       </div>
       <div class="status-grid">
@@ -333,9 +333,45 @@
       </div>
     </section>
 
+    <section class="card" id="card-cause" data-view="dashboard analysis">
+      <div class="card-header">
+        <span>Cause Engine</span>
+        <span class="header-pill" id="cause-badge">Analyzing</span>
+      </div>
+      <div class="cause-primary-row">
+        <div class="cause-driver-block">
+          <div class="cause-kicker">Primary Driver</div>
+          <div class="cause-driver-value" id="cause-primary-driver">Standby</div>
+          <div class="cause-driver-note" id="cause-primary-note">The main factor shaping current room conditions will appear here.</div>
+        </div>
+        <div class="cause-action-block">
+          <div class="cause-kicker">Recommended Action</div>
+          <div class="cause-action-value" id="cause-action">No action needed</div>
+        </div>
+      </div>
+      <div class="cause-factors-grid" id="cause-factors-grid">
+        <div class="cause-factor">
+          <span class="cause-factor-label">Internal air load</span>
+          <span class="cause-factor-value" id="cause-factor-air">--</span>
+        </div>
+        <div class="cause-factor">
+          <span class="cause-factor-label">Occupancy pressure</span>
+          <span class="cause-factor-value" id="cause-factor-occ">--</span>
+        </div>
+        <div class="cause-factor">
+          <span class="cause-factor-label">Outdoor influence</span>
+          <span class="cause-factor-value" id="cause-factor-outdoor">--</span>
+        </div>
+        <div class="cause-factor">
+          <span class="cause-factor-label">Ventilation status</span>
+          <span class="cause-factor-value" id="cause-factor-vent">--</span>
+        </div>
+      </div>
+    </section>
+
     <section class="card office-card" id="card-office" data-view="dashboard analysis">
       <div class="card-header">
-        <span>Office Vitality</span>
+        <span>Vitality</span>
         <span class="header-pill" id="office-badge">Derived office metrics</span>
       </div>
       <p class="card-summary">Human-impact readouts for focus, comfort, shared-air load, and biological persistence.</p>
@@ -589,7 +625,7 @@
 
     <section class="card odor-card" id="card-odor" data-view="analysis">
       <div class="card-header">
-        <span>Current Classification</span>
+        <span>Odor Classification</span>
         <span class="header-pill" id="odor-badge">Classifier idle</span>
       </div>
       <div class="odor-hero">
@@ -631,7 +667,7 @@
 
     <section class="card pipeline-card" id="card-telemetry" data-view="environment">
       <div class="card-header">
-        <span>Raw Inputs</span>
+        <span>Raw Sensors</span>
         <span class="header-pill" id="city-pill">Sensor stream</span>
       </div>
       <p class="card-summary">Direct sensor and device signals before classification.</p>
@@ -677,7 +713,7 @@
 
     <section class="card pipeline-card" id="card-derived" data-view="environment">
       <div class="card-header">
-        <span>Derived Metrics</span>
+        <span>Air Metrics</span>
         <span class="header-pill" id="derived-badge">Inference layer</span>
       </div>
       <p class="card-summary">Processed air-quality metrics derived from the sensor stream.</p>
@@ -1083,7 +1119,7 @@
         </div>
         <div class="map-shell">
           <div id="weather-map" aria-label="Interactive weather and environmental layers map"></div>
-          <div class="map-fallback" id="map-fallback">Map will appear once the device posts a location fix.</div>
+          <div class="map-fallback" id="map-fallback">Loading map...</div>
           <div class="map-overlay">
             <div class="map-title" id="map-city">Location pending</div>
             <a id="map-link" href="https://www.openstreetmap.org" target="_blank" rel="noreferrer">Open street map</a>
