@@ -226,7 +226,7 @@ void blePresenceTick() {
             lastScanStartMs = now;
             bleScanState    = 1;
             // Start a non-blocking scan; results arrive via callback
-            scan->start((uint32_t)(BLE_SCAN_WINDOW_MS / 1000UL), /*async=*/true);
+            scan->start((uint32_t)(BLE_SCAN_WINDOW_MS / 1000UL), /*async=*/true);  // NimBLE takes seconds
             Serial.println(F("[BLE] Scan started"));
         } else if (bleScanState == 1) {
             // Scan just finished
