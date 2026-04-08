@@ -1,5 +1,6 @@
 /**
- * GET /api/launches — returns upcoming Cape Canaveral (KSC / CCSFS) launches
+ * GET /api/launches — returns upcoming launches with Cape Canaveral (KSC / CCSFS) launches
+ * prioritised, falling back to global upcoming launches when none are scheduled at the Cape.
  *
  * Fetches from the Launch Library 2 free dev API and caches results in
  * Upstash Redis for one hour to stay well within rate limits.
@@ -38,31 +39,66 @@ async function setCache(data) {
   }
 }
 
-async function fetchCapeLaunches() {
-  const params = new URLSearchParams({
-    limit: "5",
-    ordering: "net",
-    status__ids: "1,2,3,8", // Go, TBC, TBD, In Flight
-    location__ids: CAPE_LOCATION_IDS,
-  });
-
-  const res = await fetch(`${LL2_BASE}/launch/upcoming/?${params.toString()}`, {
-    headers: { "User-Agent": "SniffMaster/1.0 (environmental-dashboard)" },
-    cache: "no-store",
-  });
-
-  if (!res.ok) throw new Error(`launch-library ${res.status}`);
-  const json = await res.json();
-
-  return (json?.results || []).map((launch) => ({
+function mapLaunch(launch, isCape) {
+  return {
     id: launch.id || "",
     name: launch.name || "Unknown mission",
     status: launch.status?.name || "TBD",
     time: launch.net || "TBD",
     provider: launch.launch_service_provider?.name || "Unknown",
     pad: launch.pad?.name || "TBD",
+    location: launch.pad?.location?.name || "Unknown",
     missionType: launch.mission?.type || "Mission",
-  }));
+    isCape: isCape,
+  };
+}
+
+async function fetchLaunches() {
+  const baseParams = {
+    limit: "5",
+    ordering: "net",
+    status__ids: "1,2,3,8", // Go, TBC, TBD, In Flight
+  };
+
+  // First try Cape-only launches
+  const capeParams = new URLSearchParams({
+    ...baseParams,
+    location__ids: CAPE_LOCATION_IDS,
+  });
+
+  const capeRes = await fetch(`${LL2_BASE}/launch/upcoming/?${capeParams.toString()}`, {
+    headers: { "User-Agent": "SniffMaster/1.0 (environmental-dashboard)" },
+    cache: "no-store",
+  });
+
+  if (!capeRes.ok) throw new Error(`launch-library ${capeRes.status}`);
+  const capeJson = await capeRes.json();
+  const capeLaunches = (capeJson?.results || []).map((l) => mapLaunch(l, true));
+
+  if (capeLaunches.length >= 3) {
+    return capeLaunches;
+  }
+
+  // If fewer than 3 Cape launches, fetch global upcoming launches to fill the feed
+  const globalParams = new URLSearchParams({ ...baseParams, limit: "8" });
+  const globalRes = await fetch(`${LL2_BASE}/launch/upcoming/?${globalParams.toString()}`, {
+    headers: { "User-Agent": "SniffMaster/1.0 (environmental-dashboard)" },
+    cache: "no-store",
+  });
+
+  if (!globalRes.ok) {
+    // Return whatever Cape launches we have
+    return capeLaunches;
+  }
+
+  const globalJson = await globalRes.json();
+  const capeIds = new Set(capeLaunches.map((l) => l.id));
+  const globalLaunches = (globalJson?.results || [])
+    .filter((l) => !capeIds.has(l.id || ""))
+    .map((l) => mapLaunch(l, false));
+
+  // Cape launches first, then global to fill up to 5
+  return [...capeLaunches, ...globalLaunches].slice(0, 5);
 }
 
 export default async function handler(req, res) {
@@ -80,7 +116,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ launches: cached, source: "cache" });
     }
 
-    const launches = await fetchCapeLaunches();
+    const launches = await fetchLaunches();
     await setCache(launches);
     return res.status(200).json({ launches, source: "live" });
   } catch (err) {
