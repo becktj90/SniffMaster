@@ -78,7 +78,7 @@ const HEATMAP_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const HEATMAP_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const POLL_MS = 10000;
-const STALE_MS = 180000;
+const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
 const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
 const DADABASE_TTL_MS = 15 * 60 * 1000;
@@ -181,10 +181,6 @@ const VIEW_META = {
     title: "History",
     subtitle: "Daily rhythm patterns and the timestamped event log.",
   },
-  system: {
-    title: "System",
-    subtitle: "Hardware, signal path, controls, confidence notes, and use cases.",
-  },
   labs: {
     title: "Labs",
     subtitle: "Experimental and playful features separated from the primary instrument views.",
@@ -195,7 +191,6 @@ const VIEW_SECTIONS = {
   dashboard: [
     { id: "card-hero", label: "Snapshot" },
     { id: "card-status", label: "Status" },
-    { id: "card-intel", label: "Metrics" },
     { id: "card-office", label: "Vitality" },
     { id: "card-space", label: "Launches" },
     { id: "card-history", label: "History" },
@@ -211,21 +206,11 @@ const VIEW_SECTIONS = {
     { id: "card-odor", label: "Classification" },
     { id: "card-breath", label: "Breath" },
     { id: "card-fart", label: "Stank" },
-    { id: "card-classifier", label: "Channels" },
     { id: "card-bro", label: "Readout" },
   ],
   history: [
     { id: "card-chart", label: "Rhythm" },
     { id: "card-events", label: "Events" },
-  ],
-  system: [
-    { id: "card-status", label: "Status" },
-    { id: "card-device", label: "Hardware" },
-    { id: "card-method", label: "Pipeline" },
-    { id: "card-confidence", label: "Confidence" },
-    { id: "card-usecases", label: "Use Cases" },
-    { id: "card-theme", label: "Theme" },
-    { id: "card-controls", label: "Controls" },
   ],
   labs: [
     { id: "card-dadabase", label: "Dadabase" },
@@ -254,6 +239,11 @@ let weatherMarker = null;
 let weatherBaseLayer = null;
 let weatherBriefingState = {
   key: "",
+  fetchedAt: 0,
+  data: null,
+  pending: null,
+};
+let launchState = {
   fetchedAt: 0,
   data: null,
   pending: null,
@@ -2461,8 +2451,73 @@ async function ensureWeatherBriefing(d) {
     }
 
     if (lastData) {
-      renderWeatherForecast(lastData, weatherBriefingState.data);
-      $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(lastData, weatherBriefingState.data));
+      const briefing = weatherBriefingState.data;
+      const updates = {};
+
+      // Merge outdoor AQI from briefing if device snapshot doesn't have it
+      if (num(briefing?.outdoorAqi) > 0 && !(num(lastData.outdoorAqi) > 0)) {
+        updates.outdoorAqi = briefing.outdoorAqi;
+        updates.outdoorLevel = briefing.outdoorLevel || "";
+      }
+
+      // Merge current weather conditions from briefing if device snapshot doesn't have them
+      const bc = briefing?.current;
+      if (bc) {
+        if (!lastData.weatherCondition && bc.condition) updates.weatherCondition = bc.condition;
+        if (!Number.isFinite(num(lastData.tempF, NaN)) && Number.isFinite(bc.tempF)) updates.tempF = bc.tempF;
+        if (!lastData.windDir && bc.windDir) updates.windDir = bc.windDir;
+        if (!lastData.windSpeed && bc.windSpeed) updates.windSpeed = bc.windSpeed;
+        if (!Number.isFinite(num(lastData.pressHpa, NaN)) && Number.isFinite(bc.pressHpa)) updates.pressHpa = bc.pressHpa;
+      }
+
+      // Apply coordinate defaults from briefing if device has no GPS fix
+      if (briefing?.usingDefault && !hasLocationFix(lastData)) {
+        if (num(briefing.lat) && num(briefing.lon)) {
+          updates.lat = briefing.lat;
+          updates.lon = briefing.lon;
+        }
+        if (briefing.city && !lastData.city) updates.city = briefing.city;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        lastData = { ...lastData, ...updates };
+      }
+
+      renderWeatherForecast(lastData, briefing);
+      renderWeatherIntel(lastData);
+      $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(lastData, briefing));
+    }
+  })();
+}
+
+const LAUNCH_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+async function ensureLaunchData() {
+  const cached = launchState.data && Date.now() - launchState.fetchedAt < LAUNCH_TTL_MS;
+  if (cached) return;
+  if (launchState.pending) return;
+
+  launchState.pending = (async () => {
+    try {
+      const res = await fetch("/api/launches", { cache: "no-store" });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json?.launches) && json.launches.length) {
+          launchState.data = json.launches;
+          launchState.fetchedAt = Date.now();
+          // Merge into lastData if device snapshot has no launches
+          if (lastData && !(Array.isArray(lastData.launches) && lastData.launches.length)) {
+            lastData = { ...lastData, launches: launchState.data };
+            renderSpaceCard(lastData);
+            renderLaunchDeck(lastData);
+            setHeaderPill("launch-badge", `${launchState.data.length} Cape launches`, "good");
+          }
+        }
+      }
+    } catch (_) {
+      // silent — device data is the primary source
+    } finally {
+      launchState.pending = null;
     }
   })();
 }
@@ -3425,6 +3480,8 @@ function renderOfficeCard(d) {
   $("office-co2").textContent = `${Math.round(co2)} ppm`;
   $("office-iaq").textContent = `${Math.round(iaq)}`;
   $("office-humidity").textContent = `${humidity.toFixed(0)}%`;
+  const rawTemp = num(d.tempF, NaN);
+  $("office-temp").textContent = Number.isFinite(rawTemp) ? `${rawTemp.toFixed(1)}°F` : "--";
   $("office-context").textContent = `${windowCall(d)} Humidity is ${humidity.toFixed(0)}%, so the room is tracking as ${vtrLabel.toLowerCase()}.`;
 
   const attention = officeAttentionState(d);
@@ -4449,11 +4506,9 @@ function render(data) {
   renderOdorCard(merged);
   renderWeatherIntel(merged);
   renderWeatherForecast(merged, weatherBriefingState.data);
-  renderIntelDrawer(merged);
   renderParanormal(merged);
   renderLaunchDeck(merged);
   renderEventLog(merged);
-  renderOdorMatrix(merged.odors || [], hasConfidentPrimary(merged) ? merged.primary : "");
   renderMelodyControls(merged);
   renderMelodyLibrary(merged);
 
@@ -4462,7 +4517,6 @@ function render(data) {
 
   setHeaderPill("launch-badge", Array.isArray(merged.launches) && merged.launches.length ? `${merged.launches.length} Cape launches` : "No launch data", Array.isArray(merged.launches) && merged.launches.length ? "good" : "neutral");
   setHeaderPill("odor-badge", `${currentPrimary(merged)} · ${Math.round(num(merged.primaryConf))}%`, num(merged.primaryConf) >= 45 ? "warn" : num(merged.primaryConf) >= 20 ? "neutral" : "good");
-  setHeaderPill("matrix-badge", `${Math.round(num(merged.primaryConf))}% confidence`, num(merged.primaryConf) >= 45 ? "warn" : num(merged.primaryConf) >= 20 ? "neutral" : "good");
   setHeaderPill(
     "weather-intel-badge",
     hasLocationFix(merged) ? (merged.weatherCondition || "Map live") : "No map fix",
@@ -4475,6 +4529,7 @@ function render(data) {
   $("v-uptime").textContent = fmtUptime(merged.uptime);
 
   ensureWeatherBriefing(merged);
+  ensureLaunchData();
 
   if (historyData.length) {
     drawChart(historyData);
@@ -4508,8 +4563,11 @@ async function fetchLatest() {
     const data = await res.json();
     render(data);
   } catch (_) {
-    $("conn-dot").className = "dot offline";
-    $("conn-label").textContent = "Feed unavailable";
+    const age = lastData ? Date.now() - num(lastData.receivedAt, 0) : Infinity;
+    if (age >= STALE_MS) {
+      $("conn-dot").className = "dot offline";
+      $("conn-label").textContent = "Feed unavailable";
+    }
   }
 }
 
