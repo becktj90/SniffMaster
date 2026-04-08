@@ -1377,11 +1377,56 @@ body[data-theme="retro90s"] .footer-bar {
   opacity: 0.85;
 }
 
+.scope-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .scope-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
+}
+
+.scope-window-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.scope-window-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.scope-window-btn {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(171, 181, 193, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.scope-window-btn:hover {
+  border-color: rgba(73, 232, 255, 0.35);
+  color: var(--muted-strong);
+}
+
+.scope-window-btn.is-active {
+  border-color: rgba(73, 232, 255, 0.5);
+  background: rgba(73, 232, 255, 0.1);
+  color: #49e8ff;
 }
 
 .scope-insights {
@@ -1399,8 +1444,24 @@ body[data-theme="retro90s"] .footer-bar {
   border-radius: 999px;
   border: 1px solid rgba(171, 181, 193, 0.16);
   background: rgba(255, 255, 255, 0.03);
-  color: var(--muted-strong);
+  color: var(--muted);
   font-size: 0.76rem;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.scope-chip.is-active {
+  opacity: 1;
+}
+
+.scope-chip:hover {
+  opacity: 0.8;
+}
+
+.scope-chip.is-active:hover {
+  opacity: 0.85;
 }
 
 .scope-chip::before {
@@ -1416,12 +1477,27 @@ body[data-theme="retro90s"] .footer-bar {
   color: #49e8ff;
 }
 
+.scope-chip.is-cyan.is-active {
+  border-color: rgba(73, 232, 255, 0.3);
+  background: rgba(73, 232, 255, 0.07);
+}
+
 .scope-chip.is-mint {
   color: #70f8c1;
 }
 
+.scope-chip.is-mint.is-active {
+  border-color: rgba(112, 248, 193, 0.3);
+  background: rgba(112, 248, 193, 0.07);
+}
+
 .scope-chip.is-amber {
   color: #ffd05c;
+}
+
+.scope-chip.is-amber.is-active {
+  border-color: rgba(255, 208, 92, 0.3);
+  background: rgba(255, 208, 92, 0.07);
 }
 
 .scope-insight {
@@ -3051,6 +3127,14 @@ body[data-theme="retro90s"] .footer-bar {
   gap: 12px;
 }
 
+.launch-global-note {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 6px 4px 2px;
+  letter-spacing: 0.01em;
+}
+
 .launch-card {
   background: rgba(255, 255, 255, 0.055);
   border: 1px solid rgba(255, 255, 255, 0.07);
@@ -3058,12 +3142,50 @@ body[data-theme="retro90s"] .footer-bar {
   padding: 13px 14px;
 }
 
+.launch-card.is-cape {
+  border-color: rgba(73, 232, 255, 0.18);
+  background: rgba(73, 232, 255, 0.04);
+}
+
+.launch-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
 .launch-kicker {
   color: var(--muted);
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.16em;
-  margin-bottom: 6px;
+}
+
+.launch-cape-tag {
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #49e8ff;
+  background: rgba(73, 232, 255, 0.1);
+  border: 1px solid rgba(73, 232, 255, 0.25);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+.launch-global-tag {
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
 }
 
 .launch-name {
@@ -4960,6 +5082,15 @@ body[data-theme="retro90s"] .footer-bar {
   .melody-action-group > .chrome-btn {
     flex: 1 1 180px;
   }
+
+  .scope-controls {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .scope-insights {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 560px) {
@@ -5269,7 +5400,6 @@ body *::before,
 body *::after {
   font-family: "JetBrains Mono", monospace;
 }
-
 
 .arcade-shell::before {
   content: "";
