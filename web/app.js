@@ -253,6 +253,10 @@ let launchState = {
   data: null,
   pending: null,
 };
+let scopeSettings = {
+  series: { voc: true, clean: true, dvoc: true },
+  window: 20,
+};
 let dadabaseState = {
   fetchedAt: 0,
   data: null,
@@ -2520,7 +2524,11 @@ async function ensureLaunchData() {
             lastData = { ...lastData, launches: launchState.data };
             renderSpaceCard(lastData);
             renderLaunchDeck(lastData);
-            setHeaderPill("launch-badge", `${launchState.data.length} Cape launches`, "good");
+            const capeCount = launchState.data.filter((l) => l.isCape).length;
+            const badgeText = capeCount
+              ? `${capeCount} Cape · ${launchState.data.length} total`
+              : `${launchState.data.length} upcoming`;
+            setHeaderPill("launch-badge", badgeText, "good");
           }
         }
       }
@@ -3989,23 +3997,49 @@ function renderLaunchDeck(d) {
   const shell = $("launch-stack");
   if (!shell) return;
 
-  const launches = Array.isArray(d.launches) ? d.launches.slice(0, 3) : [];
+  const launches = Array.isArray(d.launches) ? d.launches.slice(0, 5) : [];
   if (!launches.length) {
-    shell.innerHTML = '<div class="launch-empty">No KSC/CCSFS launches are in the current snapshot.</div>';
+    shell.innerHTML = '<div class="launch-empty">Launch feed is loading — check back shortly.</div>';
     return;
   }
 
-  shell.innerHTML = launches.map((launch, index) => `
-    <article class="launch-card">
-      <div class="launch-kicker">Cape Slot ${index + 1}</div>
-      <div class="launch-name">${launch.name || "Unknown mission"}</div>
-      <div class="launch-line"><strong>NET:</strong> ${launch.time || "TBD"}</div>
-      <div class="launch-line"><strong>Status:</strong> ${launch.status || "--"}</div>
-      <div class="launch-line"><strong>Provider:</strong> ${launch.provider || "Unknown"}</div>
-      <div class="launch-line"><strong>Pad:</strong> ${launch.pad || "Cape pad TBD"}</div>
-      <div class="launch-line"><strong>Type:</strong> ${launch.missionType || "Mission"}</div>
+  const hasCape = launches.some((l) => l.isCape);
+  const header = !hasCape
+    ? '<div class="launch-global-note">No Cape launches currently scheduled · showing next global launches</div>'
+    : "";
+
+  shell.innerHTML = header + launches.map((launch, index) => {
+    const capeTag = launch.isCape
+      ? '<span class="launch-cape-tag">KSC / CCSFS</span>'
+      : `<span class="launch-global-tag">${escapeHtml(launch.location || "Global")}</span>`;
+    const netRaw = launch.time;
+    let netDisplay = netRaw || "TBD";
+    if (netRaw && netRaw !== "TBD") {
+      try {
+        const d = new Date(netRaw);
+        if (!Number.isNaN(d.getTime())) {
+          netDisplay = d.toLocaleString(undefined, {
+            month: "short", day: "numeric", year: "numeric",
+            hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+          });
+        }
+      } catch (_) { /* keep raw */ }
+    }
+    return `
+    <article class="launch-card${launch.isCape ? " is-cape" : ""}">
+      <div class="launch-card-head">
+        <div class="launch-kicker">Launch ${index + 1}</div>
+        ${capeTag}
+      </div>
+      <div class="launch-name">${escapeHtml(launch.name || "Unknown mission")}</div>
+      <div class="launch-line"><strong>NET:</strong> ${escapeHtml(netDisplay)}</div>
+      <div class="launch-line"><strong>Status:</strong> ${escapeHtml(launch.status || "--")}</div>
+      <div class="launch-line"><strong>Provider:</strong> ${escapeHtml(launch.provider || "Unknown")}</div>
+      <div class="launch-line"><strong>Pad:</strong> ${escapeHtml(launch.pad || "TBD")}</div>
+      <div class="launch-line"><strong>Type:</strong> ${escapeHtml(launch.missionType || "Mission")}</div>
     </article>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function renderEventLog(d) {
@@ -4079,10 +4113,11 @@ function drawHeroScope(current, history) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const liveHistory = Array.isArray(history) ? history.slice(0, 32).reverse() : [];
+  const win = scopeSettings.window;
+  const liveHistory = Array.isArray(history) ? history.slice(0, win).reverse() : [];
   const usingHistory = liveHistory.length >= 6;
   const now = Date.now() / 1000;
-  const synthetic = Array.from({ length: 32 }, (_, index) => {
+  const synthetic = Array.from({ length: win }, (_, index) => {
     const phase = now * 0.9 + index * 0.35;
     const vocBase = Math.max(0.2, num(current?.voc, 0.55));
     const airBase = clamp(num(current?.airScore, 18), 0, 100);
@@ -4107,8 +4142,12 @@ function drawHeroScope(current, history) {
   const vocTrendNow = latest.voc - prev.voc;
   const cleanTrendNow = latestClean - clamp(100 - prev.airScore, 0, 100);
 
+  const showVoc = scopeSettings.series.voc;
+  const showClean = scopeSettings.series.clean;
+  const showDvoc = scopeSettings.series.dvoc;
+
   meta.textContent = usingHistory
-    ? `${points.length} live samples · VOC ${latest.voc.toFixed(2)} ppm · dVOC ${fmtSigned(latest.dVoc, 2)}`
+    ? `${points.length} samples · VOC ${latest.voc.toFixed(2)} ppm · dVOC ${fmtSigned(latest.dVoc, 2)}`
     : "Standby trace · synthetic preview until deeper room history arrives";
 
   if ($("scope-chip-voc")) $("scope-chip-voc").textContent = `VOC ${latest.voc.toFixed(2)} ppm`;
@@ -4254,80 +4293,104 @@ function drawHeroScope(current, history) {
   const cleanY = (value) => padT + plotH * (1 - clamp(value / 100, 0, 1));
   const dVocY = (value) => centerY - clamp(value / maxAbsDVoc, -1, 1) * (plotH * 0.28);
 
-  drawDashedGuide(vocY(1.5), "rgba(73, 232, 255, 0.25)", "VOC 1.5", padL + 6);
-  if (maxVoc >= 3.0) {
+  if (showVoc) drawDashedGuide(vocY(1.5), "rgba(73, 232, 255, 0.25)", "VOC 1.5", padL + 6);
+  if (showVoc && maxVoc >= 3.0) {
     drawDashedGuide(vocY(3.0), "rgba(231, 76, 60, 0.24)", "VOC 3.0", padL + 56);
   }
-  drawDashedGuide(dVocY(0.3), "rgba(255, 208, 92, 0.18)", "dVOC +0.3", width - padR - 72);
+  if (showDvoc) drawDashedGuide(dVocY(0.3), "rgba(255, 208, 92, 0.18)", "dVOC +0.3", width - padR - 72);
 
-  drawTrace(
-    points.map((p) => p.voc),
-    "#49e8ff",
-    "rgba(73, 232, 255, 0.18)",
-    vocY,
-    2.2
-  );
-  drawTrace(
-    cleanSeries.map((value) => value / 100),
-    "#70f8c1",
-    "rgba(112, 248, 193, 0.16)",
-    (value) => padT + plotH * (1 - clamp(value, 0, 1)),
-    2
-  );
-  drawTrace(
-    points.map((p) => p.dVoc),
-    "#ffd05c",
-    "rgba(255, 208, 92, 0.16)",
-    dVocY,
-    1.7
-  );
+  if (showVoc) {
+    drawTrace(
+      points.map((p) => p.voc),
+      "#49e8ff",
+      "rgba(73, 232, 255, 0.18)",
+      vocY,
+      2.2
+    );
+  }
+  if (showClean) {
+    drawTrace(
+      cleanSeries.map((value) => value / 100),
+      "#70f8c1",
+      "rgba(112, 248, 193, 0.16)",
+      (value) => padT + plotH * (1 - clamp(value, 0, 1)),
+      2
+    );
+  }
+  if (showDvoc) {
+    drawTrace(
+      points.map((p) => p.dVoc),
+      "#ffd05c",
+      "rgba(255, 208, 92, 0.16)",
+      dVocY,
+      1.7
+    );
+  }
 
   const lastX = padL + plotW;
-  ctx.fillStyle = "#49e8ff";
-  ctx.beginPath();
-  ctx.arc(lastX, vocY(latest.voc), 3.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#70f8c1";
-  ctx.beginPath();
-  ctx.arc(lastX, cleanY(latestClean), 3.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#ffd05c";
-  ctx.beginPath();
-  ctx.arc(lastX, dVocY(latest.dVoc), 3.3, 0, Math.PI * 2);
-  ctx.fill();
-
-  drawFlag(lastX, vocY(latest.voc), `${latest.voc.toFixed(2)} ppm`, "#49e8ff");
-  drawFlag(lastX, cleanY(latestClean), `${Math.round(latestClean)}% clean`, "#70f8c1");
-  drawFlag(lastX, dVocY(latest.dVoc), fmtSigned(latest.dVoc, 2), "#ffd05c");
+  if (showVoc) {
+    ctx.fillStyle = "#49e8ff";
+    ctx.beginPath();
+    ctx.arc(lastX, vocY(latest.voc), 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    drawFlag(lastX, vocY(latest.voc), `${latest.voc.toFixed(2)} ppm`, "#49e8ff");
+  }
+  if (showClean) {
+    ctx.fillStyle = "#70f8c1";
+    ctx.beginPath();
+    ctx.arc(lastX, cleanY(latestClean), 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    drawFlag(lastX, cleanY(latestClean), `${Math.round(latestClean)}% clean`, "#70f8c1");
+  }
+  if (showDvoc) {
+    ctx.fillStyle = "#ffd05c";
+    ctx.beginPath();
+    ctx.arc(lastX, dVocY(latest.dVoc), 3.3, 0, Math.PI * 2);
+    ctx.fill();
+    drawFlag(lastX, dVocY(latest.dVoc), fmtSigned(latest.dVoc, 2), "#ffd05c");
+  }
 
   ctx.fillStyle = "rgba(188, 199, 216, 0.72)";
   ctx.font = "11px JetBrains Mono, monospace";
   ctx.textAlign = "right";
-  ctx.fillText(`${maxVoc.toFixed(1)}`, padL - 8, padT + 4);
-  ctx.fillText(`${(maxVoc / 2).toFixed(1)}`, padL - 8, padT + plotH * 0.5 + 4);
-  ctx.fillText("0", padL - 8, height - padB + 4);
-  ctx.fillStyle = "rgba(73, 232, 255, 0.84)";
-  ctx.fillText("VOC ppm", padL - 8, padT - 2);
+  if (showVoc) {
+    ctx.fillStyle = "rgba(73, 232, 255, 0.84)";
+    ctx.fillText("VOC ppm", padL - 8, padT - 2);
+    ctx.fillStyle = "rgba(188, 199, 216, 0.72)";
+    ctx.fillText(`${maxVoc.toFixed(1)}`, padL - 8, padT + 4);
+    ctx.fillText(`${(maxVoc / 2).toFixed(1)}`, padL - 8, padT + plotH * 0.5 + 4);
+    ctx.fillText("0", padL - 8, height - padB + 4);
+  }
 
   ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(112, 248, 193, 0.82)";
-  ctx.fillText("100", width - padR + 8, padT + 4);
-  ctx.fillText("50", width - padR + 8, padT + plotH * 0.5 + 4);
-  ctx.fillText("0", width - padR + 8, height - padB + 4);
-  ctx.fillText("Clean %", width - padR + 8, padT - 2);
+  if (showClean) {
+    ctx.fillStyle = "rgba(112, 248, 193, 0.82)";
+    ctx.fillText("Clean %", width - padR + 8, padT - 2);
+    ctx.fillText("100", width - padR + 8, padT + 4);
+    ctx.fillText("50", width - padR + 8, padT + plotH * 0.5 + 4);
+    ctx.fillText("0", width - padR + 8, height - padB + 4);
+  }
+
+  if (showDvoc) {
+    ctx.fillStyle = "rgba(255, 208, 92, 0.82)";
+    ctx.fillText(`+${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY - plotH * 0.28 - 4);
+    ctx.fillText("0", padL + 6, centerY - 4);
+    ctx.fillText(`-${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY + plotH * 0.28 + 12);
+  }
 
   ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(255, 208, 92, 0.82)";
-  ctx.fillText(`+${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY - plotH * 0.28 - 4);
-  ctx.fillText("0", padL + 6, centerY - 4);
-  ctx.fillText(`-${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY + plotH * 0.28 + 12);
-
-  ctx.textAlign = "left";
-  ctx.fillText("VOC", padL + 6, padT + 14);
-  ctx.fillStyle = "rgba(112, 248, 193, 0.74)";
-  ctx.fillText("CLEAN", padL + 42, padT + 14);
-  ctx.fillStyle = "rgba(255, 208, 92, 0.78)";
-  ctx.fillText("dVOC", padL + 94, padT + 14);
+  const legendLabels = [
+    showVoc   && { text: "VOC",   color: "rgba(73, 232, 255, 0.74)" },
+    showClean && { text: "CLEAN", color: "rgba(112, 248, 193, 0.74)" },
+    showDvoc  && { text: "dVOC",  color: "rgba(255, 208, 92, 0.78)" },
+  ].filter(Boolean);
+  ctx.font = "11px JetBrains Mono, monospace";
+  let legendX = padL + 6;
+  for (const lbl of legendLabels) {
+    ctx.fillStyle = lbl.color;
+    ctx.fillText(lbl.text, legendX, padT + 14);
+    legendX += ctx.measureText(lbl.text).width + 10;
+  }
 }
 
 function historySamplesForRhythm(history) {
@@ -4532,7 +4595,12 @@ function render(data) {
   $("bro-summary").textContent = buildBroSummary(merged);
   $("bro-report").innerHTML = renderStructuredReport(buildBroReport(merged));
 
-  setHeaderPill("launch-badge", Array.isArray(merged.launches) && merged.launches.length ? `${merged.launches.length} Cape launches` : "No launch data", Array.isArray(merged.launches) && merged.launches.length ? "good" : "neutral");
+  setHeaderPill("launch-badge", (() => {
+    const ls = Array.isArray(merged.launches) ? merged.launches : [];
+    if (!ls.length) return "No launch data";
+    const capeCount = ls.filter((l) => l.isCape).length;
+    return capeCount ? `${capeCount} Cape · ${ls.length} total` : `${ls.length} upcoming`;
+  })(), Array.isArray(merged.launches) && merged.launches.length ? "good" : "neutral");
   setHeaderPill("odor-badge", `${currentPrimary(merged)} · ${Math.round(num(merged.primaryConf))}%`, num(merged.primaryConf) >= 45 ? "warn" : num(merged.primaryConf) >= 20 ? "neutral" : "good");
   setHeaderPill(
     "weather-intel-badge",
@@ -6750,6 +6818,33 @@ window.addEventListener("hashchange", () => {
 window.addEventListener("resize", () => {
   if (lastData) drawHeroScope(lastData, historyData);
   if (historyData.length) drawChart(historyData);
+});
+
+// ── Scope series toggles ────────────────────────────────────────────────────
+document.querySelectorAll(".scope-chip[data-series]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const key = btn.dataset.series;
+    if (!key || !(key in scopeSettings.series)) return;
+    // Prevent deselecting the last active series
+    const activeCount = Object.values(scopeSettings.series).filter(Boolean).length;
+    if (activeCount <= 1 && scopeSettings.series[key]) return;
+    scopeSettings.series[key] = !scopeSettings.series[key];
+    btn.classList.toggle("is-active", scopeSettings.series[key]);
+    if (lastData) drawHeroScope(lastData, historyData);
+  });
+});
+
+// ── Scope window size selector ──────────────────────────────────────────────
+document.querySelectorAll(".scope-window-btn[data-window]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const win = Number(btn.dataset.window);
+    if (!Number.isFinite(win) || win <= 0) return;
+    scopeSettings.window = win;
+    document.querySelectorAll(".scope-window-btn").forEach((b) => {
+      b.classList.toggle("is-active", b === btn);
+    });
+    if (lastData) drawHeroScope(lastData, historyData);
+  });
 });
 
 applyTheme(loadThemePref(), { skipUi: true });
