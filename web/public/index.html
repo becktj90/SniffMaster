@@ -153,10 +153,18 @@
               <canvas id="hero-scope-canvas" width="960" height="240"></canvas>
               <div class="scope-scanline"></div>
             </div>
-            <div class="scope-legend">
-              <span class="scope-chip is-cyan" id="scope-chip-voc">VOC</span>
-              <span class="scope-chip is-mint" id="scope-chip-clean">Cleanliness</span>
-              <span class="scope-chip is-amber" id="scope-chip-dvoc">dVOC</span>
+            <div class="scope-controls">
+              <div class="scope-legend">
+                <button class="scope-chip is-cyan is-active" id="scope-chip-voc" data-series="voc" type="button">VOC</button>
+                <button class="scope-chip is-mint is-active" id="scope-chip-clean" data-series="clean" type="button">Cleanliness</button>
+                <button class="scope-chip is-amber is-active" id="scope-chip-dvoc" data-series="dvoc" type="button">dVOC</button>
+              </div>
+              <div class="scope-window-row">
+                <span class="scope-window-label">Window</span>
+                <button class="scope-window-btn" data-window="10" type="button">10</button>
+                <button class="scope-window-btn is-active" data-window="20" type="button">20</button>
+                <button class="scope-window-btn" data-window="32" type="button">32</button>
+              </div>
             </div>
             <div class="scope-insights" id="hero-scope-insights">
               <div class="scope-insight" data-tone="neutral">Waiting for live trend context.</div>
@@ -386,44 +394,6 @@
       <div class="source-caption">Source: BME688 device telemetry · BSEC2-derived proxies · local comfort, cognition, and persistence heuristics</div>
     </section>
 
-    <section class="card" id="card-occupancy" data-view="analysis">
-      <div class="card-header">
-        <span>BLE Occupancy</span>
-        <span class="header-pill" id="occupancy-badge">Space density</span>
-      </div>
-      <p class="card-summary">Passive Bluetooth scan counts to estimate how many devices — and by proxy, people — are present in the space.</p>
-      <details class="microcopy">
-        <summary>Learn more</summary>
-        <p>The sensor runs short passive BLE scans every 20 seconds and counts unique device addresses within a 30-second rolling window. Each device likely represents a phone, laptop, or wearable. Devices weaker than −90 dBm are filtered as background noise. The occupancy index (0–100) saturates at 10 devices.</p>
-      </details>
-      <div class="office-grid">
-        <div class="office-focus-panel">
-          <div class="office-kicker">Occupancy Index</div>
-          <div class="office-focus-row">
-            <div class="office-focus-value" id="occupancy-index-value">--</div>
-            <div class="office-focus-copy">
-              <div class="office-focus-band" id="occupancy-density-label">Waiting</div>
-              <div class="office-focus-note" id="occupancy-density-note">Space density will appear once BLE data arrives.</div>
-            </div>
-          </div>
-          <div class="office-focus-bar">
-            <div class="office-focus-fill" id="occupancy-index-fill"></div>
-          </div>
-        </div>
-        <div class="office-risk-panel">
-          <div class="office-kicker">Signal Quality</div>
-          <div class="office-risk-badge" id="occupancy-rssi-badge">--</div>
-          <div class="office-risk-status" id="occupancy-device-count">Waiting for first BLE scan.</div>
-          <div class="office-risk-note" id="occupancy-trend-note">Trend will appear after two or more readings.</div>
-        </div>
-      </div>
-      <div id="occupancy-bar-chart" class="occupancy-bar-shell">
-        <div class="occupancy-bar-empty">Waiting for BLE occupancy history.</div>
-      </div>
-      <div class="occupancy-briefing" id="occupancy-briefing">Occupancy briefing will appear once the device posts BLE scan data.</div>
-      <div class="source-caption" id="occupancy-source">Source: BLE passive scan · device MAC deduplication · 30-second rolling window</div>
-    </section>
-
     <section class="card" id="card-dadabase" data-view="labs">
       <div class="card-header">
         <span>Dadabase</span>
@@ -530,7 +500,7 @@
         <div class="report-empty">Waiting for Cape launch data...</div>
       </div>
       <div class="launch-stack" id="launch-stack"></div>
-      <div class="source-caption">Source: Cape launch feed · on-device launch parser · curated Space Coast daybook</div>
+      <div class="source-caption">Source: Launch Library 2 / The Space Devs · on-device launch parser · curated Space Coast daybook</div>
     </section>
 
     <section class="card" id="card-history" data-view="dashboard space">
