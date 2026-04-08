@@ -78,7 +78,12 @@ const HEATMAP_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const HEATMAP_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const POLL_MS = 10000;
-const STALE_MS = 300000; // 5 minutes
+const STALE_MS = 900000; // 15 minutes — status stays green until data is 15 min old
+// Manual location for weather map — Cape Canaveral Space Force Station, FL
+// (matches the server-side default; does not depend on device WiFi geolocation)
+const MANUAL_MAP_LAT = 28.4889;
+const MANUAL_MAP_LON = -80.5778;
+const MANUAL_MAP_CITY = "Cape Canaveral, FL";
 const SNIFF_EVENT_STALE_MS = 180000;
 const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
 const DADABASE_TTL_MS = 15 * 60 * 1000;
@@ -269,10 +274,6 @@ let rainViewerState = {
 let manualRefreshPending = false;
 let remoteCommandPending = false;
 let viewSubmenuOpen = false;
-
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
-}
 
 applyTheme(loadThemePref(), { skipUi: true });
 
@@ -2237,14 +2238,14 @@ function ensureWeatherMap() {
     maxZoom: 19,
   }).addTo(weatherMap);
 
-  weatherMarker = window.L.circleMarker([28.2062, -80.6874], {
+  weatherMarker = window.L.circleMarker([MANUAL_MAP_LAT, MANUAL_MAP_LON], {
     radius: 7,
     color: "rgba(9, 12, 16, 0.92)",
     weight: 2,
     fillColor: "#00f2ff",
     fillOpacity: 0.95,
   }).addTo(weatherMap);
-  weatherMap.setView([28.2062, -80.6874], 10);
+  weatherMap.setView([MANUAL_MAP_LAT, MANUAL_MAP_LON], 10);
   renderMapLayerButtons();
   return weatherMap;
 }
@@ -2302,8 +2303,17 @@ function syncWeatherMapPosition(d) {
   }
 
   if (!hasLocationFix(d)) {
-    if (fallback) fallback.style.display = "flex";
-    setMapLayerStatus("Map will appear once the device posts a location fix.");
+    // Always show the map at the manual/default location — do not wait for a GPS fix
+    const defaultTarget = [MANUAL_MAP_LAT, MANUAL_MAP_LON];
+    if (fallback) fallback.style.display = "none";
+    if (weatherMarker) {
+      weatherMarker.setLatLng(defaultTarget);
+      weatherMarker.bindTooltip(`${escapeHtml(MANUAL_MAP_CITY)}<br>${MANUAL_MAP_LAT.toFixed(4)}, ${MANUAL_MAP_LON.toFixed(4)}`);
+    }
+    const center = weatherMap.getCenter();
+    const drift = Math.abs(center.lat - MANUAL_MAP_LAT) + Math.abs(center.lng - MANUAL_MAP_LON);
+    if (drift > 0.04) weatherMap.setView(defaultTarget, 10);
+    setMapLayerStatus(`Showing manual location: ${MANUAL_MAP_CITY}`);
     return;
   }
 
@@ -3488,6 +3498,8 @@ function renderOfficeCard(d) {
   const comfort = officeComfortState(d);
   const collab = officeCollaborationState(d);
   const odor = officeOdorState(d);
+  const fatigue = officeFatigueProfile(d);
+  const persistence = officePersistenceProfile(d);
   $("office-attention-title").textContent = attention.title;
   $("office-attention-note").textContent = attention.note;
   $("office-comfort-title").textContent = comfort.title;
@@ -3496,6 +3508,11 @@ function renderOfficeCard(d) {
   $("office-collab-note").textContent = collab.note;
   $("office-odor-title").textContent = odor.title;
   $("office-odor-note").textContent = odor.note;
+  $("office-fatigue-title").textContent = fatigue.title;
+  $("office-fatigue-note").textContent = fatigue.note;
+  $("office-persistence-title").textContent = persistence.title;
+  $("office-persistence-note").textContent = persistence.note;
+  $("office-room-load").textContent = `${Math.round(num(d.airScore))}/100`;
   $("office-briefing").textContent = officeBriefing(d);
 
   const officeTone = vtrLevel >= 2 ? "danger" : cfiPercent < 60 || vtrLevel === 1 ? "warn" : "good";
