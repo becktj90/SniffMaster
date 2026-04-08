@@ -191,6 +191,7 @@ const VIEW_SECTIONS = {
   dashboard: [
     { id: "card-hero", label: "Snapshot" },
     { id: "card-status", label: "Status" },
+    { id: "card-intel", label: "Intelligence" },
     { id: "card-office", label: "Vitality" },
     { id: "card-space", label: "Launches" },
     { id: "card-history", label: "History" },
@@ -202,6 +203,7 @@ const VIEW_SECTIONS = {
     { id: "card-weather-intel", label: "Weather" },
   ],
   analysis: [
+    { id: "card-intel", label: "Intelligence" },
     { id: "card-office", label: "Vitality" },
     { id: "card-occupancy", label: "Occupancy" },
     { id: "card-odor", label: "Classification" },
@@ -3472,13 +3474,25 @@ function renderHero(d) {
   $("hero-calibration").textContent = calibration.short;
   $("hero-primary").textContent = currentPrimary(d);
   $("hero-summary").textContent = heroSummaryText(d);
-  $("hero-subtitle").textContent = "Real-time odor intelligence from a BME688-based sensor stack.";
+  $("hero-subtitle").textContent = "Your space, monitored continuously.";
   $("hero-tier").textContent = `${smellTierLabel(num(d.tier))} · Tier ${num(d.tier)}/5`;
   $("hero-trends").textContent = `IAQ ${d.iaqTrend || "steady"} | VOC ${d.vocTrend || "steady"}`;
   $("hero-brief-title").textContent = `${briefLead} · ${Math.round(score)}/100 room index`;
   $("hero-brief-primary").textContent = currentPrimary(d, "No dominant odor");
   $("hero-brief-next").textContent = `${windowCall(d)} ${briefTone}`.trim();
   $("hero-brief-status").textContent = statusBits.join(" · ");
+
+  const causeParts = [];
+  if (num(d.voc) > 1.5) causeParts.push("elevated VOC activity");
+  if (num(d.co2) > 1000) causeParts.push("CO₂ buildup from occupancy");
+  if (num(d.iaq) > 150) causeParts.push("deteriorating air quality index");
+  if (num(d.humidity) > 70) causeParts.push("high humidity");
+  if (num(d.outdoorAqi) > 100) causeParts.push("poor outdoor air");
+  if (activeSniff) causeParts.push("active odor event detected");
+  const causeText = causeParts.length
+    ? `Led by ${causeParts.slice(0, 2).join(" and ")}.`
+    : "Air conditions appear stable — no dominant stressor.";
+  $("hero-cause") && ($("hero-cause").textContent = causeText);
   const melodyTagReason = `${d.lastMelodyReason || ""}`.trim();
   const melodyTitle = `${d.lastMelody || ""}`.trim();
   $("hero-melody").textContent = normalizeMelodyTitle(melodyTitle)
@@ -4596,6 +4610,7 @@ function render(data) {
   renderHero(merged);
   drawHeroScope(merged, historyData);
   renderStatusStrip(merged);
+  renderIntelDrawer(merged);
   renderOfficeCard(merged);
   renderTelemetry(merged);
   renderDerivedMetrics(merged);
@@ -4867,6 +4882,28 @@ function tickAge() {
   }
 }
 
+let _subnav_observer = null;
+
+function activateSubnavObserver() {
+  if (_subnav_observer) _subnav_observer.disconnect();
+  const panel = $("view-subnav-panel");
+  if (!panel) return;
+  const targets = Array.from(panel.querySelectorAll("[data-scroll-target]"))
+    .map((btn) => ({ btn, el: document.getElementById(btn.dataset.scrollTarget || "") }))
+    .filter((e) => e.el);
+  if (!targets.length) return;
+  _subnav_observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        targets.forEach(({ btn, el }) => btn.classList.toggle("is-active", el === entry.target));
+      });
+    },
+    { rootMargin: "-20% 0px -60% 0px", threshold: 0 }
+  );
+  targets.forEach(({ el }) => _subnav_observer.observe(el));
+}
+
 function renderViewSubnav(view) {
   const shell = $("view-submenu-shell");
   const panel = $("view-subnav-panel");
@@ -4893,6 +4930,7 @@ function renderViewSubnav(view) {
   });
 
   closeViewSubmenu();
+  activateSubnavObserver();
 }
 
 function setDashboardView(view) {

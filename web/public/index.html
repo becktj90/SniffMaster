@@ -122,7 +122,6 @@
           <span class="tag" id="hero-tier">Tier --</span>
           <span class="tag" id="hero-trends">IAQ -- | VOC --</span>
           <span class="tag" id="hero-melody">Melody: --</span>
-          <span class="tag">Auto-refresh: 10s</span>
         </div>
         <div class="hero-detail-grid">
           <div class="hero-brief">
@@ -135,6 +134,10 @@
             <div class="brief-row">
               <span class="brief-label">Next move</span>
               <span class="brief-value" id="hero-brief-next">Window guidance will appear here.</span>
+            </div>
+            <div class="brief-row">
+              <span class="brief-label">Primary driver</span>
+              <span class="brief-value" id="hero-cause">Analyzing conditions...</span>
             </div>
             <div class="brief-row">
               <span class="brief-label">Status</span>
@@ -293,6 +296,40 @@
           <span class="status-label">Last update</span>
           <span class="status-value" id="status-updated">No snapshot yet</span>
         </div>
+      </div>
+    </section>
+
+    <section class="card" id="card-intel" data-view="dashboard analysis">
+      <div class="card-header">
+        <span>Signal Intelligence</span>
+        <span class="header-pill">Air interpretation</span>
+      </div>
+      <p class="card-summary" id="intel-summary">Signal interpretation will appear here with the first live snapshot.</p>
+      <div class="status-grid">
+        <div class="status-item">
+          <span class="status-label">IAQ Range</span>
+          <span class="status-value" id="intel-iaq-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">VOC Range</span>
+          <span class="status-value" id="intel-voc-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Sulfur / VSC Proxy</span>
+          <span class="status-value" id="intel-vsc-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Room Quality Index</span>
+          <span class="status-value" id="intel-rqi-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Gas Resistance</span>
+          <span class="status-value" id="intel-gasr-range">Waiting...</span>
+        </div>
+      </div>
+      <div class="status-item" style="margin-top:10px; border-radius:16px;">
+        <span class="status-label">Interpretation Guide</span>
+        <span class="status-value" id="intel-copy">Metric definitions will appear here.</span>
       </div>
     </section>
 
@@ -1059,7 +1096,7 @@
 
     <section class="card bro-card" id="card-bro" data-view="analysis">
       <div class="card-header">
-        <span>Locker-Room Readout</span>
+        <span>Room Intelligence</span>
         <span class="header-pill" id="bro-badge">Stand by</span>
       </div>
       <div class="bro-summary-shell">
