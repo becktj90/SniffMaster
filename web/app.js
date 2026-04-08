@@ -78,7 +78,7 @@ const HEATMAP_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const HEATMAP_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const POLL_MS = 10000;
-const STALE_MS = 900000; // 15 minutes — status stays green until data is 15 min old
+const STALE_MS = 900000; // 15 minutes — status stays green until data is 15 minutes old
 // Manual location for weather map — Cape Canaveral Space Force Station, FL
 // (matches the server-side default; does not depend on device WiFi geolocation)
 const MANUAL_MAP_LAT = 28.4889;
