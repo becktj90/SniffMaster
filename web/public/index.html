@@ -74,10 +74,10 @@
 
   <div class="section-shell">
     <nav class="section-nav" aria-label="Dashboard sections">
-      <button class="section-btn is-active" type="button" data-view-target="dashboard">Dashboard</button>
-      <button class="section-btn" type="button" data-view-target="environment">Environment</button>
-      <button class="section-btn" type="button" data-view-target="analysis">Analysis</button>
-      <button class="section-btn" type="button" data-view-target="history">History</button>
+      <button class="section-btn is-active" type="button" data-view-target="dashboard">Overview</button>
+      <button class="section-btn" type="button" data-view-target="environment">Local Area</button>
+      <button class="section-btn" type="button" data-view-target="analysis">Air & Signal</button>
+      <button class="section-btn" type="button" data-view-target="history">Trends</button>
       <button class="section-btn" type="button" data-view-target="labs">Labs</button>
     </nav>
   </div>
@@ -117,12 +117,11 @@
           <span class="badge subtle" id="hero-primary">Clean Air</span>
         </div>
         <h2 id="hero-summary">Waiting for live sensor data...</h2>
-        <p id="hero-subtitle">Real-time odor intelligence from your BME688 sensor stack will appear here.</p>
+        <p id="hero-subtitle">Your space, monitored continuously.</p>
         <div class="hero-tags">
           <span class="tag" id="hero-tier">Tier --</span>
           <span class="tag" id="hero-trends">IAQ -- | VOC --</span>
           <span class="tag" id="hero-melody">Melody: --</span>
-          <span class="tag">Auto-refresh: 10s</span>
         </div>
         <div class="hero-detail-grid">
           <div class="hero-brief">
@@ -135,6 +134,10 @@
             <div class="brief-row">
               <span class="brief-label">Next move</span>
               <span class="brief-value" id="hero-brief-next">Window guidance will appear here.</span>
+            </div>
+            <div class="brief-row">
+              <span class="brief-label">Primary driver</span>
+              <span class="brief-value" id="hero-cause">Analyzing conditions...</span>
             </div>
             <div class="brief-row">
               <span class="brief-label">Status</span>
@@ -153,18 +156,10 @@
               <canvas id="hero-scope-canvas" width="960" height="240"></canvas>
               <div class="scope-scanline"></div>
             </div>
-            <div class="scope-controls">
-              <div class="scope-legend">
-                <button class="scope-chip is-cyan is-active" id="scope-chip-voc" data-series="voc" type="button">VOC</button>
-                <button class="scope-chip is-mint is-active" id="scope-chip-clean" data-series="clean" type="button">Cleanliness</button>
-                <button class="scope-chip is-amber is-active" id="scope-chip-dvoc" data-series="dvoc" type="button">dVOC</button>
-              </div>
-              <div class="scope-window-row">
-                <span class="scope-window-label">Window</span>
-                <button class="scope-window-btn" data-window="10" type="button">10</button>
-                <button class="scope-window-btn is-active" data-window="20" type="button">20</button>
-                <button class="scope-window-btn" data-window="32" type="button">32</button>
-              </div>
+            <div class="scope-legend">
+              <span class="scope-chip is-cyan" id="scope-chip-voc">VOC</span>
+              <span class="scope-chip is-mint" id="scope-chip-clean">Cleanliness</span>
+              <span class="scope-chip is-amber" id="scope-chip-dvoc">dVOC</span>
             </div>
             <div class="scope-insights" id="hero-scope-insights">
               <div class="scope-insight" data-tone="neutral">Waiting for live trend context.</div>
@@ -262,19 +257,22 @@
           <span class="metric-value" id="v-dvoc">--</span>
         </div>
       </div>
-      <div class="metric-legend">
-        <span><strong>IAQ:</strong> indoor air burden, lower is better</span>
-        <span><strong>VOC:</strong> airborne organic-gas activity</span>
-        <span><strong>CO2eq:</strong> stuffiness / ventilation proxy</span>
-        <span><strong>Outdoor AQI:</strong> outside-air quality</span>
-        <span><strong>Gas R:</strong> sensor resistance, often higher when cleaner</span>
-        <span><strong>dVOC:</strong> recent change in gas activity</span>
-      </div>
+      <details class="metric-legend">
+        <summary>Metric glossary</summary>
+        <div class="metric-legend-items">
+          <span><strong>IAQ:</strong> indoor air burden, lower is better</span>
+          <span><strong>VOC:</strong> airborne organic-gas activity</span>
+          <span><strong>CO2eq:</strong> stuffiness / ventilation proxy</span>
+          <span><strong>Outdoor AQI:</strong> outside-air quality</span>
+          <span><strong>Gas R:</strong> sensor resistance, often higher when cleaner</span>
+          <span><strong>dVOC:</strong> recent change in gas activity</span>
+        </div>
+      </details>
     </section>
 
     <section class="card status-strip" id="card-status" data-view="dashboard environment system">
       <div class="card-header">
-        <span>System Status</span>
+        <span>System</span>
         <span class="header-pill" id="status-badge">Awaiting telemetry</span>
       </div>
       <div class="status-grid">
@@ -283,7 +281,7 @@
           <span class="status-value" id="status-sensor">Offline</span>
         </div>
         <div class="status-item">
-          <span class="status-label">BSEC State</span>
+          <span class="status-label">Sensor State</span>
           <span class="status-value" id="status-bsec">Sensor warmup</span>
         </div>
         <div class="status-item">
@@ -291,7 +289,7 @@
           <span class="status-value" id="status-warmup">Waiting for the first clean sensor packets.</span>
         </div>
         <div class="status-item">
-          <span class="status-label">Wi-Fi Relay</span>
+          <span class="status-label">Connection</span>
           <span class="status-value" id="status-link">Awaiting first sync</span>
         </div>
         <div class="status-item">
@@ -301,9 +299,79 @@
       </div>
     </section>
 
+    <section class="card" id="card-intel" data-view="dashboard analysis">
+      <div class="card-header">
+        <span>Signal Intelligence</span>
+        <span class="header-pill">Air interpretation</span>
+      </div>
+      <p class="card-summary" id="intel-summary">Signal interpretation will appear here with the first live snapshot.</p>
+      <div class="status-grid">
+        <div class="status-item">
+          <span class="status-label">IAQ Range</span>
+          <span class="status-value" id="intel-iaq-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">VOC Range</span>
+          <span class="status-value" id="intel-voc-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Sulfur / VSC Proxy</span>
+          <span class="status-value" id="intel-vsc-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Room Quality Index</span>
+          <span class="status-value" id="intel-rqi-range">Waiting...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Gas Resistance</span>
+          <span class="status-value" id="intel-gasr-range">Waiting...</span>
+        </div>
+      </div>
+      <div class="status-item" style="margin-top:10px; border-radius:16px;">
+        <span class="status-label">Interpretation Guide</span>
+        <span class="status-value" id="intel-copy">Metric definitions will appear here.</span>
+      </div>
+    </section>
+
+    <section class="card" id="card-cause" data-view="dashboard analysis">
+      <div class="card-header">
+        <span>Cause Engine</span>
+        <span class="header-pill" id="cause-badge">Analyzing</span>
+      </div>
+      <div class="cause-primary-row">
+        <div class="cause-driver-block">
+          <div class="cause-kicker">Primary Driver</div>
+          <div class="cause-driver-value" id="cause-primary-driver">Standby</div>
+          <div class="cause-driver-note" id="cause-primary-note">The main factor shaping current room conditions will appear here.</div>
+        </div>
+        <div class="cause-action-block">
+          <div class="cause-kicker">Recommended Action</div>
+          <div class="cause-action-value" id="cause-action">No action needed</div>
+        </div>
+      </div>
+      <div class="cause-factors-grid" id="cause-factors-grid">
+        <div class="cause-factor">
+          <span class="cause-factor-label">Internal air load</span>
+          <span class="cause-factor-value" id="cause-factor-air">--</span>
+        </div>
+        <div class="cause-factor">
+          <span class="cause-factor-label">Occupancy pressure</span>
+          <span class="cause-factor-value" id="cause-factor-occ">--</span>
+        </div>
+        <div class="cause-factor">
+          <span class="cause-factor-label">Outdoor influence</span>
+          <span class="cause-factor-value" id="cause-factor-outdoor">--</span>
+        </div>
+        <div class="cause-factor">
+          <span class="cause-factor-label">Ventilation status</span>
+          <span class="cause-factor-value" id="cause-factor-vent">--</span>
+        </div>
+      </div>
+    </section>
+
     <section class="card office-card" id="card-office" data-view="dashboard analysis">
       <div class="card-header">
-        <span>Office Vitality</span>
+        <span>Vitality</span>
         <span class="header-pill" id="office-badge">Derived office metrics</span>
       </div>
       <p class="card-summary">Human-impact readouts for focus, comfort, shared-air load, and biological persistence.</p>
@@ -392,6 +460,44 @@
       </div>
       <div class="office-briefing" id="office-briefing">Office impact briefing will appear here once the room posts a live snapshot.</div>
       <div class="source-caption">Source: BME688 device telemetry · BSEC2-derived proxies · local comfort, cognition, and persistence heuristics</div>
+    </section>
+
+    <section class="card" id="card-occupancy" data-view="analysis">
+      <div class="card-header">
+        <span>BLE Occupancy</span>
+        <span class="header-pill" id="occupancy-badge">Space density</span>
+      </div>
+      <p class="card-summary">Passive Bluetooth scan counts to estimate how many devices — and by proxy, people — are present in the space.</p>
+      <details class="microcopy">
+        <summary>Learn more</summary>
+        <p>The sensor runs short passive BLE scans every 20 seconds and counts unique device addresses within a 30-second rolling window. Each device likely represents a phone, laptop, or wearable. Devices weaker than −90 dBm are filtered as background noise. The occupancy index (0–100) saturates at 10 devices.</p>
+      </details>
+      <div class="office-grid">
+        <div class="office-focus-panel">
+          <div class="office-kicker">Occupancy Index</div>
+          <div class="office-focus-row">
+            <div class="office-focus-value" id="occupancy-index-value">--</div>
+            <div class="office-focus-copy">
+              <div class="office-focus-band" id="occupancy-density-label">Waiting</div>
+              <div class="office-focus-note" id="occupancy-density-note">Space density will appear once BLE data arrives.</div>
+            </div>
+          </div>
+          <div class="office-focus-bar">
+            <div class="office-focus-fill" id="occupancy-index-fill"></div>
+          </div>
+        </div>
+        <div class="office-risk-panel">
+          <div class="office-kicker">Signal Quality</div>
+          <div class="office-risk-badge" id="occupancy-rssi-badge">--</div>
+          <div class="office-risk-status" id="occupancy-device-count">Waiting for first BLE scan.</div>
+          <div class="office-risk-note" id="occupancy-trend-note">Trend will appear after two or more readings.</div>
+        </div>
+      </div>
+      <div id="occupancy-bar-chart" class="occupancy-bar-shell">
+        <div class="occupancy-bar-empty">Waiting for BLE occupancy history.</div>
+      </div>
+      <div class="occupancy-briefing" id="occupancy-briefing">Occupancy briefing will appear once the device posts BLE scan data.</div>
+      <div class="source-caption" id="occupancy-source">Source: BLE passive scan · device MAC deduplication · 30-second rolling window</div>
     </section>
 
     <section class="card" id="card-dadabase" data-view="labs">
@@ -500,7 +606,7 @@
         <div class="report-empty">Waiting for Cape launch data...</div>
       </div>
       <div class="launch-stack" id="launch-stack"></div>
-      <div class="source-caption">Source: Launch Library 2 / The Space Devs · on-device launch parser · curated Space Coast daybook</div>
+      <div class="source-caption">Source: Cape launch feed · on-device launch parser · curated Space Coast daybook</div>
     </section>
 
     <section class="card" id="card-history" data-view="dashboard space">
@@ -519,7 +625,7 @@
 
     <section class="card odor-card" id="card-odor" data-view="analysis">
       <div class="card-header">
-        <span>Current Classification</span>
+        <span>Odor Classification</span>
         <span class="header-pill" id="odor-badge">Classifier idle</span>
       </div>
       <div class="odor-hero">
@@ -561,7 +667,7 @@
 
     <section class="card pipeline-card" id="card-telemetry" data-view="environment">
       <div class="card-header">
-        <span>Raw Inputs</span>
+        <span>Raw Sensors</span>
         <span class="header-pill" id="city-pill">Sensor stream</span>
       </div>
       <p class="card-summary">Direct sensor and device signals before classification.</p>
@@ -607,7 +713,7 @@
 
     <section class="card pipeline-card" id="card-derived" data-view="environment">
       <div class="card-header">
-        <span>Derived Metrics</span>
+        <span>Air Metrics</span>
         <span class="header-pill" id="derived-badge">Inference layer</span>
       </div>
       <p class="card-summary">Processed air-quality metrics derived from the sensor stream.</p>
@@ -1013,7 +1119,7 @@
         </div>
         <div class="map-shell">
           <div id="weather-map" aria-label="Interactive weather and environmental layers map"></div>
-          <div class="map-fallback" id="map-fallback">Map will appear once the device posts a location fix.</div>
+          <div class="map-fallback" id="map-fallback">Loading map...</div>
           <div class="map-overlay">
             <div class="map-title" id="map-city">Location pending</div>
             <a id="map-link" href="https://www.openstreetmap.org" target="_blank" rel="noreferrer">Open street map</a>
@@ -1026,7 +1132,7 @@
 
     <section class="card bro-card" id="card-bro" data-view="analysis">
       <div class="card-header">
-        <span>Locker-Room Readout</span>
+        <span>Room Intelligence</span>
         <span class="header-pill" id="bro-badge">Stand by</span>
       </div>
       <div class="bro-summary-shell">
@@ -1399,7 +1505,6 @@ loop():
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/esri-leaflet@3.0.14/dist/esri-leaflet.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

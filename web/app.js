@@ -80,7 +80,7 @@ const HEATMAP_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const POLL_MS = 10000;
 const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
-const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
+const WEATHER_BRIEFING_TTL_MS = 60 * 60 * 1000; // 1-hour cadence for AI weather prediction
 const DADABASE_TTL_MS = 15 * 60 * 1000;
 const DURATION_MACROS = {
   ML_WHOLE: (bpm) => 240000 / bpm,
@@ -160,57 +160,59 @@ const THEME_META = {
 const DEFAULT_THEME = "obsidian";
 const DEFAULT_MAP_LAYERS = {
   radar: true,
-  night: false,
-  epa: false,
-  crime: false,
 };
 const VIEW_META = {
   dashboard: {
-    title: "Dashboard",
-    subtitle: "Live room status, key metrics, and current guidance in one scan-friendly view.",
+    title: "Overview",
+    subtitle: "Current room condition, key metrics, and priority guidance at a glance.",
   },
   environment: {
-    title: "Environment",
-    subtitle: "Raw inputs, derived air metrics, and simplified outdoor context.",
+    title: "Local Area",
+    subtitle: "Outdoor conditions, weather context, and live environmental map.",
   },
   analysis: {
-    title: "Analysis",
-    subtitle: "Classifier output, odor intensity, vitality, and breath-related interpretation.",
+    title: "Air & Signal",
+    subtitle: "Air classification, odor intensity, occupancy, and room intelligence.",
   },
   history: {
-    title: "History",
+    title: "Trends",
     subtitle: "Daily rhythm patterns and the timestamped event log.",
   },
   labs: {
     title: "Labs",
-    subtitle: "Experimental and playful features separated from the primary instrument views.",
+    subtitle: "Experimental and playful features.",
   },
 };
 
 const VIEW_SECTIONS = {
   dashboard: [
-    { id: "card-hero", label: "Snapshot" },
-    { id: "card-status", label: "Status" },
+    { id: "card-hero", label: "Room Status" },
+    { id: "card-status", label: "System" },
+    { id: "card-intel", label: "Air Intelligence" },
+    { id: "card-cause", label: "Cause Engine" },
     { id: "card-office", label: "Vitality" },
-    { id: "card-space", label: "Launches" },
-    { id: "card-history", label: "History" },
+    { id: "card-space", label: "Space Coast" },
+    { id: "card-history", label: "Space History" },
   ],
   environment: [
-    { id: "card-status", label: "Status" },
-    { id: "card-telemetry", label: "Raw Inputs" },
-    { id: "card-derived", label: "Derived" },
-    { id: "card-weather-intel", label: "Weather" },
+    { id: "card-status", label: "System" },
+    { id: "card-telemetry", label: "Raw Sensors" },
+    { id: "card-derived", label: "Air Metrics" },
+    { id: "card-weather-intel", label: "Weather & Map" },
   ],
   analysis: [
+    { id: "card-intel", label: "Air Intel" },
+    { id: "card-cause", label: "Cause Engine" },
     { id: "card-office", label: "Vitality" },
-    { id: "card-odor", label: "Classification" },
+    { id: "card-occupancy", label: "Presence" },
+    { id: "card-odor", label: "Odor Class" },
     { id: "card-breath", label: "Breath" },
-    { id: "card-fart", label: "Stank" },
-    { id: "card-bro", label: "Readout" },
+    { id: "card-fart", label: "Intensity" },
+    { id: "card-bro", label: "Room Intel" },
   ],
   history: [
-    { id: "card-chart", label: "Rhythm" },
-    { id: "card-events", label: "Events" },
+    { id: "card-chart", label: "Daily Rhythm" },
+    { id: "card-events", label: "Event Log" },
   ],
   labs: [
     { id: "card-dadabase", label: "Dadabase" },
@@ -243,6 +245,11 @@ let weatherBriefingState = {
   data: null,
   pending: null,
 };
+let occupancyBriefingState = {
+  fetchedAt: 0,
+  data: null,
+  pending: null,
+};
 let launchState = {
   fetchedAt: 0,
   data: null,
@@ -259,8 +266,6 @@ let mapLayerPrefs = loadMapLayerPrefs();
 let activeView = loadViewPref();
 let mapLayers = {
   radar: null,
-  night: null,
-  epa: null,
 };
 let rainViewerState = {
   fetchedAt: 0,
@@ -306,29 +311,11 @@ function escapeHtml(value) {
 }
 
 function loadMapLayerPrefs() {
-  try {
-    const raw = localStorage.getItem(MAP_PREF_KEY);
-    if (!raw) return { ...DEFAULT_MAP_LAYERS };
-    const parsed = JSON.parse(raw);
-    return {
-      radar: Boolean(parsed.radar ?? DEFAULT_MAP_LAYERS.radar),
-      night: false,
-      epa: false,
-      crime: false,
-    };
-  } catch (_) {
-    return { ...DEFAULT_MAP_LAYERS };
-  }
+  return { radar: true };
 }
 
 function saveMapLayerPrefs() {
-  try {
-    localStorage.setItem(MAP_PREF_KEY, JSON.stringify({
-      radar: Boolean(mapLayerPrefs.radar),
-      night: Boolean(mapLayerPrefs.night),
-      epa: Boolean(mapLayerPrefs.epa),
-    }));
-  } catch (_) {}
+  // radar is always-on; no user preferences to persist
 }
 
 function loadViewPref() {
@@ -2125,25 +2112,17 @@ function weatherMapLinks(d) {
   };
 }
 
-function setMapLayerStatus(text) {
-  const el = $("map-layer-status");
-  if (el) el.textContent = text;
+function setMapLayerStatus(_text) {
+  // no-op: layer status element removed from UI
 }
 
 function renderMapLayerButtons() {
-  document.querySelectorAll(".map-layer-chip").forEach((button) => {
-    const key = button.dataset.layer;
-    const active = Boolean(mapLayerPrefs[key]);
-    button.classList.toggle("is-active", active);
-    const unavailable = key === "crime";
-    button.classList.toggle("is-unavailable", unavailable && !active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  });
+  // no-op: layer toggle buttons removed from UI (radar is always-on)
 }
 
 async function fetchRainViewerTileUrl() {
   const now = Date.now();
-  if (rainViewerState.tileUrl && now - rainViewerState.fetchedAt < 8 * 60 * 1000) {
+  if (rainViewerState.tileUrl && now - rainViewerState.fetchedAt < 5 * 60 * 1000) {
     return rainViewerState.tileUrl;
   }
 
@@ -2182,76 +2161,6 @@ async function ensureRadarLayer() {
   return mapLayers.radar;
 }
 
-function ensureNightLightsLayer() {
-  if (mapLayers.night) return mapLayers.night;
-  if (!window.L) return null;
-
-  mapLayers.night = window.L.tileLayer.wms("https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi", {
-    layers: "VIIRS_Black_Marble",
-    format: "image/png",
-    transparent: true,
-    opacity: 0.48,
-    attribution: "Night lights © NASA GIBS",
-    maxZoom: 12,
-  });
-  return mapLayers.night;
-}
-
-function epaMarkerTone(props) {
-  const serious = `${props.FAC_CURR_SNC_FLG || ""}`.toUpperCase() === "Y";
-  const count = num(props.CURRENT_VIO_CNT, 0);
-  if (serious || count >= 2) return { color: "#e74c3c", radius: 7 };
-  if (count >= 1) return { color: "#f1c40f", radius: 6 };
-  return { color: "#00f2ff", radius: 5 };
-}
-
-function ensureEpaLayer() {
-  if (mapLayers.epa) return mapLayers.epa;
-  if (!(window.L && window.L.esri)) return null;
-
-  mapLayers.epa = window.L.esri.featureLayer({
-    url: "https://echogeo.epa.gov/arcgis/rest/services/ECHO/Facilities/MapServer/0",
-    where: "CURRENT_VIO_CNT > 0 OR FAC_CURR_SNC_FLG = 'Y'",
-    fields: [
-      "FAC_NAME",
-      "FAC_CITY",
-      "FAC_STATE",
-      "FAC_CURR_SNC_FLG",
-      "CURRENT_VIO_CNT",
-      "FAC_3YR_COMPLIANCE_STATUS",
-      "FAC_PROGRAMS_IN_SNC",
-    ],
-    pointToLayer(geojson, latlng) {
-      const tone = epaMarkerTone(geojson.properties || {});
-      return window.L.circleMarker(latlng, {
-        radius: tone.radius,
-        color: "rgba(9, 12, 16, 0.92)",
-        weight: 1.6,
-        fillColor: tone.color,
-        fillOpacity: 0.88,
-        className: "epa-marker",
-      });
-    },
-  });
-
-  mapLayers.epa.bindPopup((layer) => {
-    const props = layer.feature?.properties || {};
-    const count = Math.round(num(props.CURRENT_VIO_CNT, 0));
-    const snc = `${props.FAC_CURR_SNC_FLG || ""}`.toUpperCase() === "Y" ? "Yes" : "No";
-    const programs = Math.round(num(props.FAC_PROGRAMS_IN_SNC, 0));
-    return `
-      <strong>${escapeHtml(props.FAC_NAME || "EPA facility")}</strong><br>
-      ${escapeHtml(props.FAC_CITY || "")}${props.FAC_STATE ? `, ${escapeHtml(props.FAC_STATE)}` : ""}<br>
-      Current violations: ${count}<br>
-      Significant noncompliance: ${snc}<br>
-      Programs in SNC: ${programs}<br>
-      3-year status: ${escapeHtml(props.FAC_3YR_COMPLIANCE_STATUS || "Unknown")}
-    `;
-  });
-
-  return mapLayers.epa;
-}
-
 function ensureWeatherMap() {
   if (weatherMap || !window.L) return weatherMap;
   const el = $("weather-map");
@@ -2268,59 +2177,23 @@ function ensureWeatherMap() {
     maxZoom: 19,
   }).addTo(weatherMap);
 
-  weatherMarker = window.L.circleMarker([DEFAULT_MAP_LAT, DEFAULT_MAP_LON], {
+  weatherMarker = window.L.circleMarker([CAPE_MAP_LAT, CAPE_MAP_LON], {
     radius: 7,
     color: "rgba(9, 12, 16, 0.92)",
     weight: 2,
     fillColor: "#00f2ff",
     fillOpacity: 0.95,
   }).addTo(weatherMap);
-  weatherMap.setView([DEFAULT_MAP_LAT, DEFAULT_MAP_LON], 10);
+  weatherMap.setView([CAPE_MAP_LAT, CAPE_MAP_LON], 10);
   renderMapLayerButtons();
   return weatherMap;
 }
 
 async function syncMapLayers() {
   if (!weatherMap) return;
-
-  const active = [];
-
-  if (mapLayerPrefs.radar) {
-    const radarLayer = await ensureRadarLayer();
-    if (radarLayer && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
-    if (radarLayer) active.push("Radar");
-  } else if (mapLayers.radar && weatherMap.hasLayer(mapLayers.radar)) {
-    weatherMap.removeLayer(mapLayers.radar);
-  }
-
-  if (mapLayerPrefs.night) {
-    const nightLayer = ensureNightLightsLayer();
-    if (nightLayer && !weatherMap.hasLayer(nightLayer)) nightLayer.addTo(weatherMap);
-    if (nightLayer) active.push("Night Lights");
-  } else if (mapLayers.night && weatherMap.hasLayer(mapLayers.night)) {
-    weatherMap.removeLayer(mapLayers.night);
-  }
-
-  if (mapLayerPrefs.epa) {
-    const epaLayer = ensureEpaLayer();
-    if (epaLayer && !weatherMap.hasLayer(epaLayer)) epaLayer.addTo(weatherMap);
-    if (epaLayer) active.push("EPA Watch");
-  } else if (mapLayers.epa && weatherMap.hasLayer(mapLayers.epa)) {
-    weatherMap.removeLayer(mapLayers.epa);
-  }
-
-  let note = active.length
-    ? `${active.join(", ")} weather layer active.`
-    : "Base weather map active.";
-
-  if (mapLayerPrefs.crime) {
-    mapLayerPrefs.crime = false;
-    saveMapLayerPrefs();
-    note = `${note} Experimental overlays are disabled in the simplified weather view.`;
-  }
-
-  renderMapLayerButtons();
-  setMapLayerStatus(note);
+  // Radar (RainViewer) is the only weather layer — always active
+  const radarLayer = await ensureRadarLayer();
+  if (radarLayer && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
 }
 
 // Default map location: Cape Canaveral Space Force Station, FL
@@ -2483,6 +2356,104 @@ async function ensureWeatherBriefing(d) {
       renderWeatherForecast(lastData, briefing);
       renderWeatherIntel(lastData);
       $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(lastData, briefing));
+    }
+  })();
+}
+
+const OCCUPANCY_BRIEFING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function renderOccupancyCard(payload) {
+  if (!payload) return;
+  const index = num(payload.occupancyIndex, NaN);
+  const deviceCount = num(payload.deviceCount, NaN);
+
+  setHeaderPill("occupancy-badge", payload.densityLabel || "Space density", "neutral");
+
+  const indexEl = $("occupancy-index-value");
+  if (indexEl) indexEl.textContent = Number.isFinite(index) ? `${Math.round(index)}` : "--";
+
+  const labelEl = $("occupancy-density-label");
+  if (labelEl) labelEl.textContent = payload.densityLabel || "Waiting";
+
+  const noteEl = $("occupancy-density-note");
+  if (noteEl) noteEl.textContent = payload.densityNote || "Space density will appear once BLE data arrives.";
+
+  const fillEl = $("occupancy-index-fill");
+  if (fillEl && Number.isFinite(index)) {
+    fillEl.style.width = `${clamp(index, 0, 100)}%`;
+    fillEl.style.background = index < 25 ? "var(--mint)"
+      : index < 55 ? "var(--lime)"
+      : index < 80 ? "var(--amber)"
+      : "var(--red)";
+  }
+
+  const rssiEl = $("occupancy-rssi-badge");
+  if (rssiEl) {
+    const rssi = num(payload.avgRssi, NaN);
+    rssiEl.textContent = Number.isFinite(rssi) ? `${Math.round(rssi)} dBm` : "--";
+  }
+
+  const countEl = $("occupancy-device-count");
+  if (countEl) {
+    countEl.textContent = Number.isFinite(deviceCount)
+      ? `${deviceCount} BLE device${deviceCount !== 1 ? "s" : ""} detected`
+      : "Waiting for first BLE scan.";
+  }
+
+  const trendEl = $("occupancy-trend-note");
+  if (trendEl && payload.trend) {
+    const { direction, delta } = payload.trend;
+    const sign = delta > 0 ? "+" : "";
+    trendEl.textContent = direction === "stable"
+      ? "Occupancy is holding steady."
+      : `Occupancy is ${direction} (${sign}${Math.round(delta)} points since last read).`;
+  }
+
+  const briefingEl = $("occupancy-briefing");
+  if (briefingEl && payload.briefing) briefingEl.textContent = payload.briefing;
+
+  const sourceEl = $("occupancy-source");
+  if (sourceEl) {
+    const modeNote = payload.mode === "openai" ? "OpenAI occupancy insight" : "deterministic occupancy logic";
+    sourceEl.textContent = `Source: BLE passive scan · device MAC deduplication · 30-second rolling window · ${modeNote}`;
+  }
+
+  // Simple bar chart from history
+  const chartEl = $("occupancy-bar-chart");
+  if (chartEl && Array.isArray(payload.history) && payload.history.length > 0) {
+    const history = payload.history.slice(0, 24).reverse();
+    const maxIdx = Math.max(...history.map((h) => num(h.occupancyIndex, 0)), 1);
+    chartEl.innerHTML = `<div class="occupancy-bar-grid">${history.map((h) => {
+      const pct = clamp((num(h.occupancyIndex, 0) / maxIdx) * 100, 2, 100);
+      const color = pct > 80 ? "var(--red)" : pct > 55 ? "var(--amber)" : pct > 25 ? "var(--lime)" : "var(--mint)";
+      return `<div class="occupancy-bar-col" title="Index ${Math.round(num(h.occupancyIndex, 0))}">
+        <div class="occupancy-bar-fill" style="height:${pct}%;background:${color}"></div>
+      </div>`;
+    }).join("")}</div>`;
+  }
+}
+
+async function ensureOccupancyBriefing() {
+  const cached = occupancyBriefingState.data
+    && Date.now() - occupancyBriefingState.fetchedAt < OCCUPANCY_BRIEFING_TTL_MS;
+  if (cached) {
+    renderOccupancyCard(occupancyBriefingState.data);
+    return;
+  }
+  if (occupancyBriefingState.pending) return;
+
+  occupancyBriefingState.pending = (async () => {
+    try {
+      const res = await fetch("/api/occupancy-briefing", { cache: "no-store" });
+      if (res.status === 204) return;
+      if (!res.ok) throw new Error(`occupancy-briefing ${res.status}`);
+      occupancyBriefingState.data = await res.json();
+      occupancyBriefingState.fetchedAt = Date.now();
+      renderOccupancyCard(occupancyBriefingState.data);
+    } catch (_) {
+      // silent — card stays in standby state
+    } finally {
+      occupancyBriefingState.pending = null;
     }
   })();
 }
@@ -2955,15 +2926,15 @@ function broOpening(d) {
   const cfiPercent = officeCfiPercent(d);
   const vtrLevel = officeVtrLevel(d);
 
-  if (vtrLevel >= 2) return "Straight read: this room is dry, stale, and starting to feel like shared exhaust. Fix the air before people feel it even more.";
-  if (cfiPercent < 60) return "Straight read: the room is dragging focus. It is not the team, it is the air.";
+  if (vtrLevel >= 2) return `The room air feels thick and recycled. Humidity and stagnation are stacking against you — this is the kind of air that lingers on people's clothes. Ventilation would make an immediate difference.`;
+  if (cfiPercent < 60) return `CO₂ is climbing and it shows. The air is subtly dull right now — not dangerous, but the kind of condition that quietly erodes focus. Moving some air through would help.`;
   if (bioPeak >= 60) return hasConfidentPrimary(d)
-    ? `Straight read: something biological is driving the room right now, and ${primary} is leading the tape.`
-    : "Straight read: something biological is driving the room right now, even if the classifier is not calling one clean winner.";
-  if (score >= 75) return `Straight read: the room is in rough shape and ${primary} is wearing most of it.`;
-  if (score >= 50) return `Straight read: not catastrophic, but the air is working against the room and ${primary} keeps showing up in the tape.`;
-  if (score >= 25) return `Straight read: the room is mostly holding form, though ${primary} is still hanging around the edges.`;
-  return "Straight read: the room is in a good place. Air is clean, calm, and not asking for attention.";
+    ? `Something biological is leading the room right now — ${primary} is the most likely candidate. The biological channels are elevated and the classifier agrees. Time to ventilate.`
+    : `Biological signals are elevated across the board. The classifier is not committing to a single odor class, but the room air is carrying something. A window or fan would help it clear.`;
+  if (score >= 75) return `The room is carrying a meaningful air load right now, and ${primary} keeps appearing in the signal. Conditions are not yet critical, but trending in the wrong direction.`;
+  if (score >= 50) return `Air quality is in the moderate range — not alarming, but worth watching. ${primary} is the strongest present signal. Good time to consider opening a window before it builds.`;
+  if (score >= 25) return `The room is mostly clean with a light background presence of ${primary}. Conditions are stable and no action is needed right now.`;
+  return `The room is in good shape. Air is calm, clean, and not asking for attention. Conditions are favorable.`;
 }
 
 function broPlayCall(d) {
@@ -2975,13 +2946,13 @@ function broPlayCall(d) {
   const vtrLevel = officeVtrLevel(d);
   const cfiPercent = officeCfiPercent(d);
 
-  if (vtrLevel >= 2) return "Next move: bring in fresh air, add filtration if you have it, and stop letting the room marinate in shared exhale.";
-  if (cfiPercent < 60) return "Next move: fix the air first. Lower CO2 and the room will feel sharper without touching anything else.";
-  if (bioPeak >= 55) return "Next move: crack a window, hit the fan, clear the evidence, and give the room a proper reset.";
-  if (co2 >= 1100 && (outdoorAqi === 0 || outdoorAqi <= 80)) return "Next move: CO2 is running hot. Air the place out and let the room breathe for a minute.";
-  if (outdoorAqi > 0 && outdoorAqi <= 50 && num(d.airScore) >= 35) return "Next move: outside air is friendlier than inside right now. Open the window and take the easy win.";
-  if (hasConfidentPrimary(d) && (primary.includes("laundry") || primary.includes("citrus") || primary.includes("perfume"))) return "Next move: enjoy the clean-air flex, but maybe do not overdo the fragrance victory lap.";
-  return "Next move: hold the line, keep an eye on the trend, and see whether the room settles or drifts.";
+  if (vtrLevel >= 2) return "Bring in fresh air, add filtration if available, and stop the room from marinating in stale exhale.";
+  if (cfiPercent < 60) return "Lower CO₂ first — the room will feel sharper without changing anything else.";
+  if (bioPeak >= 55) return "Open a window, run a fan, and give the room a proper reset.";
+  if (co2 >= 1100 && (outdoorAqi === 0 || outdoorAqi <= 80)) return "CO₂ is elevated. Air the space out and let it breathe for a few minutes.";
+  if (outdoorAqi > 0 && outdoorAqi <= 50 && num(d.airScore) >= 35) return "Outside air is cleaner than inside right now. Opening a window is the easy call.";
+  if (hasConfidentPrimary(d) && (primary.includes("laundry") || primary.includes("citrus") || primary.includes("perfume"))) return "Room is fresh. No action needed — the air is carrying a positive signature.";
+  return "Hold steady and monitor the trend. Conditions look stable.";
 }
 
 function buildBroSummary(d) {
@@ -2996,22 +2967,22 @@ function buildBroReport(d) {
   const cfiPercent = officeCfiPercent(d);
   const vtrLabel = officeVtrLabel(d);
 
-  lines.push("--- QUICK READ ---");
+  lines.push("ROOM CONDITION");
   lines.push(buildBroSummary(d));
   lines.push("");
   if (sniff) {
-    lines.push("--- LIVE ALERT ---");
+    lines.push("LIVE ALERT");
     lines.push(`Priority sulfur post just landed: ${sniff.label} at ${Math.round(num(sniff.vsc_conf))}% (${fmtAge(sniff.receivedAt)}).`);
     lines.push("");
   }
-  lines.push("--- ROOM SNAPSHOT ---");
+  lines.push("CURRENT READINGS");
   lines.push(`Primary lead: ${currentPrimary(d, "No dominant odor class")}`);
   lines.push(`Tier: ${smellTierLabel(num(d.tier))} (${num(d.tier)}/5)`);
   lines.push(`Core stats: Score ${Math.round(num(d.airScore))}/100 | IAQ ${Math.round(num(d.iaq))} | VOC ${num(d.voc).toFixed(2)} | dVOC ${fmtSigned(d.dVoc, 2)} | CO2 ${Math.round(num(d.co2))}`);
   lines.push(`Office vitality: Focus ${cfiPercent}% (${officeCfiBand(d)}) | Transmission risk ${vtrLabel}`);
   lines.push(`Bio stack: Fart ${signals.fart}% | Sulfur ${signals.sulfur}% | VSC proxy ${Math.round(vscProxyConfidence(d))}% | Garbage ${signals.garbage}% | Pet ${signals.pet}%`);
   lines.push("");
-  lines.push("--- WHAT STANDS OUT ---");
+  lines.push("SIGNAL BREAKDOWN");
   if (odors.length) {
     lines.push(`Top mix: ${odors.map((odor) => `${odor.name} ${odor.score}%`).join(" | ")}`);
   } else {
@@ -3022,7 +2993,7 @@ function buildBroReport(d) {
   const melodyReason = `${d.lastMelodyReason || ""}`.trim();
   lines.push(`Audio cue: ${melodyTitle}${melodyReason && melodyTitle !== "none queued" ? ` · ${melodyReason}` : ""}`);
   lines.push("");
-  lines.push("--- NEXT MOVE ---");
+  lines.push("RECOMMENDED ACTION");
   lines.push(broPlayCall(d));
   return lines.join("\n");
 }
@@ -3306,7 +3277,72 @@ function renderIntelDrawer(d) {
   $("intel-vsc-range").textContent = `${vsc}% sulfur/VSC proxy. This is a classifier-driven sulfur watch channel, not a molecule-specific lab instrument.`;
   $("intel-rqi-range").textContent = `${room}/100 · ${airScoreCondition(room)}. This custom room index treats lower values as cleaner conditions.`;
   $("intel-gasr-range").textContent = `${fmtGasR(d.gasR)}Ω · ${gasResistanceSummary(d.gasR)}`;
-  $("intel-copy").textContent = `Use this panel for short definitions. Direct signals describe the air itself; derived metrics and classifier channels describe how the system interprets it.`;
+  $("intel-copy").textContent = `These readings interpret the air directly. Lower IAQ and VOC values indicate cleaner conditions. High gas resistance (Gas R) typically means cleaner air.`;
+}
+
+function renderCauseCard(d) {
+  const score = num(d.airScore);
+  const iaq = num(d.iaq);
+  const co2 = num(d.co2);
+  const voc = num(d.voc);
+  const humidity = num(d.humidity);
+  const outdoorAqi = num(d.outdoorAqi);
+  const bio = fartSignals(d);
+  const bioPeak = Math.max(bio.fart, bio.sulfur, bio.garbage, bio.pet);
+  const cfiPercent = officeCfiPercent(d);
+  const vtrLevel = officeVtrLevel(d);
+  const primary = currentPrimary(d, "background");
+
+  let driverText = "No dominant stressor";
+  let driverNote = "Air conditions appear stable across all monitored channels.";
+  let actionText = "No action needed — conditions are favorable.";
+  let badgeTone = "good";
+
+  if (bioPeak >= 55) {
+    driverText = "Biological odor event";
+    driverNote = `Active biological signature detected (${primary}). Odor channels are elevated above background.`;
+    actionText = "Open a window or run a fan to clear the air.";
+    badgeTone = "danger";
+  } else if (vtrLevel >= 2) {
+    driverText = "Air stagnation";
+    driverNote = "The room air is recycled and stale. Humidity and CO₂ are stacking together.";
+    actionText = "Ventilate now — fresh air will make an immediate difference.";
+    badgeTone = "warn";
+  } else if (cfiPercent < 60) {
+    driverText = "CO₂ saturation";
+    driverNote = `CO₂ is at ${Math.round(co2)} ppm, which is suppressing air quality and focus.`;
+    actionText = "Introduce fresh air to bring CO₂ below 1000 ppm.";
+    badgeTone = "warn";
+  } else if (score >= 65) {
+    driverText = `Elevated ${primary}`;
+    driverNote = `Room quality index is ${Math.round(score)}/100 — the room is carrying a meaningful air load.`;
+    actionText = "Consider ventilating to help the room recover.";
+    badgeTone = "warn";
+  } else if (outdoorAqi > 100) {
+    driverText = "Poor outdoor air quality";
+    driverNote = `Outdoor AQI is ${Math.round(outdoorAqi)}, which limits ventilation options.`;
+    actionText = "Keep windows closed and monitor indoor conditions.";
+    badgeTone = "warn";
+  } else if (score >= 35) {
+    driverText = `Mild ${primary} presence`;
+    driverNote = "Light air load is present. Conditions are manageable but worth watching.";
+    actionText = "Monitor trend — no immediate action required.";
+    badgeTone = "neutral";
+  }
+
+  const airFactor = iaq < 50 ? "Clean" : iaq < 100 ? "Mild" : iaq < 150 ? "Moderate" : iaq < 200 ? "Elevated" : "High";
+  const occFactor = co2 < 700 ? "Low / empty" : co2 < 900 ? "Light occupancy" : co2 < 1200 ? "Moderate occupancy" : "High occupancy";
+  const outdoorFactor = outdoorAqi <= 0 ? "Pending" : outdoorAqi <= 50 ? "Good" : outdoorAqi <= 100 ? "Moderate" : "Poor";
+  const ventFactor = voc < 0.5 && co2 < 800 ? "Well ventilated" : voc < 1.5 && co2 < 1000 ? "Adequate" : "Restricted";
+
+  setHeaderPill("cause-badge", driverText, badgeTone);
+  const pd = $("cause-primary-driver"); if (pd) pd.textContent = driverText;
+  const pn = $("cause-primary-note"); if (pn) pn.textContent = driverNote;
+  const ca = $("cause-action"); if (ca) ca.textContent = actionText;
+  const fa = $("cause-factor-air"); if (fa) fa.textContent = airFactor;
+  const fo = $("cause-factor-occ"); if (fo) fo.textContent = occFactor;
+  const fod = $("cause-factor-outdoor"); if (fod) fod.textContent = outdoorFactor;
+  const fv = $("cause-factor-vent"); if (fv) fv.textContent = ventFactor;
 }
 
 function setHeaderPill(id, text, tone = "neutral") {
@@ -3368,13 +3404,36 @@ function renderHero(d) {
   $("hero-calibration").textContent = calibration.short;
   $("hero-primary").textContent = currentPrimary(d);
   $("hero-summary").textContent = heroSummaryText(d);
-  $("hero-subtitle").textContent = "Real-time odor intelligence from a BME688-based sensor stack.";
+  const subtitleParts = [];
+  if (num(d.receivedAt)) {
+    const age = Date.now() - num(d.receivedAt);
+    if (age < 30000) subtitleParts.push("Live");
+    else if (age < STALE_MS) subtitleParts.push("Active");
+  }
+  if (num(d.iaqAcc) >= 3) subtitleParts.push("Sensor calibrated");
+  else if (num(d.iaqAcc) > 0) subtitleParts.push(`Calibrating (${num(d.iaqAcc)}/3)`);
+  const subtitleLine = subtitleParts.length
+    ? subtitleParts.join(" · ")
+    : "Your space, monitored continuously.";
+  $("hero-subtitle").textContent = subtitleLine;
   $("hero-tier").textContent = `${smellTierLabel(num(d.tier))} · Tier ${num(d.tier)}/5`;
   $("hero-trends").textContent = `IAQ ${d.iaqTrend || "steady"} | VOC ${d.vocTrend || "steady"}`;
   $("hero-brief-title").textContent = `${briefLead} · ${Math.round(score)}/100 room index`;
   $("hero-brief-primary").textContent = currentPrimary(d, "No dominant odor");
   $("hero-brief-next").textContent = `${windowCall(d)} ${briefTone}`.trim();
   $("hero-brief-status").textContent = statusBits.join(" · ");
+
+  const causeParts = [];
+  if (num(d.voc) > 1.5) causeParts.push("elevated VOC activity");
+  if (num(d.co2) > 1000) causeParts.push("CO₂ buildup from occupancy");
+  if (num(d.iaq) > 150) causeParts.push("deteriorating air quality index");
+  if (num(d.humidity) > 70) causeParts.push("high humidity");
+  if (num(d.outdoorAqi) > 100) causeParts.push("poor outdoor air");
+  if (activeSniff) causeParts.push("active odor event detected");
+  const causeText = causeParts.length
+    ? `Led by ${causeParts.slice(0, 2).join(" and ")}.`
+    : "Air conditions appear stable — no dominant stressor.";
+  $("hero-cause") && ($("hero-cause").textContent = causeText);
   const melodyTagReason = `${d.lastMelodyReason || ""}`.trim();
   const melodyTitle = `${d.lastMelody || ""}`.trim();
   $("hero-melody").textContent = normalizeMelodyTitle(melodyTitle)
@@ -3638,6 +3697,8 @@ function renderWeatherIntel(d) {
     renderSkyVisual(d);
     syncWeatherMapPosition(d);
     syncMapLayers();
+    const srcWx = $("source-weather");
+    if (srcWx) srcWx.textContent = "Source: Open-Meteo forecast (Cape Canaveral, FL) · OpenStreetMap · RainViewer radar · OpenAI weather brief when available";
 }
 
 function gasPhaseAxis(d) {
@@ -4492,6 +4553,8 @@ function render(data) {
   renderHero(merged);
   drawHeroScope(merged, historyData);
   renderStatusStrip(merged);
+  renderIntelDrawer(merged);
+  renderCauseCard(merged);
   renderOfficeCard(merged);
   renderTelemetry(merged);
   renderDerivedMetrics(merged);
@@ -4516,7 +4579,7 @@ function render(data) {
   setHeaderPill("odor-badge", `${currentPrimary(merged)} · ${Math.round(num(merged.primaryConf))}%`, num(merged.primaryConf) >= 45 ? "warn" : num(merged.primaryConf) >= 20 ? "neutral" : "good");
   setHeaderPill(
     "weather-intel-badge",
-    hasLocationFix(merged) ? (merged.weatherCondition || "Map live") : "No map fix",
+    hasLocationFix(merged) ? (merged.weatherCondition || "Map live") : "Cape Canaveral, FL",
     outdoorSeverity(merged) >= 3 ? "danger" : outdoorSeverity(merged) >= 2 ? "warn" : hasLocationFix(merged) ? "good" : "neutral"
   );
   const broBadge = broBadgeInfo(merged);
@@ -4527,6 +4590,7 @@ function render(data) {
 
   ensureWeatherBriefing(merged);
   ensureLaunchData();
+  ensureOccupancyBriefing();
 
   if (historyData.length) {
     drawChart(historyData);
@@ -4762,6 +4826,28 @@ function tickAge() {
   }
 }
 
+let _subnav_observer = null;
+
+function activateSubnavObserver() {
+  if (_subnav_observer) _subnav_observer.disconnect();
+  const panel = $("view-subnav-panel");
+  if (!panel) return;
+  const targets = Array.from(panel.querySelectorAll("[data-scroll-target]"))
+    .map((btn) => ({ btn, el: document.getElementById(btn.dataset.scrollTarget || "") }))
+    .filter((e) => e.el);
+  if (!targets.length) return;
+  _subnav_observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        targets.forEach(({ btn, el }) => btn.classList.toggle("is-active", el === entry.target));
+      });
+    },
+    { rootMargin: "-20% 0px -60% 0px", threshold: 0 }
+  );
+  targets.forEach(({ el }) => _subnav_observer.observe(el));
+}
+
 function renderViewSubnav(view) {
   const shell = $("view-submenu-shell");
   const panel = $("view-subnav-panel");
@@ -4788,6 +4874,7 @@ function renderViewSubnav(view) {
   });
 
   closeViewSubmenu();
+  activateSubnavObserver();
 }
 
 function setDashboardView(view) {
@@ -4820,10 +4907,11 @@ function setDashboardView(view) {
         if (nextView === "labs") {
             ensureDadabase(false);
         }
-        if (nextView === "environment" && weatherMap) {
-            weatherMap.invalidateSize();
-            if (lastData) {
-                syncWeatherMapPosition(lastData);
+        if (nextView === "environment") {
+            const map = ensureWeatherMap();
+            if (map) {
+                map.invalidateSize();
+                syncWeatherMapPosition(lastData || {});
                 syncMapLayers();
             }
         }
@@ -6768,6 +6856,12 @@ setInterval(fetchSniffHistory, POLL_MS * 4);
 setInterval(tickAge, 1000);
 setInterval(() => ensureDadabase(false), DADABASE_TTL_MS);
 setInterval(() => renderDadabase(), 60000);
+// Hourly AI weather prediction refresh — force-expire cache so briefing
+// regenerates even when device data is not flowing.
+setInterval(() => {
+  weatherBriefingState.key = "";
+  if (lastData) ensureWeatherBriefing(lastData);
+}, WEATHER_BRIEFING_TTL_MS);
 
 $("melody-play-btn")?.addEventListener("click", () => {
   playMelodyFromSnapshot();
@@ -6852,21 +6946,6 @@ $("melody-library-play-device")?.addEventListener("click", async () => {
   renderMelodyLibrary(lastData);
 });
 
-document.querySelectorAll(".map-layer-chip").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const key = button.dataset.layer;
-    if (!key) return;
-    mapLayerPrefs[key] = !mapLayerPrefs[key];
-    if (key === "crime") {
-      renderMapLayerButtons();
-      setMapLayerStatus("Crime toggle acknowledged, but no free anonymous nationwide U.S. crime map feed is wired into this dashboard yet.");
-      return;
-    }
-    saveMapLayerPrefs();
-    renderMapLayerButtons();
-    await syncMapLayers();
-  });
-});
 
 (function initWeatherMapFullscreen() {
   const btn = $("map-fullscreen-btn");
