@@ -78,7 +78,7 @@ const HEATMAP_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const HEATMAP_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const POLL_MS = 10000;
-const STALE_MS = 300000;
+const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
 const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
 const DADABASE_TTL_MS = 15 * 60 * 1000;
@@ -2464,10 +2464,10 @@ async function ensureWeatherBriefing(d) {
       const bc = briefing?.current;
       if (bc) {
         if (!lastData.weatherCondition && bc.condition) updates.weatherCondition = bc.condition;
-        if (!(num(lastData.tempF) > 0) && num(bc.tempF) > 0) updates.tempF = bc.tempF;
+        if (!Number.isFinite(num(lastData.tempF, NaN)) && Number.isFinite(bc.tempF)) updates.tempF = bc.tempF;
         if (!lastData.windDir && bc.windDir) updates.windDir = bc.windDir;
         if (!lastData.windSpeed && bc.windSpeed) updates.windSpeed = bc.windSpeed;
-        if (!(num(lastData.pressHpa) > 0) && num(bc.pressHpa) > 0) updates.pressHpa = bc.pressHpa;
+        if (!Number.isFinite(num(lastData.pressHpa, NaN)) && Number.isFinite(bc.pressHpa)) updates.pressHpa = bc.pressHpa;
       }
 
       // Apply coordinate defaults from briefing if device has no GPS fix
@@ -3481,7 +3481,7 @@ function renderOfficeCard(d) {
   $("office-iaq").textContent = `${Math.round(iaq)}`;
   $("office-humidity").textContent = `${humidity.toFixed(0)}%`;
   const rawTemp = num(d.tempF, NaN);
-  $("office-temp").textContent = Number.isFinite(rawTemp) && rawTemp > 0 ? `${rawTemp.toFixed(1)}°F` : "--";
+  $("office-temp").textContent = Number.isFinite(rawTemp) ? `${rawTemp.toFixed(1)}°F` : "--";
   $("office-context").textContent = `${windowCall(d)} Humidity is ${humidity.toFixed(0)}%, so the room is tracking as ${vtrLabel.toLowerCase()}.`;
 
   const attention = officeAttentionState(d);
