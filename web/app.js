@@ -82,6 +82,9 @@ const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
 const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
 const DADABASE_TTL_MS = 15 * 60 * 1000;
+// Default map center: Cape Canaveral Space Force Station, FL — matches weather-briefing.js default
+const DEFAULT_MAP_LAT = 28.4889;
+const DEFAULT_MAP_LON = -80.5778;
 const DURATION_MACROS = {
   ML_WHOLE: (bpm) => 240000 / bpm,
   ML_HALF: (bpm) => 120000 / bpm,
@@ -1118,6 +1121,37 @@ function mergeSnapshotWithSniff(data) {
     sniffSeq: event.seq,
     vscConf: Math.max(num(data?.vscConf, 0), num(event.vsc_conf, 0)),
   };
+}
+
+// Fill in fields that the device snapshot may lack using weather briefing data.
+// Device values always take priority; briefing values only fill gaps.
+function mergeBriefingIntoSnapshot(data, briefing) {
+  if (!briefing) return data;
+  const updates = {};
+
+  if (num(briefing.outdoorAqi) > 0 && !(num(data.outdoorAqi) > 0)) {
+    updates.outdoorAqi = briefing.outdoorAqi;
+    updates.outdoorLevel = briefing.outdoorLevel || "";
+  }
+
+  const bc = briefing.current;
+  if (bc) {
+    if (!data.weatherCondition && bc.condition) updates.weatherCondition = bc.condition;
+    if (!Number.isFinite(num(data.tempF, NaN)) && Number.isFinite(bc.tempF)) updates.tempF = bc.tempF;
+    if (!data.windDir && bc.windDir) updates.windDir = bc.windDir;
+    if (!data.windSpeed && bc.windSpeed) updates.windSpeed = bc.windSpeed;
+    if (!Number.isFinite(num(data.pressHpa, NaN)) && Number.isFinite(bc.pressHpa)) updates.pressHpa = bc.pressHpa;
+  }
+
+  if (briefing.usingDefault && !hasLocationFix(data)) {
+    if (num(briefing.lat) && num(briefing.lon)) {
+      updates.lat = briefing.lat;
+      updates.lon = briefing.lon;
+    }
+    if (briefing.city && !data.city) updates.city = briefing.city;
+  }
+
+  return Object.keys(updates).length > 0 ? { ...data, ...updates } : data;
 }
 
 function cleanArrayTokens(body) {
@@ -2237,14 +2271,14 @@ function ensureWeatherMap() {
     maxZoom: 19,
   }).addTo(weatherMap);
 
-  weatherMarker = window.L.circleMarker([28.2062, -80.6874], {
+  weatherMarker = window.L.circleMarker([DEFAULT_MAP_LAT, DEFAULT_MAP_LON], {
     radius: 7,
     color: "rgba(9, 12, 16, 0.92)",
     weight: 2,
     fillColor: "#00f2ff",
     fillOpacity: 0.95,
   }).addTo(weatherMap);
-  weatherMap.setView([28.2062, -80.6874], 10);
+  weatherMap.setView([DEFAULT_MAP_LAT, DEFAULT_MAP_LON], 10);
   renderMapLayerButtons();
   return weatherMap;
 }
@@ -2423,10 +2457,8 @@ async function ensureWeatherBriefing(d) {
     && weatherBriefingState.key === key
     && Date.now() - weatherBriefingState.fetchedAt < WEATHER_BRIEFING_TTL_MS;
 
-  if (cached) {
-    renderWeatherForecast(d, weatherBriefingState.data);
-    return;
-  }
+  // render() already applied mergeBriefingIntoSnapshot, so no extra work on cache hit.
+  if (cached) return;
 
   if (weatherBriefingState.pending && weatherBriefingState.key === key) return;
 
@@ -2450,39 +2482,10 @@ async function ensureWeatherBriefing(d) {
       weatherBriefingState.pending = null;
     }
 
+    // Fresh briefing just arrived — merge it into lastData and re-render the affected panels.
     if (lastData) {
       const briefing = weatherBriefingState.data;
-      const updates = {};
-
-      // Merge outdoor AQI from briefing if device snapshot doesn't have it
-      if (num(briefing?.outdoorAqi) > 0 && !(num(lastData.outdoorAqi) > 0)) {
-        updates.outdoorAqi = briefing.outdoorAqi;
-        updates.outdoorLevel = briefing.outdoorLevel || "";
-      }
-
-      // Merge current weather conditions from briefing if device snapshot doesn't have them
-      const bc = briefing?.current;
-      if (bc) {
-        if (!lastData.weatherCondition && bc.condition) updates.weatherCondition = bc.condition;
-        if (!Number.isFinite(num(lastData.tempF, NaN)) && Number.isFinite(bc.tempF)) updates.tempF = bc.tempF;
-        if (!lastData.windDir && bc.windDir) updates.windDir = bc.windDir;
-        if (!lastData.windSpeed && bc.windSpeed) updates.windSpeed = bc.windSpeed;
-        if (!Number.isFinite(num(lastData.pressHpa, NaN)) && Number.isFinite(bc.pressHpa)) updates.pressHpa = bc.pressHpa;
-      }
-
-      // Apply coordinate defaults from briefing if device has no GPS fix
-      if (briefing?.usingDefault && !hasLocationFix(lastData)) {
-        if (num(briefing.lat) && num(briefing.lon)) {
-          updates.lat = briefing.lat;
-          updates.lon = briefing.lon;
-        }
-        if (briefing.city && !lastData.city) updates.city = briefing.city;
-      }
-
-      if (Object.keys(updates).length > 0) {
-        lastData = { ...lastData, ...updates };
-      }
-
+      lastData = mergeBriefingIntoSnapshot(lastData, briefing);
       renderWeatherForecast(lastData, briefing);
       renderWeatherIntel(lastData);
       $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(lastData, briefing));
@@ -2493,7 +2496,9 @@ async function ensureWeatherBriefing(d) {
 const LAUNCH_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 async function ensureLaunchData() {
-  const cached = launchState.data && Date.now() - launchState.fetchedAt < LAUNCH_TTL_MS;
+  // Use fetchedAt (not data) as the cache sentinel so an empty-launch response also
+  // prevents re-fetching for the full TTL window.
+  const cached = launchState.fetchedAt > 0 && Date.now() - launchState.fetchedAt < LAUNCH_TTL_MS;
   if (cached) return;
   if (launchState.pending) return;
 
@@ -2502,9 +2507,9 @@ async function ensureLaunchData() {
       const res = await fetch("/api/launches", { cache: "no-store" });
       if (res.ok) {
         const json = await res.json();
+        launchState.fetchedAt = Date.now(); // always stamp, even for empty results
         if (Array.isArray(json?.launches) && json.launches.length) {
           launchState.data = json.launches;
-          launchState.fetchedAt = Date.now();
           // Merge into lastData if device snapshot has no launches
           if (lastData && !(Array.isArray(lastData.launches) && lastData.launches.length)) {
             lastData = { ...lastData, launches: launchState.data };
@@ -4484,7 +4489,7 @@ function updateHistoryStats(history) {
 
 function render(data) {
   if (!data) return;
-  const merged = mergeSnapshotWithSniff(data);
+  const merged = mergeBriefingIntoSnapshot(mergeSnapshotWithSniff(data), weatherBriefingState.data);
   lastData = merged;
 
   const age = Date.now() - num(merged.receivedAt, 0);

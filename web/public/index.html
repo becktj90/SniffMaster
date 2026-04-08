@@ -27,7 +27,7 @@
       <div class="brand-lockup">
         <div class="eyebrow">Remote Nose Link</div>
         <h1>SniffMaster Pro</h1>
-        <div class="brand-subtitle">Real-time odor intelligence platform</div>
+        <div class="brand-subtitle">Environmental intelligence, decoded</div>
       </div>
       <div class="topbar-side">
         <div class="topbar-status">
@@ -78,7 +78,6 @@
       <button class="section-btn" type="button" data-view-target="environment">Environment</button>
       <button class="section-btn" type="button" data-view-target="analysis">Analysis</button>
       <button class="section-btn" type="button" data-view-target="history">History</button>
-      <button class="section-btn" type="button" data-view-target="system">System</button>
       <button class="section-btn" type="button" data-view-target="labs">Labs</button>
     </nav>
   </div>
@@ -291,39 +290,6 @@
           <span class="status-label">Last update</span>
           <span class="status-value" id="status-updated">No snapshot yet</span>
         </div>
-      </div>
-    </section>
-
-    <section class="card system-card" id="card-intel" data-view="dashboard">
-      <div class="card-header">
-        <span>Metric Guide</span>
-        <span class="header-pill">Live definitions</span>
-      </div>
-      <p class="card-summary" id="intel-summary">Quick plain-English definitions for the live gas and air-quality readings in the dashboard.</p>
-      <div class="drawer-grid">
-        <div class="drawer-stat">
-          <span class="drawer-label">IAQ</span>
-          <span class="drawer-value" id="intel-iaq-range">No live reading yet</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">VOC</span>
-          <span class="drawer-value" id="intel-voc-range">Waiting for VOC context</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">VSC Proxy</span>
-          <span class="drawer-value" id="intel-vsc-range">Sulfur watch idle</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">Room Index</span>
-          <span class="drawer-value" id="intel-rqi-range">Room-quality context pending</span>
-        </div>
-        <div class="drawer-stat">
-          <span class="drawer-label">Gas Resistance</span>
-          <span class="drawer-value" id="intel-gasr-range">Gas resistance baseline pending</span>
-        </div>
-      </div>
-      <div class="drawer-copy" id="intel-copy">
-        Technical context about the live gas channels will update here after the next device sync.
       </div>
     </section>
 
@@ -1049,16 +1015,6 @@
       <div class="source-caption" id="source-weather">Source: device weather snapshot · Open-Meteo forecast · OpenStreetMap map · RainViewer radar</div>
     </section>
 
-    <section class="card" id="card-classifier" data-view="analysis">
-      <div class="card-header">
-        <span>Model Channels</span>
-        <span class="header-pill" id="matrix-badge">Confidence map</span>
-      </div>
-      <div class="matrix-note" id="matrix-note">Classifier channels ranked by confidence.</div>
-      <div class="odor-matrix" id="odor-matrix"></div>
-      <div class="source-caption">Source: Bosch AI-Studio odor model · 20 channel confidence output · local inference logic</div>
-    </section>
-
     <section class="card bro-card" id="card-bro" data-view="analysis">
       <div class="card-header">
         <span>Locker-Room Readout</span>
@@ -1381,7 +1337,7 @@ loop():
         <div>
           <div class="arcade-kicker">Hidden Mission</div>
           <h2 class="arcade-title" id="trajectory-title">Gatornauts</h2>
-          <p class="arcade-subtitle">Launch New Glenn from LC-36, separate cleanly, clear alien gators, and stick the lunar landing in full FTL-flavored pixel style.</p>
+          <p class="arcade-subtitle">Launch New Glenn, blast alien gators, land on the moon.</p>
         </div>
         <div class="arcade-head-actions">
           <button class="chrome-btn" id="trajectory-restart-btn" type="button">Restart mission</button>
@@ -1400,7 +1356,7 @@ loop():
           <div class="arcade-panel">
             <div class="arcade-panel-kicker">Mission Brief</div>
             <div class="arcade-panel-copy" id="trajectory-brief">
-              Arcade flight director mode: launch hard, separate on time, chain gator kills for combo points, then land softly on the Moon for a clean-run bonus.
+              Launch from LC-36, detach the booster, shoot alien gators with your laser cannon, then land on the moon.
             </div>
           </div>
           <div class="arcade-panel">
@@ -1409,17 +1365,12 @@ loop():
               <div><strong>Up:</strong> thrust</div>
               <div><strong>Left / Right:</strong> rotate</div>
               <div><strong>Space:</strong> detach booster / fire laser</div>
-              <div><strong>R / Enter:</strong> quick restart</div>
-              <div><strong>Goal:</strong> protect hull, build combo, nail the landing</div>
+              <div><strong>Enter:</strong> restart after a crash or landing</div>
             </div>
           </div>
           <div class="arcade-panel">
             <div class="arcade-panel-kicker">Telemetry</div>
             <div class="arcade-telemetry" id="trajectory-mission-status">Mission screen standing by.</div>
-          </div>
-          <div class="arcade-panel">
-            <div class="arcade-panel-kicker">Cabinet Notes</div>
-            <div class="arcade-panel-copy">Predictive trajectory, cislunar mini-map, screen shake, best-run tracking, and sharper CRT cabinet styling are enabled in this enhanced build.</div>
           </div>
         </div>
       </div>
