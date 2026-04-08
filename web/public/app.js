@@ -2326,35 +2326,39 @@ async function syncMapLayers() {
   setMapLayerStatus(note);
 }
 
+// Default map location: Cape Canaveral Space Force Station, FL
+const CAPE_MAP_LAT = 28.2062;
+const CAPE_MAP_LON = -80.6874;
+
 function syncWeatherMapPosition(d) {
-  const map = ensureWeatherMap();
-  const fallback = $("map-fallback");
-  if (!map) {
-    if (fallback) fallback.style.display = "flex";
-    setMapLayerStatus("Map engine unavailable in this browser.");
-    return;
-  }
+    const map = ensureWeatherMap();
+    const fallback = $("map-fallback");
+    if (!map) {
+        if (fallback) fallback.style.display = "flex";
+        setMapLayerStatus("Map engine unavailable in this browser.");
+        return;
+    }
 
-  if (!hasLocationFix(d)) {
-    if (fallback) fallback.style.display = "flex";
-    setMapLayerStatus("Map will appear once the device posts a location fix.");
-    return;
-  }
+    // Always show the map — use device GPS when available, otherwise default to
+    // Cape Canaveral so live weather layers are visible without a GPS fix.
+    if (fallback) fallback.style.display = "none";
 
-  if (fallback) fallback.style.display = "none";
-  const lat = num(d.lat);
-  const lon = num(d.lon);
-  const target = [lat, lon];
-  if (weatherMarker) {
-    weatherMarker.setLatLng(target);
-    weatherMarker.bindTooltip(`${escapeHtml(d.city || "SniffMaster location")}<br>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
-  }
+    const lat = hasLocationFix(d) ? num(d.lat) : CAPE_MAP_LAT;
+    const lon = hasLocationFix(d) ? num(d.lon) : CAPE_MAP_LON;
+    const label = hasLocationFix(d)
+        ? (d.city || "SniffMaster location")
+        : "Cape Canaveral, FL (default)";
+    const target = [lat, lon];
+    if (weatherMarker) {
+        weatherMarker.setLatLng(target);
+        weatherMarker.bindTooltip(`${escapeHtml(label)}<br>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+    }
 
-  const center = weatherMap.getCenter();
-  const drift = Math.abs(center.lat - lat) + Math.abs(center.lng - lon);
-  if (drift > 0.04) {
-    weatherMap.setView(target, 11);
-  }
+    const center = weatherMap.getCenter();
+    const drift = Math.abs(center.lat - lat) + Math.abs(center.lng - lon);
+    if (drift > 0.04) {
+        weatherMap.setView(target, 11);
+    }
 }
 
 function weatherInsightText(d) {
@@ -2376,12 +2380,12 @@ function weatherInsightText(d) {
   return `${d.city || "This location"} is reading ${temp.toFixed(0)}F with ${humidity.toFixed(0)}% humidity, so the room-side comfort read is ${dewComfort(dew)}. ${feelLine} ${outdoorLine} ${windowCall(d)}. ${pressureRead(num(d.pressHpa))}. ${heatLine}`.trim();
 }
 
-function weatherBriefingKey(d) {
-  const lat = Number.isFinite(num(d?.lat, NaN)) ? num(d.lat).toFixed(2) : "na";
-  const lon = Number.isFinite(num(d?.lon, NaN)) ? num(d.lon).toFixed(2) : "na";
-  const city = `${d?.city || ""}`.trim().toLowerCase();
-  const bucket = Math.floor(Date.now() / WEATHER_BRIEFING_TTL_MS);
-  return `${lat}|${lon}|${city}|${bucket}`;
+function weatherBriefingKey() {
+    // The weather API always uses the Cape Canaveral default — device GPS is not
+    // used server-side, so the key must not include lat/lon to avoid unnecessary
+    // re-fetches (and AI briefing loss) when the device GPS reading fluctuates.
+    const bucket = Math.floor(Date.now() / WEATHER_BRIEFING_TTL_MS);
+    return `cape-canaveral|${bucket}`;
 }
 
 function defaultWeatherBriefing(d) {
@@ -2462,25 +2466,10 @@ async function ensureWeatherBriefing(d) {
 
   if (weatherBriefingState.pending && weatherBriefingState.key === key) return;
 
-  weatherBriefingState.key = key;
-  weatherBriefingState.pending = (async () => {
-    try {
-      const res = await fetch("/api/weather-briefing", { cache: "no-store" });
-      if (res.status === 204) {
-        weatherBriefingState.data = defaultWeatherBriefing(d);
-      } else if (!res.ok) {
-        throw new Error(`weather-briefing ${res.status}`);
-      } else {
-        weatherBriefingState.data = await res.json();
-      }
-      weatherBriefingState.fetchedAt = Date.now();
-    } catch (_) {
-      if (!weatherBriefingState.data) {
-        weatherBriefingState.data = defaultWeatherBriefing(d);
-      }
-    } finally {
-      weatherBriefingState.pending = null;
-    }
+    const key = weatherBriefingKey();
+    const cached = weatherBriefingState.data &&
+        weatherBriefingState.key === key &&
+        Date.now() - weatherBriefingState.fetchedAt < WEATHER_BRIEFING_TTL_MS;
 
     // Fresh briefing just arrived — merge it into lastData and re-render the affected panels.
     if (lastData) {
@@ -3617,35 +3606,33 @@ function renderSkyVisual(d) {
 }
 
 function renderWeatherIntel(d) {
-  const mapCity = $("map-city");
-  const mapLink = $("map-link");
+    const mapCity = $("map-city");
+    const mapLink = $("map-link");
 
-  mapCity.textContent = d.city || "Location pending";
-  $("weather-insight").textContent = weatherInsightText(d);
-  $("v-weather-condition").textContent = d.weatherCondition || "Conditions pending";
-  $("v-weather-temp").textContent = `${num(d.tempF).toFixed(0)}F`;
-  $("v-weather-feels").textContent = `${num(d.feelsLikeF, d.tempF).toFixed(0)}F`;
-  $("v-weather-hum").textContent = `${num(d.humidity).toFixed(0)}%`;
-  $("v-weather-wind").textContent = `${(d.windDir || "--")} ${(d.windSpeed || "").trim()}`.trim();
-  $("v-coords").textContent = fmtCoords(d);
-  $("v-local-time").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
-  $("v-window-call").textContent = windowCall(d);
-  $("v-weather-aqi").textContent = num(d.outdoorAqi) > 0 ? `${Math.round(num(d.outdoorAqi))} ${d.outdoorLevel || ""}`.trim() : "Pending";
-  $("v-pressure-read").textContent = pressureRead(num(d.pressHpa));
+    mapCity.textContent = d.city || "Location pending";
+    $("weather-insight").textContent = weatherInsightText(d);
+    $("v-weather-condition").textContent = d.weatherCondition || "Conditions pending";
+    $("v-weather-temp").textContent = `${num(d.tempF).toFixed(0)}F`;
+    $("v-weather-feels").textContent = `${num(d.feelsLikeF, d.tempF).toFixed(0)}F`;
+    $("v-weather-hum").textContent = `${num(d.humidity).toFixed(0)}%`;
+    $("v-weather-wind").textContent = `${(d.windDir || "--")} ${(d.windSpeed || "").trim()}`.trim();
+    $("v-coords").textContent = fmtCoords(d);
+    $("v-local-time").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
+    $("v-window-call").textContent = windowCall(d);
+    $("v-weather-aqi").textContent = num(d.outdoorAqi) > 0 ? `${Math.round(num(d.outdoorAqi))} ${d.outdoorLevel || ""}`.trim() : "Pending";
+    $("v-pressure-read").textContent = pressureRead(num(d.pressHpa));
 
-  const links = weatherMapLinks(d);
-  if (links) {
-    mapLink.href = links.open;
-  } else {
-    mapLink.href = "https://www.openstreetmap.org";
-  }
-  $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(d, weatherBriefingState.data));
-  renderMoonVisual(d);
-  renderSkyVisual(d);
-  syncWeatherMapPosition(d);
-  if (hasLocationFix(d)) {
+    const links = weatherMapLinks(d);
+    if (links) {
+        mapLink.href = links.open;
+    } else {
+        mapLink.href = "https://www.openstreetmap.org";
+    }
+    $("weather-report").innerHTML = formatDiagnosticReport(buildWeatherReport(d, weatherBriefingState.data));
+    renderMoonVisual(d);
+    renderSkyVisual(d);
+    syncWeatherMapPosition(d);
     syncMapLayers();
-  }
 }
 
 function gasPhaseAxis(d) {
@@ -4561,17 +4548,27 @@ function applySniffEvent(event) {
 }
 
 async function fetchLatest() {
-  try {
-    const res = await fetch("/api/latest", { cache: "no-store" });
-    if (res.status === 204) return;
-    if (!res.ok) throw new Error(`latest ${res.status}`);
-    const data = await res.json();
-    render(data);
-  } catch (_) {
-    const age = lastData ? Date.now() - num(lastData.receivedAt, 0) : Infinity;
-    if (age >= STALE_MS) {
-      $("conn-dot").className = "dot offline";
-      $("conn-label").textContent = "Feed unavailable";
+    try {
+        const res = await fetch("/api/latest", {
+            cache: "no-store"
+        });
+        if (res.status === 204) return;
+        if (!res.ok) throw new Error(`latest ${res.status}`);
+
+        const data = await res.json();
+        lastData = data;
+        render(data);
+    } catch (err) {
+        console.error("fetchLatest failed:", err);
+        // Keep the status amber (stale) instead of red (offline) when we already
+        // have data from a previous successful fetch — only go red on true no-data.
+        if (lastData?.receivedAt) {
+            $("conn-dot").className = "dot stale";
+            $("conn-label").textContent = `Feed unavailable · ${fmtAge(lastData.receivedAt)}`;
+        } else {
+            $("conn-dot").className = "dot offline";
+            $("conn-label").textContent = "Feed unavailable";
+        }
     }
   }
 }
@@ -4815,19 +4812,22 @@ function setDashboardView(view) {
   if ($("view-subtitle")) $("view-subtitle").textContent = meta.subtitle;
   renderViewSubnav(nextView);
 
-  window.requestAnimationFrame(() => {
-    if (nextView === "labs") {
-      ensureDadabase(false);
-    }
-    if (nextView === "environment" && weatherMap) {
-      weatherMap.invalidateSize();
-      if (lastData) syncWeatherMapPosition(lastData);
-    }
-    if (nextView === "history" && historyData.length) {
-      drawChart(historyData);
-      updateHistoryStats(historyData);
-    }
-  });
+    window.requestAnimationFrame(() => {
+        if (nextView === "labs") {
+            ensureDadabase(false);
+        }
+        if (nextView === "environment" && weatherMap) {
+            weatherMap.invalidateSize();
+            if (lastData) {
+                syncWeatherMapPosition(lastData);
+                syncMapLayers();
+            }
+        }
+        if (nextView === "history" && historyData.length) {
+            drawChart(historyData);
+            updateHistoryStats(historyData);
+        }
+    });
 }
 
 const trajectoryArcade = (() => {
@@ -6863,6 +6863,32 @@ document.querySelectorAll(".map-layer-chip").forEach((button) => {
     await syncMapLayers();
   });
 });
+
+(function initWeatherMapFullscreen() {
+    const btn = $("map-fullscreen-btn");
+    const shell = document.querySelector(".map-shell");
+    if (!btn || !shell) return;
+
+    btn.addEventListener("click", () => {
+        if (!document.fullscreenElement) {
+            shell.requestFullscreen().catch(() => {});
+        } else {
+            document.exitFullscreen().catch(() => {});
+        }
+    });
+
+    document.addEventListener("fullscreenchange", () => {
+        const isFs = Boolean(document.fullscreenElement);
+        btn.textContent = isFs ? "✕" : "⛶";
+        btn.title = isFs ? "Exit fullscreen" : "Fullscreen map";
+        btn.setAttribute("aria-label", btn.title);
+        if (weatherMap) {
+            // Leaflet needs a brief delay to let the browser finish the fullscreen
+            // CSS transition before recalculating tile layout and viewport bounds.
+            setTimeout(() => weatherMap.invalidateSize(), 100);
+        }
+    });
+})();
 
 window.addEventListener("resize", () => {
   if (historyData.length) drawChart(historyData);

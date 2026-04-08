@@ -67,6 +67,9 @@
   #include "web_dashboard_config.h"
 #endif
 
+// ── BLE Occupancy scanner ────────────────────────────────────────────────────
+#include "sniffmaster_ble_presence.h"
+
 // ── Optional NeoPixel ────────────────────────────────────────────────────────
 // #define HAVE_RGB
 #ifdef HAVE_RGB
@@ -937,7 +940,8 @@ static void maybeRecoverWebRelay(unsigned long now) {
 }
 
 static void quietBleForCloud() {
-  // BLE is disabled in this build; no radio quiet period is required.
+  // Pause the BLE scanner during cloud TLS calls to avoid radio contention.
+  blePresencePauseFor(8000UL);  // 8 s — covers typical TLS handshake + HTTP round-trip
 }
 
 static int wifiIndexForSsid(const String& ssid) {
@@ -3285,11 +3289,11 @@ bool fetchGPTSassyMsg(int iaq, float voc, float co2, float tempF, float hum,
   if (melBusy()) melStop();  // silence buzzer — this call blocks 5-15s
   WiFiClientSecure gptClient;
   gptClient.setInsecure(); // Required for ESP32 unless using Root CA
-  gptClient.setTimeout(5000);  // limit TLS handshake (was 6s)
+  gptClient.setTimeout(8000);  // TLS socket timeout — increased from 5 s for slow handshakes
   HTTPClient http;
 
   quietBleForCloud();
-  http.setTimeout(7000);
+  http.setTimeout(20000);  // GPT response can take 10-20 s; was 7 s causing premature drops
   http.begin(gptClient, "https://api.openai.com/v1/chat/completions");
   http.addHeader("Content-Type",  "application/json");
   http.addHeader("Authorization", "Bearer " OPENAI_API_KEY);
@@ -4006,6 +4010,20 @@ bool sendToWebDashboard() {
   }
 
   doc["uptime"] = (unsigned long)(millis() / 1000UL);
+
+  // BLE occupancy snapshot
+  {
+    BlePresenceSnapshot bsnap = blePresenceGetSnapshot();
+    doc["blePresenceEnabled"]  = bsnap.enabled;
+    doc["blePresenceState"]    = blePresenceStateLabel(bsnap.state);
+    doc["blePresenceConf"]     = (int)bsnap.confidence;
+    doc["bleDeviceCount"]      = bsnap.deviceCount;
+    doc["bleOccupancyIndex"]   = bsnap.occupancyIndex;
+    doc["bleAvgRssi"]          = (bsnap.deviceCount > 0)
+                                   ? (int)bsnap.avgRssi : -100;
+    doc["bleStrongestRssi"]    = bsnap.lastRssi;
+    doc["bleSeenRecently"]     = bsnap.seenRecently;
+  }
   if (outdoorAqi.valid) {
     doc["outdoorAqi"] = outdoorAqi.aqi;
     doc["outdoorLevel"] = outdoorAqi.level;
@@ -4666,9 +4684,19 @@ void renderNetworkPage() {
     }
     display.print(buf);
 
-    // Line 5: BLE disabled
+    // Line 5: BLE occupancy
     display.setCursor(0, 48);
-    display.print(F("BLE disabled"));
+    {
+      BlePresenceSnapshot bsnap = blePresenceGetSnapshot();
+      if (bsnap.enabled && bsnap.deviceCount > 0) {
+        char bleBuf[24];
+        snprintf(bleBuf, sizeof(bleBuf), "BLE:%d dev occ=%d%%",
+                 bsnap.deviceCount, bsnap.occupancyIndex);
+        display.print(bleBuf);
+      } else {
+        display.print(F("BLE occ: idle"));
+      }
+    }
 
     // Line 6: Heap + uptime
     display.setCursor(0, 57);
@@ -4984,13 +5012,29 @@ void renderDadJokePage() {
 
 // ── Presence Probe ───────────────────────────────────────────────────────────
 void runPresenceProbe() {
+  BlePresenceSnapshot bsnap = blePresenceGetSnapshot();
   display.clearDisplay();
-  drawHeader("-- BLE disabled --");
+  drawHeader("-- BLE Occupancy --");
   display.setTextSize(1);
   display.setCursor(0, 22);
-  display.print(F("BLE presence removed"));
-  display.setCursor(0, 32);
-  display.print(F("from this build."));
+  if (bsnap.enabled) {
+    char ln1[24], ln2[24];
+    snprintf(ln1, sizeof(ln1), "Devices: %d", bsnap.deviceCount);
+    snprintf(ln2, sizeof(ln2), "Occ index: %d%%", bsnap.occupancyIndex);
+    display.print(ln1);
+    display.setCursor(0, 32);
+    display.print(ln2);
+    if (bsnap.deviceCount > 0) {
+      char ln3[24];
+      snprintf(ln3, sizeof(ln3), "Avg RSSI: %d dBm", (int)bsnap.avgRssi);
+      display.setCursor(0, 42);
+      display.print(ln3);
+    }
+  } else {
+    display.print(F("BLE scanner init"));
+    display.setCursor(0, 32);
+    display.print(F("failed or no lib."));
+  }
   display.display();
   delay(1200);
   displayPage = 0;
@@ -5215,10 +5259,10 @@ void runParanormalScan() {
   if (melBusy()) melStop();  // silence buzzer before blocking GPT call
   WiFiClientSecure gptClient;
   gptClient.setInsecure();
-  gptClient.setTimeout(5000);  // limit TLS handshake — prevents freeze on weak WiFi
+  gptClient.setTimeout(8000);  // TLS socket timeout — increased from 5 s for slow handshakes
   HTTPClient http;
   quietBleForCloud();
-  http.setTimeout(7000);
+  http.setTimeout(20000);  // GPT response can take 10-20 s; was 7 s causing premature drops
   http.begin(gptClient, "https://api.openai.com/v1/chat/completions");
   http.addHeader("Content-Type",  "application/json");
   http.addHeader("Authorization", "Bearer " OPENAI_API_KEY);
@@ -5791,7 +5835,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Wire.begin();
-  Wire.setTimeOut(60000);
+  Wire.setTimeOut(3000);  // 3 s max per I2C transaction — prevents multi-second OLED/sensor stalls
   Wire.setClock(100000);
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(BTN_PIN, INPUT_PULLUP);
@@ -5828,6 +5872,7 @@ void setup() {
   WiFi.disconnect(true);
   delay(50);
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);  // disable power-save to prevent TLS latency spikes on first connect
   WiFi.setAutoReconnect(true);
 
   wifiOfflineSinceMillis = millis() - WIFI_OFFLINE_DEBOUNCE_MS;
@@ -5877,7 +5922,7 @@ void setup() {
     Wire.end();
     delay(200);
     Wire.begin();
-    Wire.setTimeOut(60000);
+    Wire.setTimeOut(3000);  // match setup() I2C timeout
     Wire.setClock(100000);
     delay(100);
     if (!envSensor.begin(BME68X_I2C_ADDR_LOW, Wire, safeBmeDelayUs)) {
@@ -5928,6 +5973,14 @@ void setup() {
 #else
   Serial.println(F("Heuristic scoring active"));
 #endif
+
+  // Initialise BLE occupancy scanner (passive scan, no target)
+  if (blePresenceBegin()) {
+    Serial.println(F("[BLE] Occupancy scanner ready"));
+  } else {
+    Serial.println(F("[BLE] Scanner unavailable — occupancy will show 0"));
+  }
+
   Serial.println(F("SniffMaster Pro v4.0 ready"));
   delay(1000);
 
@@ -5963,6 +6016,7 @@ void loop() {
   handleButton();
   bool bsecRan = envSensor.run();
   melTick();
+  blePresenceTick();  // BLE passive scan — updates occupancy index
 
   // Wi-Fi maintenance was previously called every loop and can starve the
   // OLED/UI path when cloud work is active. Duty-cycle it so the loop stays
@@ -6337,9 +6391,23 @@ void loop() {
       }
 
       // Silence buzzer before blocking cloud call — prevents stuck-tone freeze.
-      // melTick() won't run during the 5-15s GPT request, so any active note
+      // melTick() won't run during the 10-20s GPT request, so any active note
       // would drone continuously until the HTTP response arrives.
       if (melBusy()) melStop();
+
+      // Show OLED "AI analyzing" indicator so the display doesn't appear frozen
+      // during the 10-20 s blocking GPT call.
+      display.clearDisplay();
+      drawHeader("-- AI Report --");
+      display.setTextSize(1);
+      display.setCursor(0, 18);
+      display.print(F("Fetching AI report..."));
+      display.setCursor(0, 32);
+      display.print(F("(may take ~15s)"));
+      display.setCursor(0, 48);
+      display.print((dcHazardLevel[0] != '\0') ? dcHazardLevel : "Analyzing...");
+      display.display();
+
       Serial.println(F("[GPT] Fetching sassy message..."));
       const char* odorName = (dcOdorIdx < ODOR_COUNT) ? odorNames[dcOdorIdx] : "None";
       fetchGPTSassyMsg(dcIAQ, dcVOC, dcCO2, dcTempF, dcHum, dcPressHpa, dcGasR,
@@ -6348,6 +6416,9 @@ void loop() {
                        dcHazardLevel, sizeof(dcHazardLevel),
                        dcSassyMsg,    sizeof(dcSassyMsg));
       lastAiFetchMillis = millis();
+      // Reset the auto-cycle timer so the 10 s display interval doesn't
+      // immediately fire another page render before forceRedraw fires first.
+      lastDisplayUpdate = lastAiFetchMillis;
       EVENT_PUSH();  // force immediate post with fresh GPT message
       forceRedraw = true;
       cloudCallThisLoop = true;  // prevent AIO/Web from stacking in same loop

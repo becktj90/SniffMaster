@@ -386,6 +386,44 @@
       <div class="source-caption">Source: BME688 device telemetry · BSEC2-derived proxies · local comfort, cognition, and persistence heuristics</div>
     </section>
 
+    <section class="card" id="card-occupancy" data-view="analysis">
+      <div class="card-header">
+        <span>BLE Occupancy</span>
+        <span class="header-pill" id="occupancy-badge">Space density</span>
+      </div>
+      <p class="card-summary">Passive Bluetooth scan counts to estimate how many devices — and by proxy, people — are present in the space.</p>
+      <details class="microcopy">
+        <summary>Learn more</summary>
+        <p>The sensor runs short passive BLE scans every 20 seconds and counts unique device addresses within a 30-second rolling window. Each device likely represents a phone, laptop, or wearable. Devices weaker than −90 dBm are filtered as background noise. The occupancy index (0–100) saturates at 10 devices.</p>
+      </details>
+      <div class="office-grid">
+        <div class="office-focus-panel">
+          <div class="office-kicker">Occupancy Index</div>
+          <div class="office-focus-row">
+            <div class="office-focus-value" id="occupancy-index-value">--</div>
+            <div class="office-focus-copy">
+              <div class="office-focus-band" id="occupancy-density-label">Waiting</div>
+              <div class="office-focus-note" id="occupancy-density-note">Space density will appear once BLE data arrives.</div>
+            </div>
+          </div>
+          <div class="office-focus-bar">
+            <div class="office-focus-fill" id="occupancy-index-fill"></div>
+          </div>
+        </div>
+        <div class="office-risk-panel">
+          <div class="office-kicker">Signal Quality</div>
+          <div class="office-risk-badge" id="occupancy-rssi-badge">--</div>
+          <div class="office-risk-status" id="occupancy-device-count">Waiting for first BLE scan.</div>
+          <div class="office-risk-note" id="occupancy-trend-note">Trend will appear after two or more readings.</div>
+        </div>
+      </div>
+      <div id="occupancy-bar-chart" class="occupancy-bar-shell">
+        <div class="occupancy-bar-empty">Waiting for BLE occupancy history.</div>
+      </div>
+      <div class="occupancy-briefing" id="occupancy-briefing">Occupancy briefing will appear once the device posts BLE scan data.</div>
+      <div class="source-caption" id="occupancy-source">Source: BLE passive scan · device MAC deduplication · 30-second rolling window</div>
+    </section>
+
     <section class="card" id="card-dadabase" data-view="labs">
       <div class="card-header">
         <span>Dadabase</span>
@@ -1009,6 +1047,7 @@
           <div class="map-overlay">
             <div class="map-title" id="map-city">Location pending</div>
             <a id="map-link" href="https://www.openstreetmap.org" target="_blank" rel="noreferrer">Open street map</a>
+            <button class="map-fullscreen-btn" id="map-fullscreen-btn" title="Fullscreen map" aria-label="Fullscreen map">⛶</button>
           </div>
         </div>
       </div>
