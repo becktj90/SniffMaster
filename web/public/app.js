@@ -4788,7 +4788,6 @@ async function fetchLatest() {
       $("conn-dot").className = "dot offline";
       $("conn-label").textContent = "Feed unavailable";
     }
-  }
 }
 
 async function manualRefreshDashboard() {
