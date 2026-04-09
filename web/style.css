@@ -3182,6 +3182,11 @@ body[data-theme="retro90s"] .footer-bar {
   padding: 13px 14px;
 }
 
+.launch-card.is-cape {
+  border-color: rgba(107, 204, 255, 0.2);
+  background: rgba(107, 204, 255, 0.04);
+}
+
 .launch-kicker {
   color: var(--muted);
   font-size: 0.68rem;
@@ -3202,10 +3207,22 @@ body[data-theme="retro90s"] .footer-bar {
   font-size: 0.9rem;
 }
 
+.launch-desc {
+  font-style: italic;
+  font-size: 0.84rem;
+  margin-top: 4px;
+}
+
 .launch-empty {
   grid-column: 1 / -1;
   color: var(--muted-strong);
   line-height: 1.5;
+}
+
+.launch-empty a {
+  color: var(--cobalt);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .events-list {
@@ -5537,4 +5554,82 @@ body *::after {
     rgba(255, 255, 255, 0.025);
   color: var(--muted-strong);
   line-height: 1.58;
+}
+
+/* ─── APOD (Astronomy Picture of the Day) ───────────────────────────── */
+.apod-card .card-header { margin-bottom: 6px; }
+
+.apod-date {
+  font-size: 0.74rem;
+  color: var(--cobalt);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.apod-title {
+  font-size: 1.12rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 12px;
+  line-height: 1.35;
+}
+
+.apod-image-wrap {
+  width: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.apod-image-wrap img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 18px;
+}
+
+.apod-image-wrap iframe {
+  width: 100%;
+  aspect-ratio: 16/9;
+  border: none;
+  border-radius: 18px;
+}
+
+.apod-placeholder {
+  color: var(--muted-strong);
+  font-size: 0.85rem;
+  padding: 24px;
+  text-align: center;
+}
+
+.apod-explanation {
+  color: var(--muted-strong);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.apod-copyright {
+  font-size: 0.74rem;
+  color: rgba(188, 199, 216, 0.5);
+  margin-bottom: 4px;
+}
+
+.source-caption a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.85;
+}
+
+.source-caption a:hover {
+  opacity: 1;
+  color: var(--cobalt);
 }
