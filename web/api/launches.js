@@ -10,7 +10,7 @@
 import { isRedisConfigured } from "../lib/store.js";
 import { Redis } from "@upstash/redis";
 
-const LL2_BASE = "https://lldev.thespacedevs.com/2.3.0";
+const LL2_BASE = "https://ll.thespacedevs.com/2.3.0";
 const CACHE_KEY = "sniffmaster:launches";
 const CACHE_TTL_SEC = 3600; // 1 hour
 
