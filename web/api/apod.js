@@ -68,7 +68,11 @@ async function fetchApod() {
     videoUrl: json.media_type === "video" ? json.url : null,
     copyright: json.copyright || null,
     serviceVersion: json.service_version || "v1",
-    apodPageUrl: `https://apod.nasa.gov/apod/ap${(json.date || "").replace(/-/g, "").slice(2)}.html`,
+    apodPageUrl: (() => {
+      // Build per-day APOD URL: format is ap{YY}{MM}{DD}.html (e.g. ap240101.html)
+      const d = `${json.date || ""}`.replace(/-/g, "");
+      return d.length === 8 ? `https://apod.nasa.gov/apod/ap${d.slice(2)}.html` : "https://apod.nasa.gov/apod/";
+    })(),
   };
 }
 

@@ -1756,10 +1756,13 @@ function trimHeadline(text, maxLen = 96) {
   return `${cut.slice(0, end).trim()}...`;
 }
 
+// Regex matching known device-side AI failure messages that should never be displayed.
+const AI_FAILURE_PATTERNS = /gpt is ghosting|openai is|ai is offline|cannot reach|api error|failed to fetch|no response/i;
+
 function heroSummaryText(d) {
   const raw = `${d?.sassy || ""}`.trim();
   // Filter known device-side AI failure messages so we never display them
-  const isGhosting = !raw || /gpt is ghosting|openai is|ai is offline|cannot reach|api error|failed to fetch|no response/i.test(raw);
+  const isGhosting = !raw || AI_FAILURE_PATTERNS.test(raw);
   if (!isGhosting) {
     lastSassyMsg = raw; // cache the last good message
   }
@@ -3280,6 +3283,8 @@ function renderMissionHistory() {
   // the history card has been replaced by the APOD card.
 }
 
+const MAX_APOD_EXPLANATION_LENGTH = 400;
+
 function renderApod(data) {
   const apodData = data || apodState.data;
   const dateEl = $("apod-date");
@@ -3296,6 +3301,7 @@ function renderApod(data) {
   }
 
   const dateLabel = apodData.date
+    // Use noon UTC so the date always renders correctly regardless of browser timezone
     ? new Date(`${apodData.date}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
     : "";
   if (dateEl) dateEl.textContent = dateLabel || "NASA APOD";
@@ -3319,9 +3325,10 @@ function renderApod(data) {
   }
 
   if (explanationEl) {
-    // Trim explanation to a readable length for the card
     const text = apodData.explanation || "";
-    const trimmed = text.length > 400 ? `${text.slice(0, 400).trim()}…` : text;
+    const trimmed = text.length > MAX_APOD_EXPLANATION_LENGTH
+      ? `${text.slice(0, MAX_APOD_EXPLANATION_LENGTH).trim()}…`
+      : text;
     explanationEl.textContent = trimmed;
   }
 
