@@ -6973,8 +6973,21 @@ $("melody-library-play-device")?.addEventListener("click", async () => {
   });
 })();
 
+function syncTopbarSpacing() {
+  const topbar = document.querySelector(".topbar");
+  if (!topbar) return;
+  const h = topbar.offsetHeight;
+  document.documentElement.style.setProperty("--sticky-rail-top", h + "px");
+  document.body.style.paddingTop = h + "px";
+}
+syncTopbarSpacing();
+document.fonts.ready.then(syncTopbarSpacing);
+
+let _topbarResizeTimer;
 window.addEventListener("resize", () => {
   if (historyData.length) drawChart(historyData);
+  clearTimeout(_topbarResizeTimer);
+  _topbarResizeTimer = setTimeout(syncTopbarSpacing, 60);
 });
 
 window.addEventListener("pagehide", () => {
