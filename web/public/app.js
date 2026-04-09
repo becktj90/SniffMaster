@@ -178,6 +178,10 @@ const VIEW_META = {
     title: "Trends",
     subtitle: "Daily rhythm patterns and the timestamped event log.",
   },
+  space: {
+    title: "Space",
+    subtitle: "Space Coast launch schedule and NASA Astronomy Picture of the Day.",
+  },
   labs: {
     title: "Labs",
     subtitle: "Experimental and playful features.",
@@ -191,8 +195,6 @@ const VIEW_SECTIONS = {
     { id: "card-intel", label: "Air Intelligence" },
     { id: "card-cause", label: "Cause Engine" },
     { id: "card-office", label: "Vitality" },
-    { id: "card-space", label: "Space Coast" },
-    { id: "card-history", label: "Astro Pic" },
   ],
   environment: [
     { id: "card-status", label: "System" },
@@ -201,6 +203,8 @@ const VIEW_SECTIONS = {
     { id: "card-weather-intel", label: "Weather & Map" },
   ],
   analysis: [
+    { id: "card-weather-intel", label: "Smart Summary & Map" },
+    { id: "card-bro", label: "Room Intel" },
     { id: "card-intel", label: "Air Intel" },
     { id: "card-cause", label: "Cause Engine" },
     { id: "card-office", label: "Vitality" },
@@ -208,11 +212,14 @@ const VIEW_SECTIONS = {
     { id: "card-odor", label: "Odor Class" },
     { id: "card-breath", label: "Breath" },
     { id: "card-fart", label: "Intensity" },
-    { id: "card-bro", label: "Room Intel" },
   ],
   history: [
     { id: "card-chart", label: "Daily Rhythm" },
     { id: "card-events", label: "Event Log" },
+  ],
+  space: [
+    { id: "card-space", label: "Launch Deck" },
+    { id: "card-history", label: "Astro Pic" },
   ],
   labs: [
     { id: "card-dadabase", label: "Dadabase" },
@@ -332,7 +339,7 @@ function saveMapLayerPrefs() {
 function loadViewPref() {
   try {
     const hash = `${window.location.hash || ""}`.replace(/^#/, "");
-    const alias = { home: "dashboard", air: "analysis", weather: "environment", space: "dashboard", paranormal: "labs" };
+    const alias = { home: "dashboard", air: "analysis", weather: "environment", paranormal: "labs" };
     if (VIEW_META[hash]) return hash;
     if (alias[hash] && VIEW_META[alias[hash]]) return alias[hash];
     const raw = localStorage.getItem(VIEW_PREF_KEY);
@@ -2385,15 +2392,20 @@ function renderConditionsSummary(d, briefing) {
   if (briefing?.briefing) {
     const indoor = indoorParts.length ? `Indoor: ${indoorParts.join(", ")}. ` : "";
     summaryEl.textContent = `${indoor}${briefing.briefing}`;
+    summaryEl.dataset.snmFilled = "1";
     if (modeEl) {
-      modeEl.textContent = briefing.mode === "openai" ? "AI-generated · OpenAI" : "Deterministic · Local forecast logic";
+      modeEl.textContent = briefing.mode === "openai" ? "Smart brief · OpenAI" : "Deterministic · Local forecast logic";
     }
   } else if (indoorParts.length) {
     summaryEl.textContent = `${indoorParts.join(" · ")}. Forecast data is still loading.`;
+    summaryEl.dataset.snmFilled = "1";
     if (modeEl) modeEl.textContent = "Sensor data only";
   } else {
-    summaryEl.textContent = "Conditions summary will appear once the dashboard has a weather snapshot.";
-    if (modeEl) modeEl.textContent = "Awaiting data";
+    // Only reset to placeholder if never populated with real data
+    if (!summaryEl.dataset.snmFilled) {
+      summaryEl.textContent = "Conditions summary will appear once the dashboard has a weather snapshot.";
+      if (modeEl) modeEl.textContent = "Awaiting data";
+    }
   }
 }
 
@@ -2408,7 +2420,7 @@ function renderWeatherForecast(d, briefing) {
   if (textEl) textEl.textContent = payload.briefing || defaultWeatherBriefing(d).briefing;
   if (modeEl) {
     modeEl.textContent = payload.mode === "openai"
-      ? "Model-generated local area brief"
+      ? "Smart brief · OpenAI"
       : "Deterministic local forecast logic";
   }
   if (summaryEl) summaryEl.textContent = payload.summary || "Forecast guidance pending";
@@ -2419,26 +2431,29 @@ function renderWeatherForecast(d, briefing) {
   if (!gridEl) return;
   const forecast = Array.isArray(payload.forecast) ? payload.forecast.slice(0, 3) : [];
   if (!forecast.length) {
-    gridEl.innerHTML = `
-      <div class="forecast-tile">
-        <div class="forecast-day">Day 1</div>
-        <div class="forecast-condition">Awaiting forecast</div>
-        <div class="forecast-temps">-- / --</div>
-        <div class="forecast-meta">Precip -- · Wind --</div>
-      </div>
-      <div class="forecast-tile">
-        <div class="forecast-day">Day 2</div>
-        <div class="forecast-condition">Awaiting forecast</div>
-        <div class="forecast-temps">-- / --</div>
-        <div class="forecast-meta">Precip -- · Wind --</div>
-      </div>
-      <div class="forecast-tile">
-        <div class="forecast-day">Day 3</div>
-        <div class="forecast-condition">Awaiting forecast</div>
-        <div class="forecast-temps">-- / --</div>
-        <div class="forecast-meta">Precip -- · Wind --</div>
-      </div>
-    `;
+    // Only reset to placeholder state if tiles have never been populated with real data
+    if (!gridEl.dataset.snmFilled) {
+      gridEl.innerHTML = `
+        <div class="forecast-tile">
+          <div class="forecast-day">Day 1</div>
+          <div class="forecast-condition">Awaiting forecast</div>
+          <div class="forecast-temps">-- / --</div>
+          <div class="forecast-meta">Precip -- · Wind --</div>
+        </div>
+        <div class="forecast-tile">
+          <div class="forecast-day">Day 2</div>
+          <div class="forecast-condition">Awaiting forecast</div>
+          <div class="forecast-temps">-- / --</div>
+          <div class="forecast-meta">Precip -- · Wind --</div>
+        </div>
+        <div class="forecast-tile">
+          <div class="forecast-day">Day 3</div>
+          <div class="forecast-condition">Awaiting forecast</div>
+          <div class="forecast-temps">-- / --</div>
+          <div class="forecast-meta">Precip -- · Wind --</div>
+        </div>
+      `;
+    }
     return;
   }
 
@@ -2450,6 +2465,7 @@ function renderWeatherForecast(d, briefing) {
       <div class="forecast-meta">Precip ${Math.round(num(day.precipChance, 0))}% · Wind ${Math.round(num(day.windMph, 0))} mph</div>
     </div>
   `).join("");
+  gridEl.dataset.snmFilled = "1";
 }
 
 async function ensureWeatherBriefing(d) {
@@ -4187,7 +4203,10 @@ function renderLaunchDeck(d) {
 
   const launches = Array.isArray(d.launches) ? d.launches.slice(0, 3) : [];
   if (!launches.length) {
-    shell.innerHTML = '<div class="launch-empty">No Cape launches loaded yet — checking <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a>…</div>';
+    // Only reset to placeholder if never populated with real launch data
+    if (!shell.dataset.snmFilled) {
+      shell.innerHTML = '<div class="launch-empty">No Cape launches loaded yet — checking <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a>…</div>';
+    }
     return;
   }
 
@@ -4207,6 +4226,7 @@ function renderLaunchDeck(d) {
       <div class="launch-line launch-desc">${escapeHtml((launch.missionType || "").slice(0, 100))}</div>
     </article>`;
   }).join("");
+  shell.dataset.snmFilled = "1";
 }
 
 function renderEventLog(d) {
@@ -5072,13 +5092,17 @@ function setDashboardView(view) {
         if (nextView === "labs") {
             ensureDadabase(false);
         }
-        if (nextView === "environment") {
+        if (nextView === "environment" || nextView === "analysis") {
             const map = ensureWeatherMap();
             if (map) {
                 map.invalidateSize();
                 syncWeatherMapPosition(lastData || {});
                 syncMapLayers();
             }
+        }
+        if (nextView === "space") {
+            ensureLaunchData();
+            ensureApod();
         }
         if (nextView === "history" && historyData.length) {
             drawChart(historyData);
