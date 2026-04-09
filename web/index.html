@@ -253,14 +253,6 @@
 
       <div class="metric-ribbon">
         <div class="metric-chip">
-          <span class="metric-label">🌿 IAQ</span>
-          <span class="metric-value" id="v-iaq">--</span>
-        </div>
-        <div class="metric-chip">
-          <span class="metric-label">🧪 VOC</span>
-          <span class="metric-value" id="v-voc">--</span>
-        </div>
-        <div class="metric-chip">
           <span class="metric-label">💨 CO2eq</span>
           <span class="metric-value" id="v-co2">--</span>
         </div>
@@ -280,8 +272,6 @@
       <details class="metric-legend">
         <summary>Metric glossary</summary>
         <div class="metric-legend-items">
-          <span><strong>IAQ:</strong> indoor air burden, lower is better</span>
-          <span><strong>VOC:</strong> airborne organic-gas activity</span>
           <span><strong>CO2eq:</strong> stuffiness / ventilation proxy</span>
           <span><strong>Outdoor AQI:</strong> outside-air quality</span>
           <span><strong>Gas R:</strong> sensor resistance, often higher when cleaner</span>
@@ -494,7 +484,7 @@
         </div>
       </div>
       <div class="office-briefing" id="office-briefing">Office impact briefing will appear here once the room posts a live snapshot.</div>
-      <div class="source-caption">Source: BME688 device telemetry · BSEC2-derived proxies · local comfort, cognition, and persistence heuristics</div>
+      <div class="source-caption">Source: <a href="https://www.bosch-sensortec.com/products/environmental-sensors/gas-sensors/bme688/" target="_blank" rel="noopener noreferrer">Bosch BME688</a> device telemetry · <a href="https://www.bosch-sensortec.com/software-tools/software/bme688-software/" target="_blank" rel="noopener noreferrer">BSEC2</a>-derived proxies · local comfort, cognition, and persistence heuristics</div>
     </section>
 
     <section class="card" id="card-dadabase" data-view="labs">
@@ -603,21 +593,22 @@
         <div class="report-empty">Waiting for Cape launch data...</div>
       </div>
       <div class="launch-stack" id="launch-stack"></div>
-      <div class="source-caption">Source: Cape launch feed · on-device launch parser · curated Space Coast daybook</div>
+      <div class="source-caption">Source: <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a> · Cape launch manifest · curated Space Coast daybook</div>
     </section>
 
-    <section class="card" id="card-history" data-view="dashboard space">
+    <section class="card apod-card" id="card-history" data-view="dashboard space">
       <div class="card-header">
-        <span>Today in Space History</span>
-        <span class="header-pill" id="history-badge">On this day</span>
+        <span>Astronomy Picture of the Day</span>
+        <span class="header-pill" id="history-badge">NASA APOD</span>
       </div>
-      <div class="history-date" id="mission-history-date">Awaiting date sync</div>
-      <div class="history-headline" id="mission-history-title">Today in Space History will appear here after the next time-synced snapshot.</div>
-      <p class="history-context" id="mission-history-context">Cape-focused milestones populate from the device feed and the built-in Space Coast daybook.</p>
-      <div class="history-list" id="mission-history-list">
-        <div class="history-empty">Historical entries are standing by.</div>
+      <div class="apod-date" id="apod-date">Loading today's picture...</div>
+      <div class="apod-title" id="apod-title">Astronomy Picture of the Day</div>
+      <div class="apod-image-wrap" id="apod-image-wrap">
+        <div class="apod-placeholder">Today's astronomy image is loading.</div>
       </div>
-      <div class="source-caption">Source: device date sync · built-in Space Coast history set</div>
+      <p class="apod-explanation" id="apod-explanation">NASA's Astronomy Picture of the Day will appear here.</p>
+      <div class="apod-copyright" id="apod-copyright"></div>
+      <div class="source-caption">Source: <a href="https://apod.nasa.gov/apod/" target="_blank" rel="noopener noreferrer">NASA Astronomy Picture of the Day</a> · <a href="https://api.nasa.gov/" target="_blank" rel="noopener noreferrer">NASA Open APIs</a></div>
     </section>
 
     <section class="card" id="card-occupancy" data-view="analysis">
@@ -697,7 +688,7 @@
       <div class="report-stack" id="odor-report">
         <div class="report-empty">Waiting for classification data...</div>
       </div>
-      <div class="source-caption">Source: BME688 gas response · BSEC2 runtime outputs · on-device odor classifier</div>
+      <div class="source-caption">Source: <a href="https://www.bosch-sensortec.com/products/environmental-sensors/gas-sensors/bme688/" target="_blank" rel="noopener noreferrer">Bosch BME688</a> gas response · <a href="https://www.bosch-sensortec.com/software-tools/software/bme688-software/" target="_blank" rel="noopener noreferrer">BSEC2</a> runtime outputs · on-device odor classifier</div>
     </section>
 
     <section class="card pipeline-card" id="card-telemetry" data-view="environment">
@@ -870,7 +861,7 @@
           <span class="hardware-signal-note">Edge-computed room intelligence pushed to the hosted dashboard</span>
         </div>
       </div>
-      <div class="source-caption">Source: Seeed Studio XIAO ESP32-S3 docs and product image · Bosch BME688 documentation · BME688 breakout image for sensor reference · project firmware architecture</div>
+      <div class="source-caption">Source: <a href="https://www.bosch-sensortec.com/products/environmental-sensors/gas-sensors/bme688/" target="_blank" rel="noopener noreferrer">Bosch BME688</a> · <a href="https://wiki.seeedstudio.com/XIAO_ESP32S3_Getting_Started/" target="_blank" rel="noopener noreferrer">Seeed XIAO ESP32-S3</a> · project firmware architecture</div>
     </section>
 
     <section class="card" id="card-breath" data-view="analysis">
@@ -1173,7 +1164,7 @@
           </div>
         </div>
       </div>
-      <div class="source-caption" id="source-weather">Source: device weather snapshot · Open-Meteo forecast · OpenStreetMap map · RainViewer radar</div>
+      <div class="source-caption" id="source-weather">Source: device weather snapshot · <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a> forecast · <a href="https://www.openstreetmap.org/" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> map · <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> radar</div>
     </section>
 
     <section class="card" id="card-events" data-view="history">
