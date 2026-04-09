@@ -192,7 +192,7 @@ const VIEW_SECTIONS = {
     { id: "card-cause", label: "Cause Engine" },
     { id: "card-office", label: "Vitality" },
     { id: "card-space", label: "Space Coast" },
-    { id: "card-history", label: "Space History" },
+    { id: "card-history", label: "Astro Pic" },
   ],
   environment: [
     { id: "card-status", label: "System" },
@@ -255,6 +255,12 @@ let launchState = {
   data: null,
   pending: null,
 };
+let apodState = {
+  fetchedAt: 0,
+  data: null,
+  pending: null,
+};
+let lastSassyMsg = "";
 let dadabaseState = {
   fetchedAt: 0,
   data: null,
@@ -1750,8 +1756,17 @@ function trimHeadline(text, maxLen = 96) {
   return `${cut.slice(0, end).trim()}...`;
 }
 
+// Regex matching known device-side AI failure messages that should never be displayed.
+const AI_FAILURE_PATTERNS = /gpt is ghosting|openai is|ai is offline|cannot reach|api error|failed to fetch|no response/i;
+
 function heroSummaryText(d) {
-  const aiLine = trimHeadline(d?.sassy, 104);
+  const raw = `${d?.sassy || ""}`.trim();
+  // Filter known device-side AI failure messages so we never display them
+  const isGhosting = !raw || AI_FAILURE_PATTERNS.test(raw);
+  if (!isGhosting) {
+    lastSassyMsg = raw; // cache the last good message
+  }
+  const aiLine = trimHeadline(isGhosting ? (lastSassyMsg || "") : raw, 104);
   return aiLine || roomSummary(d);
 }
 
@@ -2573,6 +2588,7 @@ async function ensureOccupancyBriefing() {
 }
 
 const LAUNCH_TTL_MS = 60 * 60 * 1000; // 1 hour
+const APOD_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 async function ensureLaunchData() {
   // Use fetchedAt (not data) as the cache sentinel so an empty-launch response also
@@ -2602,6 +2618,28 @@ async function ensureLaunchData() {
       // silent — device data is the primary source
     } finally {
       launchState.pending = null;
+    }
+  })();
+}
+
+async function ensureApod() {
+  const cached = apodState.fetchedAt > 0 && Date.now() - apodState.fetchedAt < APOD_TTL_MS;
+  if (cached) return;
+  if (apodState.pending) return;
+
+  apodState.pending = (async () => {
+    try {
+      const res = await fetch("/api/apod", { cache: "no-store" });
+      if (res.ok) {
+        const json = await res.json();
+        apodState.fetchedAt = Date.now();
+        apodState.data = json;
+        renderApod(json);
+      }
+    } catch (_) {
+      // silent — non-critical panel
+    } finally {
+      apodState.pending = null;
     }
   })();
 }
@@ -3240,35 +3278,65 @@ async function ensureDadabase(forceRefresh = false) {
   return dadabaseState.pending;
 }
 
-function renderMissionHistory(d) {
-  const title = $("mission-history-title");
-  const context = $("mission-history-context");
-  const date = $("mission-history-date");
-  const list = $("mission-history-list");
-  if (!title || !context || !date || !list) return;
+function renderMissionHistory() {
+  // This function is kept as a no-op for compatibility;
+  // the history card has been replaced by the APOD card.
+}
 
-  const entries = daybookEntriesForSnapshot(d);
-  date.textContent = `Space Coast daybook · ${snapshotMonthDayLabel(d)}`;
-  if (!entries.length) {
-    title.textContent = "No Space Coast history entry is loaded for this date yet.";
-    context.textContent = "The dashboard will fall back to the live device feed once a history note is available.";
-    list.innerHTML = '<div class="history-empty">No additional milestones are listed right now.</div>';
-    setHeaderPill("history-badge", "No entry", "neutral");
+const MAX_APOD_EXPLANATION_LENGTH = 400;
+
+function renderApod(data) {
+  const apodData = data || apodState.data;
+  const dateEl = $("apod-date");
+  const titleEl = $("apod-title");
+  const imageWrap = $("apod-image-wrap");
+  const explanationEl = $("apod-explanation");
+  const copyrightEl = $("apod-copyright");
+  if (!dateEl && !titleEl) return;
+
+  if (!apodData || (!apodData.url && !apodData.videoUrl && !apodData.explanation)) {
+    if (dateEl) dateEl.textContent = "Loading today's picture...";
+    setHeaderPill("history-badge", "Loading", "neutral");
     return;
   }
 
-  title.textContent = `${entries[0].year} · ${entries[0].title}`;
-  context.textContent = entries[0].detail;
-  list.innerHTML = entries.map((entry) => `
-    <article class="history-row">
-      <div class="history-year">${entry.year}</div>
-      <div>
-        <div class="history-row-title">${entry.title}</div>
-        <div class="history-row-detail">${entry.detail}</div>
-      </div>
-    </article>
-  `).join("");
-  setHeaderPill("history-badge", `${entries.length} milestones`, "good");
+  const dateLabel = apodData.date
+    // Use noon UTC so the date always renders correctly regardless of browser timezone
+    ? new Date(`${apodData.date}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+    : "";
+  if (dateEl) dateEl.textContent = dateLabel || "NASA APOD";
+  if (titleEl) {
+    const apodUrl = apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
+    titleEl.innerHTML = `<a href="${escapeHtml(apodUrl)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-underline-offset:3px;">${escapeHtml(apodData.title || "Astronomy Picture of the Day")}</a>`;
+  }
+
+  if (imageWrap) {
+    if (apodData.mediaType === "video" && apodData.videoUrl) {
+      const safeUrl = escapeHtml(apodData.videoUrl);
+      imageWrap.innerHTML = `<iframe src="${safeUrl}" title="${escapeHtml(apodData.title || "APOD Video")}" allowfullscreen loading="lazy"></iframe>`;
+    } else if (apodData.url) {
+      const imgSrc = apodData.url;
+      const hdSrc = apodData.hdurl || imgSrc;
+      const apodUrl = apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
+      imageWrap.innerHTML = `<a href="${escapeHtml(apodUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(apodData.title || "Astronomy Picture of the Day")}" loading="lazy" onerror="this.onerror=null;this.src='${escapeHtml(hdSrc || imgSrc)}'"></a>`;
+    } else {
+      imageWrap.innerHTML = '<div class="apod-placeholder">Image unavailable — <a href="https://apod.nasa.gov/apod/" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>';
+    }
+  }
+
+  if (explanationEl) {
+    const text = apodData.explanation || "";
+    const trimmed = text.length > MAX_APOD_EXPLANATION_LENGTH
+      ? `${text.slice(0, MAX_APOD_EXPLANATION_LENGTH).trim()}…`
+      : text;
+    explanationEl.textContent = trimmed;
+  }
+
+  if (copyrightEl) {
+    copyrightEl.textContent = apodData.copyright ? `© ${apodData.copyright.trim()}` : "";
+  }
+
+  setHeaderPill("history-badge", apodData.title ? apodData.title.slice(0, 28) : "NASA APOD", "good");
 }
 function renderStructuredReport(text) {
   return formatDiagnosticReport(text);
@@ -4119,21 +4187,26 @@ function renderLaunchDeck(d) {
 
   const launches = Array.isArray(d.launches) ? d.launches.slice(0, 3) : [];
   if (!launches.length) {
-    shell.innerHTML = '<div class="launch-empty">No KSC/CCSFS launches are in the current snapshot.</div>';
+    shell.innerHTML = '<div class="launch-empty">No Cape launches loaded yet — checking <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a>…</div>';
     return;
   }
 
-  shell.innerHTML = launches.map((launch, index) => `
-    <article class="launch-card">
-      <div class="launch-kicker">Cape Slot ${index + 1}</div>
-      <div class="launch-name">${launch.name || "Unknown mission"}</div>
-      <div class="launch-line"><strong>NET:</strong> ${launch.time || "TBD"}</div>
-      <div class="launch-line"><strong>Status:</strong> ${launch.status || "--"}</div>
-      <div class="launch-line"><strong>Provider:</strong> ${launch.provider || "Unknown"}</div>
-      <div class="launch-line"><strong>Pad:</strong> ${launch.pad || "Cape pad TBD"}</div>
-      <div class="launch-line"><strong>Type:</strong> ${launch.missionType || "Mission"}</div>
-    </article>
-  `).join("");
+  shell.innerHTML = launches.map((launch, index) => {
+    const isCape = launch.isCape;
+    const slot = isCape ? `Cape Slot ${index + 1}` : `Global Slot ${index + 1}`;
+    const webcast = launch.webcastUrl
+      ? ` · <a href="${escapeHtml(launch.webcastUrl)}" target="_blank" rel="noopener noreferrer">Webcast</a>`
+      : "";
+    return `
+    <article class="launch-card${isCape ? " is-cape" : ""}">
+      <div class="launch-kicker">${slot}${isCape ? " · KSC/CCSFS" : ""}</div>
+      <div class="launch-name">${escapeHtml(launch.name || "Unknown mission")}</div>
+      <div class="launch-line"><strong>NET:</strong> ${escapeHtml(launch.time || "TBD")}</div>
+      <div class="launch-line"><strong>Provider:</strong> ${escapeHtml(launch.provider || "Unknown")}${webcast}</div>
+      <div class="launch-line"><strong>Pad:</strong> ${escapeHtml(launch.pad || "TBD")} · ${escapeHtml(launch.location || "")}</div>
+      <div class="launch-line launch-desc">${escapeHtml((launch.missionType || "").slice(0, 100))}</div>
+    </article>`;
+  }).join("");
 }
 
 function renderEventLog(d) {
@@ -4648,7 +4721,7 @@ function render(data) {
   renderFartCard(merged);
   renderBreathCard(merged);
   renderDadabase();
-  renderMissionHistory(merged);
+  renderApod(apodState.data);
   renderSpaceCard(merged);
   renderOdorCard(merged);
   renderWeatherIntel(merged);
@@ -4679,6 +4752,7 @@ function render(data) {
   ensureWeatherBriefing(merged);
   ensureLaunchData();
   ensureOccupancyBriefing();
+  ensureApod();
 
   if (historyData.length) {
     drawChart(historyData);
@@ -6935,6 +7009,7 @@ fetchLatestSniff();
 fetchSniffHistory();
 renderDadabase();
 ensureDadabase(false);
+ensureApod();
 loadMelodyBank()
   .then(() => {
     renderMelodyLibrary(lastData);
