@@ -2,20 +2,24 @@
  * GET /api/launches — returns upcoming launches with Cape Canaveral (KSC / CCSFS) launches
  * prioritised, falling back to global upcoming launches when none are scheduled at the Cape.
  *
- * Fetches from the Launch Library 2 free dev API and caches results in
+ * Fetches from the RocketLaunch.Live free API and caches results in
  * Upstash Redis for one hour to stay well within rate limits.
  * Falls back to an empty list on any error so the dashboard degrades gracefully.
+ *
+ * Data source: https://www.rocketlaunch.live/ (free public API, no key required)
  */
 
 import { isRedisConfigured } from "../lib/store.js";
 import { Redis } from "@upstash/redis";
 
-const LL2_BASE = "https://lldev.thespacedevs.com/2.3.0";
+const RLL_BASE = "https://fdo.rocketlaunch.live/json/launches/next/5";
+const RLL_ALL_BASE = "https://fdo.rocketlaunch.live/json/launches/next/15";
 const CACHE_KEY = "sniffmaster:launches";
 const CACHE_TTL_SEC = 3600; // 1 hour
 
-// KSC location id: 12, CCSFS location id: 27
-const CAPE_LOCATION_IDS = "12,27";
+// Cape Canaveral / KSC launch pad location identifiers (rocketlaunch.live uses state abbreviation)
+const CAPE_STATE = "FL";
+const CAPE_KEYWORDS = ["kennedy", "canaveral", "cape", "ccsfs", "ksc", "slc-40", "slc-41", "lc-39"];
 
 async function getCached() {
   if (!isRedisConfigured()) return null;
@@ -39,66 +43,85 @@ async function setCache(data) {
   }
 }
 
+function isCapeLocation(launch) {
+  const locName = `${launch?.pad?.location?.name || ""} ${launch?.pad?.location?.state || ""} ${launch?.pad?.name || ""}`.toLowerCase();
+  const state = `${launch?.pad?.location?.state || ""}`.toUpperCase();
+  return state === CAPE_STATE || CAPE_KEYWORDS.some((kw) => locName.includes(kw));
+}
+
+function formatLaunchTime(launch) {
+  // Prefer t0 (exact), then win_open, then date_str, then est_date
+  const t0 = launch.t0;
+  if (t0) {
+    try {
+      return new Date(t0).toLocaleString("en-US", {
+        timeZone: "America/New_York",
+        month: "short", day: "numeric", year: "numeric",
+        hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+      });
+    } catch { /* t0 string was not a valid date — fall through to next format */ }
+  }
+  const winOpen = launch.win_open;
+  if (winOpen) {
+    try {
+      return new Date(winOpen).toLocaleString("en-US", {
+        timeZone: "America/New_York",
+        month: "short", day: "numeric", year: "numeric",
+        hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+      });
+    } catch { /* win_open string was not a valid date — fall through to next format */ }
+  }
+  if (launch.date_str) return launch.date_str;
+  const est = launch.est_date;
+  if (est) {
+    const parts = [];
+    if (est.year) parts.push(est.year);
+    if (est.quarter) parts.push(`Q${est.quarter}`);
+    if (est.month) parts.push(new Date(2000, est.month - 1).toLocaleString("en-US", { month: "short" }));
+    if (est.day) parts.push(est.day);
+    if (parts.length) return `NET ${parts.join(" ")}`;
+  }
+  return "TBD";
+}
+
 function mapLaunch(launch, isCape) {
+  const mission = Array.isArray(launch.missions) && launch.missions.length ? launch.missions[0] : null;
   return {
-    id: launch.id || "",
-    name: launch.name || "Unknown mission",
-    status: launch.status?.name || "TBD",
-    time: launch.net || "TBD",
-    provider: launch.launch_service_provider?.name || "Unknown",
+    id: `${launch.id || ""}`,
+    name: launch.name || mission?.name || "Unknown mission",
+    status: launch.launch_description || (isCape ? "Cape Canaveral" : "Upcoming"),
+    time: formatLaunchTime(launch),
+    provider: launch.provider?.name || "Unknown",
     pad: launch.pad?.name || "TBD",
     location: launch.pad?.location?.name || "Unknown",
-    missionType: launch.mission?.type || "Mission",
+    missionType: mission?.description ? mission.description.slice(0, 80) : (launch.quicktext || "Mission"),
     isCape: isCape,
+    webcastUrl: Array.isArray(launch.links) ? (launch.links.find((l) => /webcast|stream|watch/i.test(l.title))?.url || null) : null,
   };
 }
 
 async function fetchLaunches() {
-  const baseParams = {
-    limit: "5",
-    ordering: "net",
-    status__ids: "1,2,3,8", // Go, TBC, TBD, In Flight
-  };
-
-  // First try Cape-only launches
-  const capeParams = new URLSearchParams({
-    ...baseParams,
-    location__ids: CAPE_LOCATION_IDS,
-  });
-
-  const capeRes = await fetch(`${LL2_BASE}/launch/upcoming/?${capeParams.toString()}`, {
+  // Fetch next 15 launches so we can find Cape ones even if they aren't in the first 5
+  const res = await fetch(RLL_ALL_BASE, {
     headers: { "User-Agent": "SniffMaster/1.0 (environmental-dashboard)" },
     cache: "no-store",
   });
 
-  if (!capeRes.ok) throw new Error(`launch-library ${capeRes.status}`);
-  const capeJson = await capeRes.json();
-  const capeLaunches = (capeJson?.results || []).map((l) => mapLaunch(l, true));
+  if (!res.ok) throw new Error(`rocketlaunch.live ${res.status}`);
+  const json = await res.json();
+  const all = Array.isArray(json?.result) ? json.result : [];
+
+  const capeLaunches = all.filter((l) => isCapeLocation(l)).map((l) => mapLaunch(l, true));
+  const globalLaunches = all.filter((l) => !isCapeLocation(l)).map((l) => mapLaunch(l, false));
 
   if (capeLaunches.length >= 3) {
-    return capeLaunches;
+    return capeLaunches.slice(0, 5);
   }
 
-  // If fewer than 3 Cape launches, fetch global upcoming launches to fill the feed
-  const globalParams = new URLSearchParams({ ...baseParams, limit: "8" });
-  const globalRes = await fetch(`${LL2_BASE}/launch/upcoming/?${globalParams.toString()}`, {
-    headers: { "User-Agent": "SniffMaster/1.0 (environmental-dashboard)" },
-    cache: "no-store",
-  });
-
-  if (!globalRes.ok) {
-    // Return whatever Cape launches we have
-    return capeLaunches;
-  }
-
-  const globalJson = await globalRes.json();
+  // Fill with global launches if not enough Cape ones
   const capeIds = new Set(capeLaunches.map((l) => l.id));
-  const globalLaunches = (globalJson?.results || [])
-    .filter((l) => !capeIds.has(l.id || ""))
-    .map((l) => mapLaunch(l, false));
-
-  // Cape launches first, then global to fill up to 5
-  return [...capeLaunches, ...globalLaunches].slice(0, 5);
+  const filler = globalLaunches.filter((l) => !capeIds.has(l.id));
+  return [...capeLaunches, ...filler].slice(0, 5);
 }
 
 export default async function handler(req, res) {

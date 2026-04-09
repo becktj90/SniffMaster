@@ -89,6 +89,7 @@ body[data-theme="retro90s"] {
 
 html {
   color-scheme: dark;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -97,6 +98,7 @@ body {
   color: var(--text);
   font-family: "JetBrains Mono", monospace;
   -webkit-font-smoothing: antialiased;
+  padding-top: calc(var(--safe-top) + 66px);
   padding-bottom: calc(56px + var(--safe-bottom));
 }
 
@@ -195,9 +197,11 @@ textarea {
 }
 
 .topbar {
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: 50;
+  left: 0;
+  right: 0;
+  z-index: 1000;
   padding-top: var(--safe-top);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
@@ -227,6 +231,19 @@ textarea {
   font-weight: 700;
   letter-spacing: -0.04em;
   line-height: 1.02;
+}
+
+.brand-logo-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-logo {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  flex-shrink: 0;
 }
 
 .brand-subtitle {
@@ -432,8 +449,9 @@ textarea {
 }
 
 .section-shell {
-  position: relative;
-  z-index: 9;
+  position: sticky;
+  top: var(--sticky-rail-top);
+  z-index: 99;
   width: min(1440px, calc(100% - 28px));
   margin: 8px auto 0;
   padding: 6px 0 8px;
@@ -618,6 +636,12 @@ textarea {
   border-color: rgba(0, 242, 255, 0.22);
   background: rgba(0, 242, 255, 0.05);
   transform: translateY(-1px);
+}
+
+.view-submenu-item.is-active {
+  background: var(--accent-dim, rgba(0, 255, 200, 0.10));
+  color: var(--accent);
+  border-left: 2px solid var(--accent);
 }
 
 .view-submenu-item-eyebrow {
@@ -1078,7 +1102,7 @@ body[data-theme="retro90s"] .footer-bar {
 }
 
 #dashboard > [data-view] {
-  scroll-margin-top: 152px;
+  scroll-margin-top: 130px;
 }
 
 .card {
@@ -1537,12 +1561,23 @@ body[data-theme="retro90s"] .footer-bar {
 .metric-legend {
   grid-column: 1 / -1;
   margin-top: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
   color: var(--muted);
   font-size: 0.68rem;
   line-height: 1.55;
+}
+
+.metric-legend > summary {
+  cursor: pointer;
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  margin-bottom: 6px;
+}
+
+.metric-legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 6px;
 }
 
 .metric-legend strong {
@@ -1644,10 +1679,13 @@ body[data-theme="retro90s"] .footer-bar {
   grid-column: span 12;
 }
 
-#card-odor,
-#card-bro {
+#card-odor {
   grid-column: span 6;
   min-height: 330px;
+}
+
+#card-bro {
+  grid-column: span 12;
 }
 
 #card-dadabase {
@@ -1679,6 +1717,21 @@ body[data-theme="retro90s"] .footer-bar {
 }
 
 #card-method {
+  grid-column: span 12;
+}
+
+#card-cause,
+#card-theme {
+  grid-column: span 12;
+}
+
+#card-occupancy {
+  grid-column: span 6;
+}
+
+#card-specs,
+#card-pseudocode,
+#card-architecture {
   grid-column: span 12;
 }
 
@@ -2243,6 +2296,76 @@ body[data-theme="retro90s"] .footer-bar {
   color: var(--text);
 }
 
+/* ── Cause Engine Card ──────────────────────────────── */
+.cause-primary-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+@media (max-width: 600px) {
+  .cause-primary-row { grid-template-columns: 1fr; }
+}
+.cause-kicker {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.cause-driver-block,
+.cause-action-block {
+  background: var(--panel-raised, rgba(255,255,255,0.03));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.cause-driver-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.cause-driver-note {
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.cause-action-value {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--accent);
+  line-height: 1.5;
+}
+.cause-factors-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .cause-factors-grid { grid-template-columns: 1fr 1fr; }
+}
+.cause-factor {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--panel-raised, rgba(255,255,255,0.03));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.cause-factor-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.cause-factor-value {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .card-summary {
   margin-bottom: 12px;
 }
@@ -2270,7 +2393,7 @@ body[data-theme="retro90s"] .footer-bar {
 }
 
 .bro-summary {
-  font-size: 1rem;
+  font-size: 0.875rem;
   line-height: 1.6;
   color: #dffcff;
 }
@@ -2300,6 +2423,7 @@ body[data-theme="retro90s"] .footer-bar {
 
 .bro-report-shell {
   padding: 14px 16px 16px;
+  font-size: 0.875rem;
 }
 
 .melody-card {
@@ -3058,6 +3182,11 @@ body[data-theme="retro90s"] .footer-bar {
   padding: 13px 14px;
 }
 
+.launch-card.is-cape {
+  border-color: rgba(107, 204, 255, 0.2);
+  background: rgba(107, 204, 255, 0.04);
+}
+
 .launch-kicker {
   color: var(--muted);
   font-size: 0.68rem;
@@ -3078,10 +3207,22 @@ body[data-theme="retro90s"] .footer-bar {
   font-size: 0.9rem;
 }
 
+.launch-desc {
+  font-style: italic;
+  font-size: 0.84rem;
+  margin-top: 4px;
+}
+
 .launch-empty {
   grid-column: 1 / -1;
   color: var(--muted-strong);
   line-height: 1.5;
+}
+
+.launch-empty a {
+  color: var(--cobalt);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .events-list {
@@ -3479,8 +3620,9 @@ body[data-theme="retro90s"] .footer-bar {
 
 .map-shell {
   position: relative;
-  min-height: 300px;
+  min-height: 420px;
   border-radius: 18px;
+  margin-bottom: 18px;
   overflow: hidden;
   background:
     linear-gradient(180deg, rgba(15, 21, 34, 0.7), rgba(15, 21, 34, 0.9)),
@@ -3491,7 +3633,7 @@ body[data-theme="retro90s"] .footer-bar {
 #weather-map {
   width: 100%;
   height: 100%;
-  min-height: 300px;
+  min-height: 420px;
   border: 0;
   display: block;
   filter: saturate(0.9) contrast(1.02);
@@ -4667,7 +4809,10 @@ body[data-theme="retro90s"] .footer-bar {
   #card-chart,
   #card-classifier,
   #card-bro,
-  #card-events {
+  #card-events,
+  #card-cause,
+  #card-occupancy,
+  #card-theme {
     grid-column: span 12;
   }
 
@@ -4719,6 +4864,10 @@ body[data-theme="retro90s"] .footer-bar {
 @media (max-width: 820px) {
   :root {
     --sticky-rail-top: calc(var(--safe-top) + 98px);
+  }
+
+  body {
+    padding-top: calc(var(--safe-top) + 98px);
   }
 
   .section-shell {
@@ -4811,7 +4960,10 @@ body[data-theme="retro90s"] .footer-bar {
   #card-chart,
   #card-classifier,
   #card-bro,
-  #card-events {
+  #card-events,
+  #card-cause,
+  #card-occupancy,
+  #card-theme {
     grid-column: span 12;
   }
 
@@ -5304,7 +5456,55 @@ body *::after {
   opacity: 0.35;
 }
 
-/* ── BLE Occupancy Card ─────────────────────────────────────────────────── */
+/* ── AI Conditions Summary ──────────────────────────────────────────────── */
+
+.conditions-summary-shell {
+  margin-bottom: 18px;
+  padding: 16px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(0, 242, 255, 0.18);
+  background:
+    radial-gradient(circle at top left, rgba(0, 242, 255, 0.08), transparent 28%),
+    rgba(255, 255, 255, 0.03);
+}
+
+.conditions-summary-kicker {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--cobalt);
+  margin-bottom: 8px;
+}
+
+.conditions-summary-text {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--text);
+  margin: 0 0 8px;
+}
+
+.conditions-summary-mode {
+  font-size: 0.65rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ── Map wind badge ──────────────────────────────────────────────────────── */
+
+.map-wind-badge {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--cobalt);
+  background: rgba(0, 242, 255, 0.1);
+  border: 1px solid rgba(0, 242, 255, 0.22);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Occupancy Card ─────────────────────────────────────────────────────── */
 
 .occupancy-bar-shell {
   margin: 14px 0 0;
@@ -5322,7 +5522,7 @@ body *::after {
   padding: 16px 0;
 }
 
-.occupancy-bar-chart {
+.occupancy-bar-grid {
   display: flex;
   align-items: flex-end;
   gap: 3px;
@@ -5332,15 +5532,16 @@ body *::after {
 .occupancy-bar-col {
   flex: 1 1 0;
   min-width: 4px;
-  border-radius: 4px 4px 0 0;
-  background: linear-gradient(180deg, #3f6eff 0%, #41236f 100%);
-  transition: height 0.3s ease;
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
   cursor: default;
-  position: relative;
 }
 
-.occupancy-bar-col[title] {
-  cursor: help;
+.occupancy-bar-fill {
+  width: 100%;
+  border-radius: 4px 4px 0 0;
+  transition: height 0.3s ease;
 }
 
 .occupancy-briefing {
@@ -5353,4 +5554,82 @@ body *::after {
     rgba(255, 255, 255, 0.025);
   color: var(--muted-strong);
   line-height: 1.58;
+}
+
+/* ─── APOD (Astronomy Picture of the Day) ───────────────────────────── */
+.apod-card .card-header { margin-bottom: 6px; }
+
+.apod-date {
+  font-size: 0.74rem;
+  color: var(--cobalt);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.apod-title {
+  font-size: 1.12rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 12px;
+  line-height: 1.35;
+}
+
+.apod-image-wrap {
+  width: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.apod-image-wrap img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 18px;
+}
+
+.apod-image-wrap iframe {
+  width: 100%;
+  aspect-ratio: 16/9;
+  border: none;
+  border-radius: 18px;
+}
+
+.apod-placeholder {
+  color: var(--muted-strong);
+  font-size: 0.85rem;
+  padding: 24px;
+  text-align: center;
+}
+
+.apod-explanation {
+  color: var(--muted-strong);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.apod-copyright {
+  font-size: 0.74rem;
+  color: rgba(188, 199, 216, 0.5);
+  margin-bottom: 4px;
+}
+
+.source-caption a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.85;
+}
+
+.source-caption a:hover {
+  opacity: 1;
+  color: var(--cobalt);
 }
