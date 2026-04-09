@@ -3744,6 +3744,9 @@ function renderOfficeCard(d) {
   const comfort = officeComfortState(d);
   const collab = officeCollaborationState(d);
   const odor = officeOdorState(d);
+  const fatigue = officeFatigueProfile(d);
+  const persistence = officePersistenceProfile(d);
+  $("office-room-load").textContent = `${Math.round(num(d.airScore))}/100`;
   $("office-attention-title").textContent = attention.title;
   $("office-attention-note").textContent = attention.note;
   $("office-comfort-title").textContent = comfort.title;
@@ -3752,6 +3755,10 @@ function renderOfficeCard(d) {
   $("office-collab-note").textContent = collab.note;
   $("office-odor-title").textContent = odor.title;
   $("office-odor-note").textContent = odor.note;
+  $("office-fatigue-title").textContent = fatigue.title;
+  $("office-fatigue-note").textContent = fatigue.note;
+  $("office-persistence-title").textContent = persistence.title;
+  $("office-persistence-note").textContent = persistence.note;
   $("office-briefing").textContent = officeBriefing(d);
 
   const officeTone = vtrLevel >= 2 ? "danger" : cfiPercent < 60 || vtrLevel === 1 ? "warn" : "good";
