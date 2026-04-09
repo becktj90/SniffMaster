@@ -3301,6 +3301,18 @@ function renderMissionHistory() {
 
 const MAX_APOD_EXPLANATION_LENGTH = 400;
 
+/**
+ * Called from inline onerror attributes on APOD img elements.
+ * Reads the fallback URL from data-apod-page on the containing .apod-image-wrap
+ * and replaces the wrap contents with a safe placeholder link.
+ */
+function apodImageFallback(el) {
+  const wrap = el.closest(".apod-image-wrap");
+  if (!wrap) return;
+  const pageUrl = wrap.dataset.apodPage || "https://apod.nasa.gov/apod/";
+  wrap.innerHTML = `<div class="apod-placeholder">Image unavailable — <a href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>`;
+}
+
 function renderApod(data) {
   const apodData = data || apodState.data;
   const dateEl = $("apod-date");
@@ -3327,25 +3339,27 @@ function renderApod(data) {
   }
 
   if (imageWrap) {
-    const apodPageUrl = escapeHtml(apodData.apodPageUrl || "https://apod.nasa.gov/apod/");
+    const rawPageUrl = apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
+    const apodPageUrl = escapeHtml(rawPageUrl);
     const altText = escapeHtml(apodData.title || "Astronomy Picture of the Day");
-    const fallbackHtml = `<div class="apod-placeholder">Image unavailable — <a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>`;
+    // Store the APOD page URL on the wrap so apodImageFallback() can use it without string injection
+    imageWrap.dataset.apodPage = rawPageUrl;
 
     if (apodData.mediaType === "video") {
       // Prefer thumbnail over an embedded iframe to avoid blank iframes (autoplay / CSP issues)
       const thumb = apodData.thumbnail || null;
-      const videoPageUrl = apodData.videoUrl || apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
+      const videoPageUrl = escapeHtml(apodData.videoUrl || rawPageUrl);
       if (thumb) {
-        imageWrap.innerHTML = `<a class="apod-video-thumb" href="${escapeHtml(videoPageUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(thumb)}" alt="${altText}" loading="lazy" onerror="this.closest('.apod-image-wrap').innerHTML='${fallbackHtml.replace(/'/g, "\\'")}'"><span class="apod-play-badge" aria-hidden="true">▶</span></a>`;
+        imageWrap.innerHTML = `<a class="apod-video-thumb" href="${videoPageUrl}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(thumb)}" alt="${altText}" loading="lazy" onerror="apodImageFallback(this)"><span class="apod-play-badge" aria-hidden="true">▶</span></a>`;
       } else {
-        imageWrap.innerHTML = fallbackHtml;
+        imageWrap.innerHTML = `<div class="apod-placeholder">Image unavailable — <a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>`;
       }
     } else if (apodData.url) {
-      const imgSrc = apodData.url;
-      const hdSrc = apodData.hdurl || imgSrc;
-      imageWrap.innerHTML = `<a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgSrc)}" alt="${altText}" loading="lazy" onerror="this.onerror=null;this.src='${escapeHtml(hdSrc)}';this.onerror=function(){this.closest('.apod-image-wrap').innerHTML='${fallbackHtml.replace(/'/g, "\\'")}'}"></a>`;
+      const imgSrc = escapeHtml(apodData.url);
+      const hdSrc = escapeHtml(apodData.hdurl || apodData.url);
+      imageWrap.innerHTML = `<a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer"><img src="${imgSrc}" alt="${altText}" loading="lazy" onerror="this.onerror=null;this.src='${hdSrc}';this.onerror=function(){apodImageFallback(this)}"></a>`;
     } else {
-      imageWrap.innerHTML = fallbackHtml;
+      imageWrap.innerHTML = `<div class="apod-placeholder">Image unavailable — <a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>`;
     }
   }
 
@@ -3681,12 +3695,26 @@ function renderTelemetry(d) {
   const gasRColor = gasR > 50000 ? "var(--mint)" : gasR > 10000 ? "var(--cobalt)" : gasR > 3000 ? "var(--amber)" : "var(--orange)";
   const gasPctColor = gasPct >= 80 ? "var(--mint)" : gasPct >= 50 ? "var(--cobalt)" : gasPct >= 25 ? "var(--amber)" : "var(--orange)";
 
-  const vTemp = $("v-temp"); vTemp.textContent = `${tempF.toFixed(1)}F`; vTemp.style.color = tempColor;
-  const vHum = $("v-hum"); vHum.textContent = `${humidity.toFixed(0)}%`; vHum.style.color = humColor;
+  const vTemp = $("v-temp");
+  vTemp.textContent = `${tempF.toFixed(1)}F`;
+  vTemp.style.color = tempColor;
+
+  const vHum = $("v-hum");
+  vHum.textContent = `${humidity.toFixed(0)}%`;
+  vHum.style.color = humColor;
+
   $("v-press").textContent = `${num(d.pressHpa).toFixed(1)} hPa`;
-  const vGasR = $("v-gasr-raw"); vGasR.textContent = `${fmtGasR(d.gasR)}Ω`; vGasR.style.color = gasRColor;
+
+  const vGasR = $("v-gasr-raw");
+  vGasR.textContent = `${fmtGasR(d.gasR)}Ω`;
+  vGasR.style.color = gasRColor;
+
   $("v-compgas").textContent = `${fmtGasR(d.compGas)}Ω`;
-  const vGasPct = $("v-gaspct"); vGasPct.textContent = `${gasPct.toFixed(1)}%`; vGasPct.style.color = gasPctColor;
+
+  const vGasPct = $("v-gaspct");
+  vGasPct.textContent = `${gasPct.toFixed(1)}%`;
+  vGasPct.style.color = gasPctColor;
+
   $("v-local-time-card").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
   $("v-uptime-card").textContent = fmtUptime(d.uptime).replace(/^Up /, "");
   $("header-network").textContent = headerNetworkText(d);
@@ -3713,12 +3741,28 @@ function renderDerivedMetrics(d) {
   const roomColor = roomScore >= 80 ? "var(--mint)" : roomScore >= 60 ? "var(--cobalt)" : roomScore >= 40 ? "var(--amber)" : roomScore >= 20 ? "var(--orange)" : "var(--red)";
   const aqiColor = aqi <= 0 ? "var(--muted-strong)" : aqi <= 50 ? "var(--mint)" : aqi <= 100 ? "var(--cobalt)" : aqi <= 150 ? "var(--amber)" : "var(--orange)";
 
-  const elIaq = $("derived-iaq"); elIaq.textContent = `${Math.round(iaq)}`; elIaq.style.color = iaqColor;
-  const elVoc = $("derived-voc"); elVoc.textContent = `${voc.toFixed(2)} ppm`; elVoc.style.color = vocColor;
-  const elCo2 = $("derived-co2"); elCo2.textContent = `${Math.round(co2)}`; elCo2.style.color = co2Color;
-  const elRoom = $("derived-room"); elRoom.textContent = `${Math.round(roomScore)}/100`; elRoom.style.color = roomColor;
+  const elIaq = $("derived-iaq");
+  elIaq.textContent = `${Math.round(iaq)}`;
+  elIaq.style.color = iaqColor;
+
+  const elVoc = $("derived-voc");
+  elVoc.textContent = `${voc.toFixed(2)} ppm`;
+  elVoc.style.color = vocColor;
+
+  const elCo2 = $("derived-co2");
+  elCo2.textContent = `${Math.round(co2)}`;
+  elCo2.style.color = co2Color;
+
+  const elRoom = $("derived-room");
+  elRoom.textContent = `${Math.round(roomScore)}/100`;
+  elRoom.style.color = roomColor;
+
   $("derived-dvoc").textContent = fmtSigned(d.dVoc, 2);
-  const elAqi = $("derived-aqi"); elAqi.textContent = aqi > 0 ? `${Math.round(aqi)}` : "--"; elAqi.style.color = aqiColor;
+
+  const elAqi = $("derived-aqi");
+  elAqi.textContent = aqi > 0 ? `${Math.round(aqi)}` : "--";
+  elAqi.style.color = aqiColor;
+
   $("derived-primary").textContent = currentPrimary(d, "No dominant odor");
   $("derived-confidence").textContent = `${Math.round(num(d.primaryConf))}%`;
   setHeaderPill("derived-badge", d.highAccuracyIaq ? "Inference ready" : "Warming up", d.highAccuracyIaq ? "good" : "warn");
