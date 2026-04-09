@@ -1591,6 +1591,7 @@ body[data-theme="retro90s"] .footer-bar {
 .chart-stat {
   background: rgba(255, 255, 255, 0.045);
   border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 2px solid rgba(0, 242, 255, 0.28);
   border-radius: 16px;
   padding: 12px 13px;
 }
@@ -1607,6 +1608,14 @@ body[data-theme="retro90s"] .footer-bar {
   margin-bottom: 6px;
 }
 
+.t-icon {
+  font-style: normal;
+  margin-right: 3px;
+  font-size: 0.82em;
+  vertical-align: middle;
+  opacity: 0.82;
+}
+
 .metric-value,
 .t-value,
 .mini-value,
@@ -1615,6 +1624,7 @@ body[data-theme="retro90s"] .footer-bar {
   font-size: 1.08rem;
   font-weight: 700;
   letter-spacing: -0.03em;
+  transition: color 0.35s;
 }
 
 .terminal {
@@ -5600,6 +5610,32 @@ body *::after {
   aspect-ratio: 16/9;
   border: none;
   border-radius: 18px;
+}
+
+.apod-video-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.apod-play-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.4rem;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(0, 0, 0, 0.38);
+  border-radius: 18px;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  transition: background 0.18s;
+}
+
+.apod-video-thumb:hover .apod-play-badge {
+  background: rgba(0, 0, 0, 0.55);
 }
 
 .apod-placeholder {

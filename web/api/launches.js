@@ -112,16 +112,9 @@ async function fetchLaunches() {
   const all = Array.isArray(json?.result) ? json.result : [];
 
   const capeLaunches = all.filter((l) => isCapeLocation(l)).map((l) => mapLaunch(l, true));
-  const globalLaunches = all.filter((l) => !isCapeLocation(l)).map((l) => mapLaunch(l, false));
 
-  if (capeLaunches.length >= 3) {
-    return capeLaunches.slice(0, 5);
-  }
-
-  // Fill with global launches if not enough Cape ones
-  const capeIds = new Set(capeLaunches.map((l) => l.id));
-  const filler = globalLaunches.filter((l) => !capeIds.has(l.id));
-  return [...capeLaunches, ...filler].slice(0, 5);
+  // Only return KSC / CCSFS launches — no global filler
+  return capeLaunches.slice(0, 5);
 }
 
 export default async function handler(req, res) {
