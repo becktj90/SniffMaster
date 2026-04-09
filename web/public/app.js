@@ -5120,9 +5120,9 @@ function setDashboardView(view) {
 
 const trajectoryArcade = (() => {
   // ═══════════════════════════════════════════════════════════════
-  // TRAJECTORY — New Glenn Lunar Lander
-  // FTL-inspired pixel art game · LC-36 Cape Canaveral
-  // Controls: HOLD thrust, TAP space to detach, LEFT/RIGHT to steer
+  // GATORNAUTS — 8-bit Rocket Flyer
+  // Dodge asteroid walls and alien gators. Steer left/right.
+  // Controls: ← → to steer  |  ↑ / SPACE for boost
   // ═══════════════════════════════════════════════════════════════
 
   const SECRET_SEQUENCE = [
@@ -5134,16 +5134,7 @@ const trajectoryArcade = (() => {
   const STATE = {
     START_SCREEN: "start",
     PLAYING: "playing",
-    SUCCESS: "success",
     GAME_OVER: "gameover",
-  };
-
-  const PHASE = {
-    LAUNCH: 1,
-    SEPARATION: 2,
-    ORBIT: 3,
-    TRANSIT: 4,
-    LUNAR: 5,
   };
 
   const overlay = $("trajectory-overlay");
@@ -5160,87 +5151,22 @@ const trajectoryArcade = (() => {
   }
 
   const ctx = canvas.getContext("2d");
-  const input = { up: false, left: false, right: false, detachPressed: false };
+  const W = 960;
+  const H = 640;
+
+  // Input state
+  const input = { left: false, right: false, boost: false };
   const touchPointers = new Map();
-  const runtime = {
-    mode: STATE.START_SCREEN,
-    phase: PHASE.LAUNCH,
-    stageDetached: false,
-    open: false,
-    lastTs: 0,
-    rafId: 0,
-    width: 960,
-    height: 640,
-    camX: 0,
-    cameraY: 0,
-    zoom: 0.82,
-    boosterTimer: 0,
-    unlockBuffer: [],
-    themeTapCount: 0,
-    themeTapTs: 0,
-    message: "Hold thrust to build momentum, then separate cleanly.",
-    statusLine: "Secret flight deck ready.",
-    stars: [],
-    particles: [],
-    ship: null,
-    booster: null,
-    lasers: [],
-    gators: [],
-    laserCooldown: 0,
-    gatorsKilled: 0,
-    gatorsTotal: 0,
-    trail: [],          // breadcrumb positions for trajectory line
-    trailTimer: 0,
-    deltaV: 0,          // total delta-v expended (m/s)
-    periapsis: 0,       // closest approach to Earth (km)
-    apoapsis: 0,        // farthest point from Earth (km)
-  };
 
-  // ── Orbital constants (scaled for gameplay) ──
-  // Real New Glenn / Artemis 2 values scaled to game units
-  // 1 game unit ≈ 25 km for orbital display
-  const EARTH_RADIUS = 255;       // ~6,371 km
-  const MOON_DIST = 1540;         // ~384,400 km from Earth center
-  const MOON_RADIUS = 70;         // ~1,737 km
-  const EARTH_GM = 28000;         // gravitational parameter (scaled)
-  const MOON_GM = 340;            // Moon GM (1/81 of Earth)
-  const EARTH_CENTER = { x: 0, y: 0 };
-  const MOON_CENTER = { x: 0, y: MOON_DIST };
-
-  function palette() {
-    const styles = getComputedStyle(document.body);
-    return {
-      bg: styles.getPropertyValue("--bg").trim() || "#050505",
-      cyan: styles.getPropertyValue("--cobalt").trim() || "#00f2ff",
-      magenta: styles.getPropertyValue("--violet").trim() || "#ff4ea6",
-      lime: styles.getPropertyValue("--mint").trim() || "#39ff14",
-      amber: styles.getPropertyValue("--amber").trim() || "#f1c40f",
-      orange: styles.getPropertyValue("--orange").trim() || "#ff9958",
-      red: styles.getPropertyValue("--red").trim() || "#e74c3c",
-      text: styles.getPropertyValue("--text").trim() || "#eafcff",
-      muted: styles.getPropertyValue("--muted").trim() || "#7a91a3",
-      panel: styles.getPropertyValue("--panel").trim() || "rgba(8, 12, 18, 0.88)",
-    };
-  }
-
-  // ── Pixel-art rendering mode ──
-  function pixelMode(on) {
-    ctx.imageSmoothingEnabled = !on;
-    ctx.mozImageSmoothingEnabled = !on;
-    ctx.webkitImageSmoothingEnabled = !on;
-  }
-
-  // FTL color palette
+  // ── 8-bit color palette ──
   const FTL = {
     bg: "#0a0e14",
     panel: "rgba(14, 20, 30, 0.92)",
     panelBorder: "rgba(80, 140, 180, 0.25)",
-    panelHighlight: "rgba(80, 140, 180, 0.12)",
     text: "#c8d8e8",
     textDim: "#5a7088",
     textBright: "#e8f4ff",
     green: "#4caf50",
-    greenDim: "#2a5a2d",
     red: "#e05050",
     yellow: "#d4a828",
     blue: "#3888cc",
@@ -5249,1597 +5175,826 @@ const trajectoryArcade = (() => {
     orange: "#e88830",
     cyan: "#48c8e8",
     white: "#e0e8f0",
+    amber: "#f0a820",
   };
 
+  // ── Game constants ──
+  const ROCKET_Y = H - 100;          // fixed screen Y of rocket
+  const ROCKET_W = 24;               // half-width for collision
+  const ROCKET_H = 38;               // half-height for collision
+  const STEER_SPEED = 350;           // px/sec lateral
+  const SCROLL_BASE = 150;           // starting scroll speed px/sec
+  const SCROLL_MAX = 420;
+  const SCROLL_RAMP = 10;            // px/sec faster per row cleared
+  const GAP_START = 210;             // initial gap width
+  const GAP_MIN = 105;               // minimum gap width
+  const GAP_NARROW = 1.8;            // px narrower per row cleared
+  const OBSTACLE_H = 44;             // height of asteroid block
+  const ROW_SPACING = 230;           // vertical px between obstacle rows
+  const SPAWN_DIST = -OBSTACLE_H - 10; // y coord to spawn obstacles (just off top)
+  const BOOST_DUR = 0.4;             // seconds of boost
+  const BOOST_CD = 1.8;              // boost cooldown seconds
+  const BOOST_MULT = 2.0;            // scroll speed multiplier during boost
+  const GATOR_EVERY = 4;             // gator appears every N rows
+
+  // ── Runtime state ──
+  const runtime = {
+    mode: STATE.START_SCREEN,
+    open: false,
+    lastTs: 0,
+    rafId: 0,
+    rocketX: W / 2,
+    rocketVX: 0,
+    boostTimer: 0,
+    boostCooldown: 0,
+    scrollSpeed: SCROLL_BASE,
+    spawnTimer: 0,
+    obstacles: [],
+    rowsCleared: 0,
+    score: 0,
+    highScore: 0,
+    particles: [],
+    stars: [],
+    unlockBuffer: [],
+    themeTapCount: 0,
+    themeTapTs: 0,
+    crashFlash: 0,
+    rowsSinceGator: 0,
+  };
+
+  // ── Stars ──
   function buildStars() {
-    runtime.stars = Array.from({ length: 120 }, (_, i) => ({
-      x: Math.random(),
-      y: Math.random(),
-      size: Math.random() < 0.1 ? 2 : 1, // Pixel-sized stars, few large
-      drift: 0.1 + Math.random() * 0.5,
-      twinkle: Math.random() * Math.PI * 2,
-      bright: Math.random() < 0.15, // 15% are bright accent stars
+    runtime.stars = Array.from({ length: 130 }, () => ({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      size: Math.random() < 0.12 ? 2 : 1,
+      parallax: 0.15 + Math.random() * 0.7,
+      bright: Math.random() < 0.15,
     }));
   }
 
-  function resetMission() {
-    runtime.mode = STATE.START_SCREEN;
-    runtime.phase = PHASE.LAUNCH;
-    runtime.stageDetached = false;
-    runtime.lastTs = 0;
-    runtime.cameraY = 0;
-    runtime.zoom = 0.82;
-    runtime.boosterTimer = 0;
-    runtime.maxQ = 0;
-    runtime.currentQ = 0;
-    runtime.propMass = 100;
-    runtime.deltaV = 0;
-    runtime.periapsis = Infinity;
-    runtime.apoapsis = 0;
-    runtime.trail = [];
-    runtime.trailTimer = 0;
-    runtime.message = "HOLD UP to launch from LC-36. SPACE to stage. Slingshot around Earth to reach the Moon. Shoot gators. Land.";
-    runtime.statusLine = "LC-36 · New Glenn · Ready";
-    runtime.ship = {
-      x: 0,
-      y: EARTH_RADIUS + 1.5, // on Earth's surface
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      fuel: 100,
-      altitude: 0,
-    };
-    runtime.booster = null;
+  // ── Reset to fresh game state ──
+  function resetGame() {
+    runtime.rocketX = W / 2;
+    runtime.rocketVX = 0;
+    runtime.boostTimer = 0;
+    runtime.boostCooldown = 0;
+    runtime.scrollSpeed = SCROLL_BASE;
+    runtime.spawnTimer = 0;
+    runtime.obstacles = [];
+    runtime.rowsCleared = 0;
+    runtime.score = 0;
     runtime.particles = [];
-    runtime.lasers = [];
-    runtime.gators = [];
-    runtime.laserCooldown = 0;
-    runtime.gatorsKilled = 0;
-    runtime.gatorsTotal = 0;
-    input.up = false;
-    input.left = false;
-    input.right = false;
-    input.detachPressed = false;
-    if (brief) {
-      brief.textContent = "1) HOLD UP to launch  2) SPACE to separate stages  3) Build orbit, TLI burn to the Moon  4) SPACE to shoot gators  5) Land on lunar pad";
+    runtime.crashFlash = 0;
+    runtime.rowsSinceGator = 0;
+    if (missionStatus) missionStatus.textContent = "Launch pad ready. Godspeed.";
+    // Pre-place first obstacle a bit below the top so player has a moment to react
+    spawnRow(H * 0.35);
+  }
+
+  // ── Spawn one obstacle row at screen y ──
+  function spawnRow(y) {
+    const gapW = Math.max(GAP_MIN, GAP_START - runtime.rowsCleared * GAP_NARROW);
+    const margin = 48;
+    const gapX = margin + Math.random() * (W - margin * 2 - gapW);
+    runtime.rowsSinceGator++;
+    const hasGator = runtime.rowsCleared >= 2 && runtime.rowsSinceGator >= GATOR_EVERY;
+    const gators = [];
+    if (hasGator) {
+      runtime.rowsSinceGator = 0;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      const startX = dir > 0 ? gapX + 10 : gapX + gapW - 10;
+      gators.push({
+        x: startX,
+        vx: dir * (55 + Math.random() * 55),
+        bounceL: gapX + 10,
+        bounceR: gapX + gapW - 10,
+      });
     }
-    if (missionStatus) {
-      missionStatus.textContent = "LC-36 Cape Canaveral · Standing by for launch.";
-    }
+    runtime.obstacles.push({ y, gapX, gapW, gators, cleared: false });
+    // Reset spawn timer
+    runtime.spawnTimer = ROW_SPACING / runtime.scrollSpeed;
   }
 
-  function resizeCanvas() {
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const width = Math.max(320, Math.round(rect.width || 960));
-    const height = Math.max(420, Math.round(rect.height || 640));
-    runtime.width = width;
-    runtime.height = height;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-
-  function worldToScreen(x, y) {
-    const camX = runtime.camX || 0;
-    const camY = runtime.cameraY;
-    return {
-      x: runtime.width * 0.5 + (x - camX) * runtime.zoom,
-      y: runtime.height * 0.5 - (y - camY) * runtime.zoom,
-    };
-  }
-
-  function angleDiff(a, b) {
-    let diff = (a - b + Math.PI) % (Math.PI * 2);
-    if (diff < 0) diff += Math.PI * 2;
-    return diff - Math.PI;
-  }
-
+  // ── Lifecycle ──
   function startPlaying() {
-    resetMission();
+    resetGame();
     runtime.mode = STATE.PLAYING;
-    runtime.camX = 0;
-    runtime.message = "HOLD UP — 7× BE-4 engines at full thrust. LOX/LNG. Climb to BECO altitude.";
-    runtime.statusLine = "Phase 1 · Stage 1 · 7× BE-4 · LOX/Methane";
+    startChiptune();
+    if (!runtime.rafId) {
+      runtime.lastTs = performance.now();
+      runtime.rafId = requestAnimationFrame(loop);
+    }
   }
 
   function open() {
-    overlay.hidden = false;
-    overlay.style.display = "";
-    overlay.setAttribute("aria-hidden", "false");
-    document.body.classList.add("arcade-open");
+    if (runtime.open) return;
     runtime.open = true;
-    resetMission();
-    resizeCanvas();
-    drawFrame();
+    overlay.hidden = false;
+    overlay.removeAttribute("aria-hidden");
+    resetGame();
+    buildStars();
+    runtime.mode = STATE.START_SCREEN;
     if (!runtime.rafId) {
+      runtime.lastTs = performance.now();
       runtime.rafId = requestAnimationFrame(loop);
     }
-    startChiptune();
+    document.body.style.overflow = "hidden";
   }
 
   function close() {
-    stopChiptune();
     runtime.open = false;
     overlay.hidden = true;
-    overlay.style.display = "none";
     overlay.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("arcade-open");
-    if (runtime.rafId) cancelAnimationFrame(runtime.rafId);
-    runtime.rafId = 0;
+    if (runtime.rafId) { cancelAnimationFrame(runtime.rafId); runtime.rafId = 0; }
+    stopChiptune();
+    document.body.style.overflow = "";
   }
 
-  function emitBriefing(text, status = text) {
-    runtime.message = text;
-    runtime.statusLine = status;
-    if (brief) brief.textContent = text;
-    if (missionStatus) missionStatus.textContent = status;
-  }
-
-  function detachBooster() {
-    if (runtime.phase !== PHASE.SEPARATION || runtime.stageDetached) return;
-    const ship = runtime.ship;
-    runtime.phase = PHASE.ORBIT;
-    runtime.stageDetached = true;
-    runtime.booster = {
-      x: ship.x,
-      y: ship.y - 28,
-      vx: ship.vx * 0.7,
-      vy: ship.vy - 18,
-      spin: 0,
-      active: true,
-    };
-    // Stage 2 ignition — 2× BE-3U, LOX/LH2
-    ship.vy += 22;
-    ship.fuel = Math.max(ship.fuel, 82);
-    runtime.propMass = 82;
-    emitBriefing(
-      "Stage 1 separated — booster recovery burn initiated. Stage 2 ignition: 2× BE-3U (LOX/LH2). Build orbit, then SPACE to jettison Stage 2 for TLI.",
-      "Phase 3 · LEO insertion · 2× BE-3U · LOX/LH2"
-    );
-  }
-
-  function spawnBurst(count, color) {
-    const ship = runtime.ship;
-    for (let i = 0; i < count; i += 1) {
+  // ── Particles ──
+  function spawnBurst(x, y, color, count) {
+    for (let i = 0; i < (count || 14); i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const spd = 60 + Math.random() * 180;
+      const life = 0.4 + Math.random() * 0.5;
       runtime.particles.push({
-        x: ship.x + (Math.random() - 0.5) * 18,
-        y: ship.y + (Math.random() - 0.5) * 18,
-        vx: (Math.random() - 0.5) * 90,
-        vy: (Math.random() - 0.5) * 90,
-        life: 0.8 + Math.random() * 0.6,
-        age: 0,
+        x, y,
+        vx: Math.cos(angle) * spd,
+        vy: Math.sin(angle) * spd,
+        life, maxLife: life,
         color,
+        size: 2 + Math.random() * 3,
       });
     }
-  }
-
-  function failMission(reason) {
-    runtime.mode = STATE.GAME_OVER;
-    emitBriefing(reason, "Mission lost. Press restart to try again.");
-    spawnBurst(22, palette().orange);
-  }
-
-  function landMission() {
-    runtime.mode = STATE.SUCCESS;
-    emitBriefing(
-      `Touchdown. ${runtime.gatorsKilled} alien gators neutralized. The moon is safe — for now.`,
-      "Mission success. Press restart for another run."
-    );
-    spawnBurst(12, palette().lime);
   }
 
   function updateParticles(dt) {
-    runtime.particles = runtime.particles
-      .map((particle) => ({
-        ...particle,
-        x: particle.x + particle.vx * dt,
-        y: particle.y + particle.vy * dt,
-        age: particle.age + dt,
-      }))
-      .filter((particle) => particle.age < particle.life);
-  }
-
-  function updateBooster(dt) {
-    if (!runtime.booster?.active) return;
-    runtime.booster.vy -= 18 * dt;
-    runtime.booster.spin += dt * 1.8;
-    runtime.booster.x += runtime.booster.vx * dt;
-    runtime.booster.y += runtime.booster.vy * dt;
-    if (runtime.booster.y < -120) runtime.booster.active = false;
-  }
-
-  function spawnGators() {
-    const count = 6 + Math.floor(Math.random() * 4); // 6-9 gators
-    runtime.gatorsTotal = count;
-    runtime.gatorsKilled = 0;
-    runtime.gators = [];
-    const ship = runtime.ship;
-    for (let i = 0; i < count; i++) {
-      // Spread gators between current position and Moon
-      const t = 0.2 + 0.6 * (i / count);
-      const gx = ship.x + (MOON_CENTER.x - ship.x) * t + (Math.random() - 0.5) * 200;
-      const gy = ship.y + (MOON_CENTER.y - ship.y) * t + (Math.random() - 0.5) * 200;
-      runtime.gators.push({
-        x: gx, y: gy,
-        vx: (Math.random() - 0.5) * 20,
-        vy: (Math.random() - 0.5) * 8,
-        alive: true,
-        frame: Math.floor(Math.random() * 4),
-        flipX: Math.random() < 0.5,
-        size: 0.8 + Math.random() * 0.5,
-      });
-    }
-  }
-
-  function fireLaser() {
-    if (runtime.laserCooldown > 0 || runtime.phase !== PHASE.LUNAR) return;
-    const ship = runtime.ship;
-    runtime.laserCooldown = 0.25; // 4 shots per second
-    // Fire from nose of rocket (opposite direction of thrust)
-    runtime.lasers.push({
-      x: ship.x + Math.sin(ship.angle) * 20,
-      y: ship.y + Math.cos(ship.angle) * 20,
-      vx: Math.sin(ship.angle) * 300,
-      vy: Math.cos(ship.angle) * 300,
-      life: 1.5,
-      age: 0,
-    });
-    // Laser sound effect — short high-pitched blip
-    if (audio.ctx && audio.playing) {
-      try {
-        const osc = audio.ctx.createOscillator();
-        osc.type = "square";
-        osc.frequency.value = 880;
-        const env = audio.ctx.createGain();
-        env.gain.setValueAtTime(0.15, audio.ctx.currentTime);
-        env.gain.exponentialRampToValueAtTime(0.001, audio.ctx.currentTime + 0.08);
-        osc.connect(env);
-        env.connect(audio.masterGain);
-        osc.start();
-        osc.stop(audio.ctx.currentTime + 0.1);
-      } catch (_) {}
-    }
-  }
-
-  function updateLasers(dt) {
-    runtime.laserCooldown = Math.max(0, runtime.laserCooldown - dt);
-    runtime.lasers = runtime.lasers
-      .map(l => ({
-        ...l,
-        x: l.x + l.vx * dt,
-        y: l.y + l.vy * dt,
-        age: l.age + dt,
-      }))
-      .filter(l => l.age < l.life);
-  }
-
-  function updateGators(dt) {
-    const ship = runtime.ship;
-    runtime.gators.forEach(g => {
-      if (!g.alive) return;
-      // Wander + slight drift toward ship x
-      g.vx += (Math.random() - 0.5) * 30 * dt;
-      g.vx += clamp((ship.x - g.x) * 0.002, -2, 2);
-      g.vx = clamp(g.vx, -30, 30);
-      g.vy += (Math.random() - 0.5) * 10 * dt;
-      g.x += g.vx * dt;
-      g.y += g.vy * dt;
-      g.frame = (g.frame + dt * 4) % 4;
-      g.flipX = g.vx < 0;
-
-      // Collision with ship — gator bites you
-      const dx = ship.x - g.x;
-      const dy = ship.y - g.y;
-      if (Math.sqrt(dx * dx + dy * dy) < 22) {
-        failMission("An alien gator chomped your spacecraft. They don't negotiate.");
-        g.alive = false;
-      }
-    });
-
-    // Laser-gator collision
-    runtime.lasers.forEach(l => {
-      runtime.gators.forEach(g => {
-        if (!g.alive) return;
-        const dx = l.x - g.x;
-        const dy = l.y - g.y;
-        if (Math.abs(dx) < 18 * g.size && Math.abs(dy) < 14 * g.size) {
-          g.alive = false;
-          runtime.gatorsKilled++;
-          // Gator explosion
-          for (let i = 0; i < 8; i++) {
-            runtime.particles.push({
-              x: g.x + (Math.random() - 0.5) * 12,
-              y: g.y + (Math.random() - 0.5) * 12,
-              vx: (Math.random() - 0.5) * 60,
-              vy: (Math.random() - 0.5) * 60,
-              life: 0.5 + Math.random() * 0.3,
-              age: 0,
-              color: FTL.green,
-            });
-          }
-          // Kill sound
-          if (audio.ctx && audio.playing) {
-            try {
-              const osc = audio.ctx.createOscillator();
-              osc.type = "sawtooth";
-              osc.frequency.value = 200;
-              osc.frequency.exponentialRampToValueAtTime(60, audio.ctx.currentTime + 0.15);
-              const env = audio.ctx.createGain();
-              env.gain.setValueAtTime(0.12, audio.ctx.currentTime);
-              env.gain.exponentialRampToValueAtTime(0.001, audio.ctx.currentTime + 0.2);
-              osc.connect(env);
-              env.connect(audio.masterGain);
-              osc.start();
-              osc.stop(audio.ctx.currentTime + 0.25);
-            } catch (_) {}
-          }
-          l.age = l.life; // consume the laser
-        }
-      });
+    runtime.particles = runtime.particles.filter(p => {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 60 * dt;
+      p.life -= dt;
+      return p.life > 0;
     });
   }
 
-  function drawGators() {
-    runtime.gators.forEach(g => {
-      if (!g.alive) return;
-      const { x, y } = worldToScreen(g.x, g.y);
-      const s = g.size * Math.max(runtime.zoom, 0.5);
-      const px = (v) => Math.floor(v);
-      ctx.save();
-      ctx.translate(px(x), px(y));
-      if (g.flipX) ctx.scale(-1, 1);
-      ctx.scale(s, s);
-
-      // 8-bit pixel gator — body
-      ctx.fillStyle = "#3a8a3a";
-      ctx.fillRect(-12, -4, 24, 8);    // torso
-      ctx.fillRect(-16, -2, 6, 4);     // tail base
-      ctx.fillRect(-20, -1, 5, 2);     // tail tip
-
-      // Head/jaw
-      ctx.fillStyle = "#4aaa4a";
-      ctx.fillRect(10, -6, 10, 10);    // head
-      ctx.fillRect(18, -4, 6, 4);      // snout upper
-      ctx.fillRect(18, 0, 6, 3);       // snout lower (jaw)
-
-      // Jaw animation (chomp)
-      const chomp = Math.floor(g.frame) % 2;
-      if (chomp) {
-        ctx.fillRect(18, 2, 6, 2);     // jaw open
-      }
-
-      // Teeth
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(20, -1, 2, 2);
-      ctx.fillRect(22, -1, 2, 2);
-
-      // Eye (red — alien!)
-      ctx.fillStyle = "#ff2020";
-      ctx.fillRect(14, -5, 3, 3);
-      // Pupil
-      ctx.fillStyle = "#000";
-      ctx.fillRect(15, -4, 1, 1);
-
-      // Legs
-      ctx.fillStyle = "#3a8a3a";
-      const legOff = Math.floor(g.frame) % 2 === 0 ? 0 : 2;
-      ctx.fillRect(-6, 4 + legOff, 3, 4);      // back leg
-      ctx.fillRect(4, 4 + (2 - legOff), 3, 4);  // front leg
-
-      // Spikes (alien feature)
-      ctx.fillStyle = "#80ff80";
-      ctx.fillRect(-8, -6, 2, 3);
-      ctx.fillRect(-2, -7, 2, 4);
-      ctx.fillRect(4, -6, 2, 3);
-
-      ctx.restore();
-    });
+  // ── Game over ──
+  function endGame(reason) {
+    if (runtime.mode !== STATE.PLAYING) return;
+    runtime.mode = STATE.GAME_OVER;
+    if (runtime.score > runtime.highScore) runtime.highScore = runtime.score;
+    spawnBurst(runtime.rocketX, ROCKET_Y, FTL.orange, 24);
+    spawnBurst(runtime.rocketX, ROCKET_Y, FTL.yellow, 14);
+    runtime.crashFlash = 0.5;
+    if (missionStatus) missionStatus.textContent = `${reason} Score: ${runtime.score}`;
   }
 
-  function drawLasers() {
-    ctx.fillStyle = FTL.cyan;
-    runtime.lasers.forEach(l => {
-      const { x, y } = worldToScreen(l.x, l.y);
-      const angle = Math.atan2(l.vx, l.vy);
-      ctx.save();
-      ctx.translate(Math.floor(x), Math.floor(y));
-      ctx.rotate(-angle);
-      // Pixel laser bolt — narrow rectangle
-      ctx.fillRect(-1, -6, 2, 12);
-      // Bright core
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, -4, 1, 8);
-      ctx.fillStyle = FTL.cyan;
-      ctx.restore();
-    });
-  }
+  // ── Update ──
+  function updateGame(dt) {
+    if (runtime.mode !== STATE.PLAYING) return;
 
-  function atmosphericDensity(alt) {
-    // Exponential atmosphere model — density falls off with altitude
-    // Scale height ~120 game-units (represents ~44km)
-    return Math.exp(-Math.max(0, alt) / 120);
-  }
+    // Boost timers
+    if (runtime.boostTimer > 0) runtime.boostTimer = Math.max(0, runtime.boostTimer - dt);
+    if (runtime.boostCooldown > 0) runtime.boostCooldown = Math.max(0, runtime.boostCooldown - dt);
 
-  // ── Two-body gravity: Newton's law of gravitation ──
-  function gravityAccel(shipX, shipY) {
-    // Earth gravity
-    let dx = EARTH_CENTER.x - shipX;
-    let dy = EARTH_CENTER.y - shipY;
-    let r2 = dx * dx + dy * dy;
-    let r = Math.sqrt(r2);
-    let ax = 0, ay = 0;
-    if (r > 2) { // avoid singularity
-      const aE = EARTH_GM / r2;
-      ax += (dx / r) * aE;
-      ay += (dy / r) * aE;
+    // Activate boost
+    if (input.boost && runtime.boostCooldown <= 0 && runtime.boostTimer <= 0) {
+      runtime.boostTimer = BOOST_DUR;
+      runtime.boostCooldown = BOOST_CD;
+      spawnBurst(runtime.rocketX, ROCKET_Y + 20, FTL.cyan, 10);
     }
-    // Moon gravity
-    dx = MOON_CENTER.x - shipX;
-    dy = MOON_CENTER.y - shipY;
-    r2 = dx * dx + dy * dy;
-    r = Math.sqrt(r2);
-    if (r > 2) {
-      const aM = MOON_GM / r2;
-      ax += (dx / r) * aM;
-      ay += (dy / r) * aM;
-    }
-    return { ax, ay };
-  }
 
-  function distToEarth(x, y) {
-    return Math.sqrt(x * x + y * y);
-  }
-  function distToMoon(x, y) {
-    const dx = x - MOON_CENTER.x;
-    const dy = y - MOON_CENTER.y;
-    return Math.sqrt(dx * dx + dy * dy);
-  }
+    const isBoosting = runtime.boostTimer > 0;
 
-  // Predict trajectory N steps ahead (for trajectory line)
-  function predictTrajectory(x, y, vx, vy, steps, stepDt) {
-    const pts = [];
-    for (let i = 0; i < steps; i++) {
-      const g = gravityAccel(x, y);
-      vx += g.ax * stepDt;
-      vy += g.ay * stepDt;
-      x += vx * stepDt;
-      y += vy * stepDt;
-      if (i % 3 === 0) pts.push({ x, y });
-      // Stop if collided with body
-      if (distToEarth(x, y) < EARTH_RADIUS - 5 || distToMoon(x, y) < MOON_RADIUS - 3) break;
-    }
-    return pts;
-  }
+    // Steer
+    if (input.left) runtime.rocketVX = -STEER_SPEED;
+    else if (input.right) runtime.rocketVX = STEER_SPEED;
+    else runtime.rocketVX *= Math.pow(0.05, dt); // fast lateral friction when no key held
 
-  function updateMission(dt) {
-    if (runtime.mode !== STATE.PLAYING) {
-      updateParticles(dt);
+    runtime.rocketX += runtime.rocketVX * dt;
+    runtime.rocketX = Math.max(ROCKET_W + 4, Math.min(W - ROCKET_W - 4, runtime.rocketX));
+
+    // Hit side walls
+    if (runtime.rocketX <= ROCKET_W + 4 || runtime.rocketX >= W - ROCKET_W - 4) {
+      endGame("Hit the wall!");
       return;
     }
 
-    const ship = runtime.ship;
-    const earthAlt = distToEarth(ship.x, ship.y) - EARTH_RADIUS;
-    const moonAlt = distToMoon(ship.x, ship.y) - MOON_RADIUS;
-    ship.altitude = earthAlt;
+    // Scroll speed ramp
+    const targetSpeed = Math.min(SCROLL_MAX, SCROLL_BASE + runtime.rowsCleared * SCROLL_RAMP);
+    runtime.scrollSpeed += (targetSpeed - runtime.scrollSpeed) * Math.min(1, dt * 1.5);
+    const effectiveSpeed = isBoosting ? runtime.scrollSpeed * BOOST_MULT : runtime.scrollSpeed;
 
-    // Trail breadcrumbs
-    runtime.trailTimer += dt;
-    if (runtime.trailTimer > 0.15) {
-      runtime.trailTimer = 0;
-      runtime.trail.push({ x: ship.x, y: ship.y });
-      if (runtime.trail.length > 600) runtime.trail.shift();
+    // Move stars (parallax)
+    for (const s of runtime.stars) {
+      s.y += s.parallax * effectiveSpeed * dt;
+      if (s.y > H) s.y -= H;
     }
 
-    // Compute orbital parameters
-    const earthR = distToEarth(ship.x, ship.y);
-    const altKm = Math.max(0, (earthR - EARTH_RADIUS) * 25); // 1 unit ≈ 25 km
-    runtime.periapsis = Math.min(runtime.periapsis, altKm);
-    runtime.apoapsis = Math.max(runtime.apoapsis, altKm);
+    // Spawn new rows
+    runtime.spawnTimer -= dt;
+    if (runtime.spawnTimer <= 0) {
+      spawnRow(SPAWN_DIST);
+      runtime.spawnTimer = ROW_SPACING / runtime.scrollSpeed;
+    }
 
-    // ═══ PHASE: LAUNCH ═══
-    if (runtime.phase === PHASE.LAUNCH) {
-      ship.angle = 0; // nose up
-      const rho = atmosphericDensity(earthAlt);
+    // Move and check obstacles
+    for (const obs of runtime.obstacles) {
+      obs.y += effectiveSpeed * dt;
 
-      if (input.up && ship.fuel > 0) {
-        // Stage 1: 7× BE-4 engines, LOX/LNG (methane)
-        // Real: 17,100 kN total thrust, Isp 311s sea level
-        const thrustForce = 52;
-        ship.vy += thrustForce * dt;
-        ship.fuel = Math.max(0, ship.fuel - 14 * dt);
-        runtime.propMass = Math.max(0, runtime.propMass - 14 * dt);
-        runtime.deltaV += thrustForce * dt;
-        if (Math.random() < 0.6) {
-          runtime.particles.push({
-            x: ship.x + (Math.random() - 0.5) * 6,
-            y: ship.y - 12,
-            vx: (Math.random() - 0.5) * 20,
-            vy: -30 - Math.random() * 40,
-            life: 0.4 + Math.random() * 0.3, age: 0,
-            color: FTL.orange,
-          });
+      // Move gators (bounce within gap)
+      for (const g of obs.gators) {
+        g.x += g.vx * dt;
+        if (g.x <= g.bounceL) { g.x = g.bounceL; g.vx = Math.abs(g.vx); }
+        if (g.x >= g.bounceR) { g.x = g.bounceR; g.vx = -Math.abs(g.vx); }
+      }
+
+      // Collision check when obstacle reaches rocket zone
+      const obsTop = obs.y - OBSTACLE_H / 2;
+      const obsBot = obs.y + OBSTACLE_H / 2;
+      const rocketTop = ROCKET_Y - ROCKET_H / 2;
+      const rocketBot = ROCKET_Y + ROCKET_H / 2;
+
+      if (obsBot > rocketTop && obsTop < rocketBot) {
+        // Vertical overlap — check horizontal
+        const rx = runtime.rocketX;
+        const rl = rx - ROCKET_W / 2 + 4; // small forgiveness
+        const rr = rx + ROCKET_W / 2 - 4;
+
+        const inGap = rl >= obs.gapX && rr <= obs.gapX + obs.gapW;
+        if (!inGap) {
+          endGame("Asteroid impact!");
+          return;
+        }
+
+        // Gator collision
+        for (const g of obs.gators) {
+          if (Math.abs(rx - g.x) < 22 && Math.abs(ROCKET_Y - obs.y) < 28) {
+            endGame("Chomped by a space gator!");
+            return;
+          }
+        }
+
+        // Award point once per row
+        if (!obs.cleared && obs.y > ROCKET_Y) {
+          obs.cleared = true;
+          runtime.rowsCleared++;
+          runtime.score = runtime.rowsCleared;
+          if (missionStatus) missionStatus.textContent = `Altitude cleared: ${runtime.score} rows · Speed: ${Math.round(runtime.scrollSpeed)}`;
+          spawnBurst(rx, ROCKET_Y - 40, FTL.green, 6);
         }
       }
-
-      // Atmospheric drag
-      const speed = Math.sqrt(ship.vx * ship.vx + ship.vy * ship.vy);
-      const dragForce = 0.5 * rho * 0.35 * speed;
-      if (speed > 0.1) {
-        ship.vx -= (ship.vx / speed) * dragForce * dt;
-        ship.vy -= (ship.vy / speed) * dragForce * dt;
-      }
-      runtime.currentQ = 0.5 * rho * speed * speed;
-      runtime.maxQ = Math.max(runtime.maxQ, runtime.currentQ);
-
-      // Gravity (simplified vertical during launch)
-      const g = gravityAccel(ship.x, ship.y);
-      ship.vx += g.ax * dt;
-      ship.vy += g.ay * dt;
-
-      // BECO — booster engine cutoff at altitude ~320km
-      if (earthAlt >= 65 || ship.fuel <= 38) {
-        runtime.phase = PHASE.SEPARATION;
-        runtime.boosterTimer = 5.0;
-        emitBriefing(
-          "BECO — 7× BE-4 shutdown. MECO altitude reached. SPACE to separate Stage 1 for recovery.",
-          "Phase 2 · Stage 1 separation · LOX/LNG depleted"
-        );
-      }
     }
 
-    // ═══ PHASE: SEPARATION ═══
-    else if (runtime.phase === PHASE.SEPARATION) {
-      runtime.boosterTimer -= dt;
-      const g = gravityAccel(ship.x, ship.y);
-      ship.vx += g.ax * dt;
-      ship.vy += g.ay * dt;
-      const rho = atmosphericDensity(earthAlt);
-      const speed = Math.sqrt(ship.vx * ship.vx + ship.vy * ship.vy);
-      const dragForce = 0.5 * rho * 0.2 * speed;
-      if (speed > 0.1) {
-        ship.vx -= (ship.vx / speed) * dragForce * dt;
-        ship.vy -= (ship.vy / speed) * dragForce * dt;
-      }
-      runtime.currentQ = 0.5 * rho * speed * speed;
+    // Prune off-screen obstacles
+    runtime.obstacles = runtime.obstacles.filter(o => o.y < H + OBSTACLE_H + 20);
 
-      if (input.detachPressed) detachBooster();
-      if (!runtime.stageDetached && (runtime.boosterTimer <= 0 || earthAlt <= 10)) {
-        failMission("Stage 1 separation too late. Spent booster dragged the stack back through the atmosphere.");
-      }
-    }
-
-    // ═══ PHASE: ORBIT (Stage 2 burn — LEO insertion) ═══
-    else if (runtime.phase === PHASE.ORBIT) {
-      if (input.left) ship.angle -= 2.8 * dt;
-      if (input.right) ship.angle += 2.8 * dt;
-      ship.angle = ((ship.angle % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2);
-
-      // Two-body gravity
-      const g = gravityAccel(ship.x, ship.y);
-      ship.vx += g.ax * dt;
-      ship.vy += g.ay * dt;
-
-      if (input.up && ship.fuel > 0) {
-        // Stage 2: 2× BE-3U engines, LOX/LH2
-        // Real: 1,600 kN total, Isp 450s vacuum
-        const thrust = 35;
-        ship.vx += Math.sin(ship.angle) * thrust * dt;
-        ship.vy += Math.cos(ship.angle) * thrust * dt;
-        ship.fuel = Math.max(0, ship.fuel - 8 * dt);
-        runtime.propMass = Math.max(0, runtime.propMass - 8 * dt);
-        runtime.deltaV += thrust * dt;
-        if (Math.random() < 0.5) {
-          runtime.particles.push({
-            x: ship.x + (Math.random() - 0.5) * 4, y: ship.y,
-            vx: -Math.sin(ship.angle) * 30 + (Math.random() - 0.5) * 15,
-            vy: -Math.cos(ship.angle) * 30 + (Math.random() - 0.5) * 15,
-            life: 0.3, age: 0, color: FTL.blueLight,
-          });
-        }
-      }
-
-      runtime.currentQ = 0;
-
-      // Stage 2 separation when fuel runs low — payload (Stage 3) continues
-      if (input.detachPressed && ship.fuel < 50) {
-        runtime.phase = PHASE.TRANSIT;
-        ship.fuel = Math.max(ship.fuel, 60); // Stage 3 has its own propellant
-        runtime.propMass = 60;
-        spawnGators();
-        emitBriefing(
-          "Stage 2 jettisoned. Payload stage free — hydrazine RCS active. SPACE to fire laser. Clear gators, then lunar orbit insertion.",
-          "Phase 4 · Trans-lunar coast · Gators detected!"
-        );
-      }
-
-      // Auto transition if enough altitude/velocity for TLI
-      const orbitalV = Math.sqrt(ship.vx * ship.vx + ship.vy * ship.vy);
-      if (earthAlt > 200 && orbitalV > 55 && ship.fuel < 45) {
-        runtime.phase = PHASE.TRANSIT;
-        ship.fuel = Math.max(ship.fuel, 60);
-        runtime.propMass = 60;
-        spawnGators();
-        emitBriefing(
-          "TLI burn complete. Trans-lunar injection achieved. Payload coast phase — engage hostiles.",
-          "Phase 4 · Trans-lunar coast · HOSTILES DETECTED"
-        );
-      }
-
-      if (distToEarth(ship.x, ship.y) <= EARTH_RADIUS) {
-        failMission("Orbital decay — Stage 2 re-entered Earth's atmosphere at " + Math.round(earthAlt * 25) + " km.");
-      }
-    }
-
-    // ═══ PHASE: TRANSIT (coast to Moon, shoot gators) ═══
-    else if (runtime.phase === PHASE.TRANSIT) {
-      if (input.detachPressed) fireLaser();
-      if (input.left) ship.angle -= 2.8 * dt;
-      if (input.right) ship.angle += 2.8 * dt;
-      ship.angle = ((ship.angle % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2);
-
-      // Two-body gravity (slingshot!)
-      const g = gravityAccel(ship.x, ship.y);
-      ship.vx += g.ax * dt;
-      ship.vy += g.ay * dt;
-
-      if (input.up && ship.fuel > 0) {
-        // Stage 3: Payload RCS — hydrazine thrusters
-        // Real: ~4.4 kN, Isp 220s
-        const thrust = 22;
-        ship.vx += Math.sin(ship.angle) * thrust * dt;
-        ship.vy += Math.cos(ship.angle) * thrust * dt;
-        ship.fuel = Math.max(0, ship.fuel - 6 * dt);
-        runtime.propMass = Math.max(0, runtime.propMass - 6 * dt);
-        runtime.deltaV += thrust * dt;
-        if (Math.random() < 0.4) {
-          runtime.particles.push({
-            x: ship.x, y: ship.y,
-            vx: -Math.sin(ship.angle) * 25 + (Math.random() - 0.5) * 10,
-            vy: -Math.cos(ship.angle) * 25 + (Math.random() - 0.5) * 10,
-            life: 0.25, age: 0, color: FTL.cyan,
-          });
-        }
-      }
-
-      runtime.currentQ = 0;
-      updateLasers(dt);
-      updateGators(dt);
-
-      // Transition to lunar phase when close to moon
-      if (moonAlt < 120) {
-        runtime.phase = PHASE.LUNAR;
-        emitBriefing(
-          "Lunar sphere of influence. LOI burn — orient for landing. Legs toward surface (angle ≈ 180°).",
-          "Phase 5 · Lunar orbit insertion · Landing approach"
-        );
-      }
-
-      // Crash into Earth
-      if (distToEarth(ship.x, ship.y) <= EARTH_RADIUS) {
-        failMission("Re-entry into Earth's atmosphere. Trajectory did not achieve escape velocity.");
-      }
-      // Fly off into deep space
-      if (distToEarth(ship.x, ship.y) > MOON_DIST * 1.5 && distToMoon(ship.x, ship.y) > MOON_DIST * 0.5) {
-        failMission("Trajectory diverged beyond cislunar space. Unrecoverable.");
-      }
-    }
-
-    // ═══ PHASE: LUNAR LANDING ═══
-    else if (runtime.phase === PHASE.LUNAR) {
-      if (input.detachPressed) fireLaser();
-      if (input.left) ship.angle -= 2.8 * dt;
-      if (input.right) ship.angle += 2.8 * dt;
-      ship.angle = ((ship.angle % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2);
-
-      // Moon gravity dominates
-      const g = gravityAccel(ship.x, ship.y);
-      ship.vx += g.ax * dt;
-      ship.vy += g.ay * dt;
-
-      if (input.up && ship.fuel > 0) {
-        const thrust = 22;
-        ship.vx += Math.sin(ship.angle) * thrust * dt;
-        ship.vy += Math.cos(ship.angle) * thrust * dt;
-        ship.fuel = Math.max(0, ship.fuel - 6 * dt);
-        runtime.propMass = Math.max(0, runtime.propMass - 6 * dt);
-        runtime.deltaV += thrust * dt;
-        if (Math.random() < 0.4) {
-          runtime.particles.push({
-            x: ship.x, y: ship.y,
-            vx: -Math.sin(ship.angle) * 25 + (Math.random() - 0.5) * 10,
-            vy: -Math.cos(ship.angle) * 25 + (Math.random() - 0.5) * 10,
-            life: 0.25, age: 0, color: FTL.cyan,
-          });
-        }
-      }
-
-      runtime.currentQ = 0;
-      updateLasers(dt);
-      updateGators(dt);
-
-      // Landing check
-      if (moonAlt <= 3) {
-        const gatorsAlive = runtime.gators.filter(g => g.alive).length;
-        // Velocity relative to Moon surface
-        const speed = Math.sqrt(ship.vx * ship.vx + ship.vy * ship.vy);
-        // Angle relative to moon-radial (pointing away from moon center)
-        const radialAngle = Math.atan2(ship.x - MOON_CENTER.x, ship.y - MOON_CENTER.y);
-        const tiltFromUpright = Math.abs(angleDiff(ship.angle, radialAngle + Math.PI));
-
-        if (gatorsAlive > 0) {
-          failMission(`${gatorsAlive} gator${gatorsAlive > 1 ? "s" : ""} still lurking. Clear all hostiles before landing!`);
-        } else if (speed < 15 && tiltFromUpright < 0.4) {
-          landMission();
-        } else {
-          const reasons = [];
-          if (speed >= 15) reasons.push(`speed ${speed.toFixed(1)} m/s`);
-          if (tiltFromUpright >= 0.4) reasons.push(`tilt ${(tiltFromUpright * 180 / Math.PI).toFixed(0)}°`);
-          failMission(`Hard lunar contact: ${reasons.join(", ")}. Requires <15 m/s, <23° tilt.`);
-        }
-      }
-
-      // Crash into Moon interior
-      if (moonAlt < -5) {
-        failMission("Lithobraking is not a valid landing technique.");
-      }
-    }
-
-    input.detachPressed = false;
-
-    // Position update
-    ship.x += ship.vx * dt;
-    ship.y += ship.vy * dt;
-
-    // Crash into Earth surface during launch
-    if (runtime.phase === PHASE.LAUNCH && distToEarth(ship.x, ship.y) <= EARTH_RADIUS && ship.vy < 0) {
-      failMission("New Glenn fell back onto LC-36. Insufficient thrust-to-weight ratio.");
-    }
-
-    // ── Camera tracking ──
-    let targetCamX = ship.x;
-    let targetCamY = ship.y;
-    let targetZoom;
-
-    if (runtime.phase === PHASE.LAUNCH) {
-      targetCamX = 0;
-      targetCamY = ship.y;
-      targetZoom = 0.84;
-    } else if (runtime.phase === PHASE.SEPARATION) {
-      targetZoom = 0.66;
-    } else if (runtime.phase === PHASE.ORBIT) {
-      targetZoom = clamp(0.25 - earthAlt * 0.0003, 0.08, 0.3);
-    } else if (runtime.phase === PHASE.TRANSIT) {
-      // Zoom to show both Earth and Moon
-      const span = Math.max(distToEarth(ship.x, ship.y), distToMoon(ship.x, ship.y));
-      targetZoom = clamp(runtime.height * 0.3 / span, 0.04, 0.2);
-    } else {
-      // Lunar landing — zoom into moon
-      targetZoom = clamp(0.4 - moonAlt * 0.002, 0.15, 0.5);
-    }
-
-    runtime.camX = (runtime.camX || 0) + (targetCamX - (runtime.camX || 0)) * Math.min(1, dt * 2.5);
-    runtime.cameraY += (targetCamY - runtime.cameraY) * Math.min(1, dt * 2.5);
-    runtime.zoom += (targetZoom - runtime.zoom) * Math.min(1, dt * 2.0);
-
-    updateBooster(dt);
     updateParticles(dt);
+    if (runtime.crashFlash > 0) runtime.crashFlash = Math.max(0, runtime.crashFlash - dt * 2);
   }
 
+  // ── Drawing ──
   function drawStars() {
-    runtime.stars.forEach((star, i) => {
-      const twinkle = 0.5 + 0.5 * Math.sin(performance.now() / 900 + star.twinkle + i);
-      const alpha = star.bright ? (0.6 + twinkle * 0.4) : (0.2 + twinkle * 0.3);
-      const color = star.bright ? FTL.blueLight : FTL.textDim;
-      ctx.fillStyle = color.replace(")", `, ${alpha})`).replace("rgb", "rgba");
-      // Pixel-art: draw as small rectangles, not circles
-      const sx = star.x * runtime.width;
-      const sy = (star.y * runtime.height + runtime.cameraY * star.drift * 0.015) % runtime.height;
-      ctx.fillRect(Math.floor(sx), Math.floor(sy), star.size, star.size);
-    });
+    for (const s of runtime.stars) {
+      ctx.fillStyle = s.bright ? FTL.blueLight : FTL.textDim;
+      ctx.fillRect(Math.round(s.x), Math.round(s.y), s.size, s.size);
+    }
   }
 
-  function drawEarth(p) {
-    const ec = worldToScreen(EARTH_CENTER.x, EARTH_CENTER.y);
-    const r = EARTH_RADIUS * runtime.zoom;
-    if (ec.y - r > runtime.height + 50 || ec.y + r < -50) return; // off-screen
-    if (r < 2) return;
-
-    ctx.save();
-    // Atmosphere glow
-    if (r > 10) {
-      const grd = ctx.createRadialGradient(ec.x, ec.y, r, ec.x, ec.y, r + 12);
-      grd.addColorStop(0, "rgba(100, 180, 255, 0.15)");
-      grd.addColorStop(1, "rgba(100, 180, 255, 0)");
-      ctx.fillStyle = grd;
-      ctx.beginPath();
-      ctx.arc(ec.x, ec.y, r + 12, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Earth body
-    ctx.beginPath();
-    ctx.arc(ec.x, ec.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#0a2a5a";
-    ctx.fill();
-
-    // Continents (pixel rectangles when zoomed enough)
-    if (r > 15) {
-      ctx.fillStyle = "#1a5a2a";
-      // North America
-      ctx.fillRect(Math.floor(ec.x - r * 0.5), Math.floor(ec.y - r * 0.3), Math.floor(r * 0.3), Math.floor(r * 0.25));
-      // South America
-      ctx.fillRect(Math.floor(ec.x - r * 0.25), Math.floor(ec.y + r * 0.1), Math.floor(r * 0.15), Math.floor(r * 0.35));
-      // Africa/Europe
-      ctx.fillRect(Math.floor(ec.x + r * 0.1), Math.floor(ec.y - r * 0.3), Math.floor(r * 0.2), Math.floor(r * 0.5));
-      // Polar ice
-      ctx.fillStyle = "#c8d8e8";
-      ctx.fillRect(Math.floor(ec.x - r * 0.15), Math.floor(ec.y - r * 0.9), Math.floor(r * 0.3), Math.floor(r * 0.1));
-    }
-
-    // Gravity well rings
-    ctx.strokeStyle = "rgba(100, 180, 255, 0.08)";
-    ctx.lineWidth = 1;
-    for (let i = 1; i <= 4; i++) {
-      ctx.beginPath();
-      ctx.arc(ec.x, ec.y, r + i * 40 * runtime.zoom, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // LC-36 marker on surface (when zoomed in enough)
-    if (r > 60) {
-      const padAngle = 0; // top of Earth
-      const padX = ec.x + Math.sin(padAngle) * r;
-      const padY = ec.y - Math.cos(padAngle) * r;
-      ctx.fillStyle = FTL.cyan;
-      ctx.fillRect(Math.floor(padX - 3), Math.floor(padY - 2), 6, 2);
-      ctx.fillStyle = FTL.textDim;
-      ctx.font = "9px JetBrains Mono, monospace";
-      ctx.fillText("LC-36", Math.floor(padX + 8), Math.floor(padY + 3));
-    }
-
-    ctx.restore();
-  }
-
-  function drawMoonBody(p) {
-    const mc = worldToScreen(MOON_CENTER.x, MOON_CENTER.y);
-    const r = MOON_RADIUS * runtime.zoom;
-    if (mc.y - r > runtime.height + 50 || mc.y + r < -50) return;
-    if (r < 2) return;
-
-    ctx.save();
-    // Moon body
-    ctx.beginPath();
-    ctx.arc(mc.x, mc.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#1a1d22";
-    ctx.fill();
-
-    // Crater details (when zoomed)
-    if (r > 10) {
-      ctx.fillStyle = "#22262e";
-      const craters = [
-        { a: 0.3, d: 0.5, s: 0.15 }, { a: 1.8, d: 0.6, s: 0.1 },
-        { a: 3.2, d: 0.4, s: 0.12 }, { a: 4.5, d: 0.7, s: 0.08 },
-      ];
-      craters.forEach(c => {
-        const cx = mc.x + Math.cos(c.a) * r * c.d;
-        const cy = mc.y + Math.sin(c.a) * r * c.d;
-        const cs = r * c.s;
-        ctx.fillRect(Math.floor(cx - cs), Math.floor(cy - cs), Math.floor(cs * 2), Math.floor(cs * 2));
-      });
-    }
-
-    // Gravity well rings
-    ctx.strokeStyle = "rgba(200, 220, 255, 0.06)";
-    ctx.lineWidth = 1;
-    for (let i = 1; i <= 3; i++) {
-      ctx.beginPath();
-      ctx.arc(mc.x, mc.y, r + i * 30 * runtime.zoom, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // Landing pad marker
-    if (r > 15) {
-      const padX = mc.x;
-      const padY = mc.y - r; // top of moon
-      ctx.fillStyle = FTL.green;
-      ctx.fillRect(Math.floor(padX - 4), Math.floor(padY - 1), 8, 2);
-      if (r > 30) {
-        ctx.fillStyle = FTL.textDim;
-        ctx.font = "9px JetBrains Mono, monospace";
-        ctx.fillText("LUNAR PAD", Math.floor(padX + 8), Math.floor(padY + 3));
+  function drawAsteroidBlock(x, y, w, h) {
+    // Main body
+    ctx.fillStyle = "#1e2838";
+    ctx.fillRect(x, y, w, h);
+    // Top highlight
+    ctx.fillStyle = "#3a4a5e";
+    ctx.fillRect(x, y, w, 3);
+    // Bottom shadow
+    ctx.fillStyle = "#0e1420";
+    ctx.fillRect(x, y + h - 3, w, 3);
+    // Inner outline
+    ctx.strokeStyle = "#4a5a70";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    // Pixel rock texture (craters/pits)
+    ctx.fillStyle = "#0e1420";
+    const cols = Math.max(1, Math.floor(w / 18));
+    for (let i = 0; i < cols; i++) {
+      const rx = x + 8 + i * 18 + (i % 2) * 4;
+      if (rx + 6 < x + w - 4) {
+        ctx.fillRect(rx, y + 10, 5, 5);
+        ctx.fillRect(rx + 3, y + h - 14, 4, 4);
       }
     }
+    // Glinting pixel on edge
+    ctx.fillStyle = "#7a9ab8";
+    ctx.fillRect(x + Math.floor(w / 3), y + 1, 2, 2);
+  }
+
+  function drawGator(gx, gy, gapY) {
+    const t = Date.now() / 280;
+    const bob = Math.sin(t + gx * 0.01) * 4;
+    const sy = gapY + bob;
+    ctx.save();
+    ctx.translate(Math.round(gx), Math.round(sy));
+
+    // Shadow / glow
+    ctx.fillStyle = "rgba(42, 122, 48, 0.22)";
+    ctx.beginPath();
+    ctx.ellipse(0, 14, 18, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Body
+    ctx.fillStyle = "#256a28";
+    ctx.fillRect(-15, -7, 30, 14);
+    // Belly
+    ctx.fillStyle = "#3a8a3e";
+    ctx.fillRect(-12, -4, 24, 8);
+
+    // Head
+    ctx.fillStyle = "#256a28";
+    ctx.fillRect(-13, -13, 18, 10);
+    // Snout
+    ctx.fillStyle = "#1a5020";
+    ctx.fillRect(-19, -10, 8, 7);
+    // Nostril
+    ctx.fillStyle = "#0e3010";
+    ctx.fillRect(-17, -9, 2, 2);
+
+    // Eye
+    ctx.fillStyle = FTL.red;
+    ctx.fillRect(-7, -16, 5, 5);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(-6, -15, 3, 3);
+    ctx.fillStyle = FTL.white;
+    ctx.fillRect(-6, -15, 1, 1);
+
+    // Teeth
+    ctx.fillStyle = FTL.white;
+    ctx.fillRect(-17, -5, 2, 3);
+    ctx.fillRect(-14, -5, 2, 3);
+    ctx.fillRect(-11, -5, 2, 3);
+
+    // Tail
+    ctx.fillStyle = "#256a28";
+    ctx.fillRect(15, -4, 10, 7);
+    ctx.fillRect(25, -2, 6, 5);
+    ctx.fillRect(31, 0, 4, 3);
+
+    // Legs
+    ctx.fillStyle = "#1a5020";
+    ctx.fillRect(-13, 7, 5, 6);
+    ctx.fillRect(-3, 7, 5, 6);
+    ctx.fillRect(7, 7, 5, 6);
+
+    // Scaly pattern
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(-8, -5, 3, 3);
+    ctx.fillRect(2, -5, 3, 3);
+    ctx.fillRect(-3, 2, 3, 3);
 
     ctx.restore();
   }
 
-  function drawMoon(p) {
-    const moonPadY = 2560;
-    const moonCenter = worldToScreen(0, moonPadY + 170);
-    const z = runtime.zoom;
-    const px = (v) => Math.floor(v);
-
-    // Moon surface — pixel-art: large rectangle with terrain texture
-    const surfW = px(400 * z);
-    const surfH = px(200 * z);
-    const surfX = px(moonCenter.x - surfW / 2);
-    const surfY = px(moonCenter.y - surfH * 0.3);
-
-    // Base surface
-    ctx.fillStyle = "#1a1d22";
-    ctx.fillRect(surfX, surfY, surfW, surfH);
-
-    // Surface terrain detail lines
-    ctx.fillStyle = "#22262e";
-    for (let i = 0; i < 8; i++) {
-      const lx = surfX + px((30 + i * 48) * z);
-      const ly = surfY + px((10 + (i % 3) * 18) * z);
-      ctx.fillRect(lx, ly, px((20 + i * 4) * z), px(2 * z));
-    }
-
-    // Pixel-art craters (rectangles, not circles)
-    const craters = [
-      { x: -60, y: 30, w: 36, h: 18 },
-      { x: 50, y: 20, w: 28, h: 14 },
-      { x: -20, y: 50, w: 22, h: 10 },
-      { x: 80, y: 45, w: 18, h: 8 },
-    ];
-    craters.forEach(c => {
-      const cx = px(moonCenter.x + c.x * z);
-      const cy = px(surfY + c.y * z);
-      // Crater rim (lighter)
-      ctx.fillStyle = "#2a2e38";
-      ctx.fillRect(cx, cy, px(c.w * z), px(c.h * z));
-      // Crater floor (darker)
-      ctx.fillStyle = "#12151a";
-      ctx.fillRect(px(cx + 3 * z), px(cy + 3 * z), px((c.w - 6) * z), px((c.h - 6) * z));
-    });
-
-    // Landing pad — pixel blocks
-    const padLeft = worldToScreen(-56, moonPadY).x;
-    const padRight = worldToScreen(56, moonPadY).x;
-    const padY = worldToScreen(0, moonPadY).y;
-    const padW = px(padRight - padLeft);
-
-    // Pad base
-    ctx.fillStyle = FTL.green;
-    ctx.fillRect(px(padLeft), px(padY - 2), padW, px(4 * z));
-
-    // Approach markers (alternating blocks)
-    ctx.fillStyle = FTL.greenDim;
-    for (let i = 0; i < 6; i++) {
-      ctx.fillRect(px(padLeft + i * padW / 6), px(padY - 6), px(padW / 12), px(3 * z));
-    }
-
-    // Label
-    ctx.fillStyle = FTL.textDim;
-    ctx.font = "10px JetBrains Mono, monospace";
-    ctx.fillText("LUNAR PAD", px(padRight + 8), px(padY + 4));
-  }
-
-  function drawRocketBody(ship, isBoosterPhase, thrusterOn, p, boosterSpin = 0) {
-    const { x, y } = worldToScreen(ship.x, ship.y);
+  function drawRocket(isBoosting) {
+    const x = Math.round(runtime.rocketX);
+    const y = ROCKET_Y;
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(ship.angle + boosterSpin);
-    ctx.scale(Math.max(runtime.zoom, 0.42), Math.max(runtime.zoom, 0.42));
 
-    const blue = "#0a3d91";         // Blue Origin blue
-    const blueLight = "#1a6dd4";
-    const blueAccent = "#4da6ff";
+    // Exhaust plume — always on while flying
+    const flameH = 22 + Math.random() * 14;
+    // Outer plume
+    ctx.fillStyle = FTL.orange;
+    ctx.beginPath();
+    ctx.moveTo(-8, 22);
+    ctx.lineTo(0, 22 + flameH);
+    ctx.lineTo(8, 22);
+    ctx.closePath();
+    ctx.fill();
+    // Inner core
+    ctx.fillStyle = FTL.amber;
+    ctx.beginPath();
+    ctx.moveTo(-4, 22);
+    ctx.lineTo(0, 22 + flameH * 0.65);
+    ctx.lineTo(4, 22);
+    ctx.closePath();
+    ctx.fill();
+    // Hot center
+    ctx.fillStyle = "#fff8e0";
+    ctx.beginPath();
+    ctx.moveTo(-2, 22);
+    ctx.lineTo(0, 22 + flameH * 0.35);
+    ctx.lineTo(2, 22);
+    ctx.closePath();
+    ctx.fill();
 
-    if (thrusterOn) {
-      // 7-engine BE-4 exhaust plume (booster) or single BE-3U (second stage)
-      const engines = isBoosterPhase ? 7 : 1;
-      const spread = isBoosterPhase ? 5 : 0;
-      for (let i = 0; i < engines; i++) {
-        const ex = (i - (engines - 1) / 2) * spread;
-        // Outer plume
-        ctx.beginPath();
-        ctx.moveTo(ex - 4, 32);
-        ctx.lineTo(ex, 52 + Math.random() * 12);
-        ctx.lineTo(ex + 4, 32);
-        ctx.closePath();
-        ctx.fillStyle = p.orange;
-        ctx.fill();
-        // Inner plume
-        ctx.beginPath();
-        ctx.moveTo(ex - 2, 32);
-        ctx.lineTo(ex, 44 + Math.random() * 8);
-        ctx.lineTo(ex + 2, 32);
-        ctx.closePath();
-        ctx.fillStyle = p.amber;
-        ctx.fill();
-      }
+    // Boost extra flame
+    if (isBoosting) {
+      const bH = 38 + Math.random() * 20;
+      ctx.fillStyle = FTL.cyan;
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(-10, 22);
+      ctx.lineTo(0, 22 + bH);
+      ctx.lineTo(10, 22);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
     }
 
+    // Rocket body
+    ctx.fillStyle = FTL.blueDark;
+    ctx.strokeStyle = FTL.blueLight;
     ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-10, 22);
+    ctx.lineTo(-10, -8);
+    ctx.lineTo(10, -8);
+    ctx.lineTo(10, 22);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
 
-    if (isBoosterPhase) {
-      // ── New Glenn full stack: tall first stage + second stage + fairing ──
-      // First stage body (tall cylinder)
-      ctx.fillStyle = blue;
-      ctx.strokeStyle = blueAccent;
-      ctx.beginPath();
-      ctx.moveTo(-14, 30);   // Engine base
-      ctx.lineTo(-14, -8);   // Top of first stage
-      ctx.lineTo(14, -8);
-      ctx.lineTo(14, 30);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+    // Center stripe
+    ctx.fillStyle = FTL.blue;
+    ctx.fillRect(-3, -6, 6, 26);
 
-      // Interstage ring
-      ctx.fillStyle = blueLight;
-      ctx.fillRect(-15, -10, 30, 4);
-      ctx.strokeRect(-15, -10, 30, 4);
+    // Nose cone
+    ctx.fillStyle = FTL.white;
+    ctx.strokeStyle = FTL.blueLight;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-10, -8);
+    ctx.quadraticCurveTo(-10, -26, 0, -32);
+    ctx.quadraticCurveTo(10, -26, 10, -8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
 
-      // Second stage (shorter, slightly narrower)
-      ctx.fillStyle = blue;
-      ctx.beginPath();
-      ctx.moveTo(-12, -10);
-      ctx.lineTo(-12, -28);
-      ctx.lineTo(12, -28);
-      ctx.lineTo(12, -10);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+    // Porthole
+    ctx.fillStyle = FTL.cyan;
+    ctx.strokeStyle = FTL.blueLight;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, 4, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
 
-      // Payload fairing (ogive nose)
-      ctx.fillStyle = "rgba(220, 230, 245, 0.92)";
-      ctx.strokeStyle = blueAccent;
-      ctx.beginPath();
-      ctx.moveTo(-12, -28);
-      ctx.quadraticCurveTo(-12, -42, 0, -50);
-      ctx.quadraticCurveTo(12, -42, 12, -28);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+    // Fins
+    ctx.fillStyle = FTL.blue;
+    ctx.strokeStyle = FTL.blueLight;
+    ctx.lineWidth = 1.5;
+    // Left fin
+    ctx.beginPath();
+    ctx.moveTo(-10, 22);
+    ctx.lineTo(-20, 32);
+    ctx.lineTo(-10, 12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // Right fin
+    ctx.beginPath();
+    ctx.moveTo(10, 22);
+    ctx.lineTo(20, 32);
+    ctx.lineTo(10, 12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
 
-      // Blue Origin feather logo on fairing
-      ctx.strokeStyle = blueAccent;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(0, -48);
-      ctx.lineTo(-4, -36);
-      ctx.moveTo(0, -48);
-      ctx.lineTo(4, -36);
-      ctx.moveTo(0, -48);
-      ctx.lineTo(0, -36);
-      ctx.stroke();
-
-      // "BO" on Stage 1 body
-      ctx.fillStyle = blueAccent;
-      ctx.font = "bold 8px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("BO", 0, 6);
-      ctx.textAlign = "left";
-
-      // Engine bells (7-engine cluster dots)
-      ctx.fillStyle = "#333";
-      const bellPositions = [[0, 0], [-5, -3], [5, -3], [-5, 3], [5, 3], [-9, 0], [9, 0]];
-      bellPositions.forEach(([bx, by]) => {
-        ctx.beginPath();
-        ctx.arc(bx, 30 + by * 0.3, 2.2, 0, Math.PI * 2);
-        ctx.fill();
-      });
-
-      // Grid fins (New Glenn has them)
-      ctx.strokeStyle = blueAccent;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(-14, 22);
-      ctx.lineTo(-20, 28);
-      ctx.moveTo(-14, 24);
-      ctx.lineTo(-20, 30);
-      ctx.moveTo(14, 22);
-      ctx.lineTo(20, 28);
-      ctx.moveTo(14, 24);
-      ctx.lineTo(20, 30);
-      ctx.stroke();
-    } else if (runtime.phase === PHASE.ORBIT) {
-      // ── Stage 2 only (LEO insertion) — 2× BE-3U, LOX/LH2 ──
-      ctx.fillStyle = blue;
-      ctx.strokeStyle = blueAccent;
-      ctx.lineWidth = 2;
-
-      // Stage 2 body
-      ctx.beginPath();
-      ctx.moveTo(-12, 20);
-      ctx.lineTo(-12, -10);
-      ctx.lineTo(12, -10);
-      ctx.lineTo(12, 20);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      // Payload fairing (Stage 3 inside)
-      ctx.fillStyle = "rgba(220, 230, 245, 0.92)";
-      ctx.beginPath();
-      ctx.moveTo(-12, -10);
-      ctx.quadraticCurveTo(-12, -26, 0, -32);
-      ctx.quadraticCurveTo(12, -26, 12, -10);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      // "S2" label
-      ctx.fillStyle = blueAccent;
-      ctx.font = "bold 7px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("S2", 0, 8);
-      ctx.textAlign = "left";
-
-      // 2× BE-3U engines
-      ctx.fillStyle = "#333";
-      ctx.beginPath(); ctx.arc(-4, 20, 2.5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(4, 20, 2.5, 0, Math.PI * 2); ctx.fill();
-    } else {
-      // ── Stage 3: Payload spacecraft (post-TLI) ──
-      ctx.fillStyle = "#c8d0d8";
-      ctx.strokeStyle = blueAccent;
-      ctx.lineWidth = 1.5;
-
-      // Payload bus body
-      ctx.fillRect(-8, -6, 16, 18);
-      ctx.strokeRect(-8, -6, 16, 18);
-
-      // Solar panels (deployed)
-      ctx.fillStyle = "#1a3a6a";
-      ctx.fillRect(-22, -2, 13, 8);
-      ctx.fillRect(9, -2, 13, 8);
-      // Panel lines
-      ctx.strokeStyle = "#2a4a8a";
-      ctx.lineWidth = 0.5;
-      ctx.beginPath();
-      ctx.moveTo(-15, -2); ctx.lineTo(-15, 6);
-      ctx.moveTo(15, -2); ctx.lineTo(15, 6);
-      ctx.stroke();
-
-      // Laser cannon (mounted on nose)
-      ctx.fillStyle = "#e04040";
-      ctx.fillRect(-2, -10, 4, 5);
-      // Laser barrel
-      ctx.fillStyle = "#ff6060";
-      ctx.fillRect(-1, -13, 2, 4);
-
-      // RCS thrusters
-      ctx.fillStyle = "#888";
-      ctx.fillRect(-10, 2, 3, 2);
-      ctx.fillRect(7, 2, 3, 2);
-
-      // Landing legs (extended in lunar phase)
-      if (runtime.phase === PHASE.LUNAR) {
-        ctx.strokeStyle = FTL.green;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-8, 10); ctx.lineTo(-16, 18); ctx.lineTo(-5, 18);
-        ctx.moveTo(8, 10); ctx.lineTo(16, 18); ctx.lineTo(5, 18);
-        ctx.stroke();
-      }
-
-      // Main engine
-      ctx.fillStyle = "#333";
-      ctx.beginPath(); ctx.arc(0, 12, 2.5, 0, Math.PI * 2); ctx.fill();
-    }
+    // Engine bell
+    ctx.fillStyle = "#333";
+    ctx.beginPath();
+    ctx.moveTo(-5, 22);
+    ctx.lineTo(-7, 29);
+    ctx.lineTo(7, 29);
+    ctx.lineTo(5, 22);
+    ctx.closePath();
+    ctx.fill();
 
     ctx.restore();
   }
 
   function drawParticles() {
-    runtime.particles.forEach((particle) => {
-      const { x, y } = worldToScreen(particle.x, particle.y);
-      const alpha = 1 - particle.age / particle.life;
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = particle.color;
-      const sz = Math.floor(2 + alpha * 3);
-      ctx.fillRect(Math.floor(x), Math.floor(y), sz, sz);
-    });
+    for (const p of runtime.particles) {
+      const alpha = p.life / p.maxLife;
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(
+        Math.round(p.x - p.size / 2),
+        Math.round(p.y - p.size / 2),
+        Math.round(p.size),
+        Math.round(p.size)
+      );
+    }
     ctx.globalAlpha = 1;
   }
 
-  function drawHud(p) {
-    const ship = runtime.ship;
-    const earthR = distToEarth(ship.x, ship.y);
-    const moonR = distToMoon(ship.x, ship.y);
-    const earthAlt = (earthR - EARTH_RADIUS) * 25; // km
-    const moonAlt = (moonR - MOON_RADIUS) * 25;    // km
-    const speed = Math.sqrt(ship.vx * ship.vx + ship.vy * ship.vy);
-    const orbitalV = speed * 25; // scale to km/s
-    const font = "11px JetBrains Mono, monospace";
+  function drawObstacles() {
+    for (const obs of runtime.obstacles) {
+      const sy = obs.y;
+      if (sy < -OBSTACLE_H - 10 || sy > H + OBSTACLE_H + 10) continue;
+      const top = sy - OBSTACLE_H / 2;
 
-    // ── Left panel: orbital data ──
-    const lw = 240, lh = 195;
-    ctx.fillStyle = FTL.panel;
-    ctx.fillRect(14, 14, lw, lh);
+      // Left asteroid block
+      if (obs.gapX > 0) {
+        drawAsteroidBlock(0, top, obs.gapX, OBSTACLE_H);
+      }
+      // Right asteroid block
+      const rightStart = obs.gapX + obs.gapW;
+      if (rightStart < W) {
+        drawAsteroidBlock(rightStart, top, W - rightStart, OBSTACLE_H);
+      }
+      // Gap edge highlights (danger indicator)
+      ctx.fillStyle = "rgba(100, 180, 255, 0.18)";
+      ctx.fillRect(obs.gapX, top, 3, OBSTACLE_H);
+      ctx.fillRect(obs.gapX + obs.gapW - 3, top, 3, OBSTACLE_H);
+
+      // Gators
+      for (const g of obs.gators) {
+        drawGator(g.x, sy, sy);
+      }
+    }
+  }
+
+  function drawHud() {
+    const isBoosting = runtime.boostTimer > 0;
+    const boostReady = runtime.boostCooldown <= 0 && !isBoosting;
+
+    // Score block (top left)
+    ctx.fillStyle = "rgba(10, 14, 20, 0.72)";
+    ctx.fillRect(14, 12, 180, 52);
     ctx.strokeStyle = FTL.panelBorder;
     ctx.lineWidth = 1;
-    ctx.strokeRect(14, 14, lw, lh);
-    // Header bar
-    ctx.fillStyle = FTL.blue;
-    ctx.fillRect(15, 15, lw - 2, 18);
+    ctx.strokeRect(14, 12, 180, 52);
 
     ctx.fillStyle = FTL.textBright;
-    ctx.font = "10px JetBrains Mono, monospace";
-    ctx.fillText("ORBITAL MECHANICS", 26, 28);
-    ctx.font = font;
-    const phaseNames = {
-      1: "LAUNCH · 7× BE-4 · LOX/LNG",
-      2: "STAGE SEPARATION",
-      3: "LEO · 2× BE-3U · LOX/LH2",
-      4: "TLI · COAST · N2H4 RCS",
-      5: "LOI · LUNAR DESCENT",
-    };
-    ctx.fillStyle = FTL.yellow;
-    ctx.fillText(phaseNames[runtime.phase] || "---", 26, 48);
-
-    ctx.fillStyle = FTL.text;
-    let ly = 64;
-    const row = (label, val) => { ctx.fillText(`${label} ${val}`, 26, ly); ly += 14; };
-
-    // Stage info
-    const stageInfo = runtime.phase <= 2 ? "S1: LOX/LNG · 3,740t"
-      : runtime.phase === 3 ? "S2: LOX/LH2 · 80t"
-      : "S3: N2H4 · 2.4t";
+    ctx.font = "bold 22px monospace";
+    ctx.textAlign = "left";
+    ctx.fillText(`SCORE  ${runtime.score}`, 24, 36);
     ctx.fillStyle = FTL.textDim;
-    ctx.fillText(stageInfo, 26, ly); ly += 16;
+    ctx.font = "13px monospace";
+    ctx.fillText(`BEST   ${runtime.highScore}`, 24, 54);
 
-    ctx.fillStyle = FTL.text;
-    row("ALT(E)", `${Math.max(0, earthAlt).toFixed(0).padStart(7, " ")} km`);
-    row("ALT(L)", `${Math.max(0, moonAlt).toFixed(0).padStart(7, " ")} km`);
-    row("V    ", `${orbitalV.toFixed(1).padStart(7, " ")} km/s`);
-    row("ΔV   ", `${(runtime.deltaV * 25).toFixed(0).padStart(7, " ")} m/s`);
-    row("Pe   ", `${runtime.periapsis.toFixed(0).padStart(7, " ")} km`);
-    row("Ap   ", `${runtime.apoapsis.toFixed(0).padStart(7, " ")} km`);
-
-    // Fuel bar
-    ly += 4;
-    ctx.fillStyle = "rgba(255,255,255,0.06)";
-    ctx.fillRect(26, ly, 198, 8);
-    const fuelPct = clamp(ship.fuel, 0, 100) / 100;
-    ctx.fillStyle = ship.fuel > 45 ? FTL.green : ship.fuel > 20 ? FTL.yellow : FTL.red;
-    ctx.fillRect(26, ly, 198 * fuelPct, 8);
-    ctx.fillStyle = FTL.text;
-    ctx.fillText(`PROP ${Math.round(runtime.propMass)}t  ${Math.round(ship.fuel)}%`, 26, ly + 18);
-
-    // ── Right panel: subsystems + gators ──
-    const rw = 220, rh = 180, rx = runtime.width - rw - 14;
-    ctx.fillStyle = FTL.panel;
-    ctx.fillRect(rx, 14, rw, rh);
+    // Boost bar (top right)
+    const bx = W - 170;
+    const by = 12;
+    ctx.fillStyle = "rgba(10, 14, 20, 0.72)";
+    ctx.fillRect(bx, by, 154, 52);
     ctx.strokeStyle = FTL.panelBorder;
-    ctx.strokeRect(rx, 14, rw, rh);
-    ctx.fillStyle = FTL.blue;
-    ctx.fillRect(rx + 1, 15, rw - 2, 18);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by, 154, 52);
+
+    ctx.fillStyle = boostReady ? FTL.cyan : FTL.textDim;
+    ctx.font = "bold 13px monospace";
+    ctx.textAlign = "left";
+    ctx.fillText(isBoosting ? "BOOST ACTIVE" : boostReady ? "BOOST READY" : "RECHARGING", bx + 10, by + 20);
+
+    // Boost bar fill
+    const barX = bx + 10;
+    const barY = by + 26;
+    const barW = 134;
+    const barH = 10;
+    ctx.fillStyle = "#1a2030";
+    ctx.fillRect(barX, barY, barW, barH);
+    let pct;
+    if (isBoosting) {
+      pct = runtime.boostTimer / BOOST_DUR;
+      ctx.fillStyle = FTL.cyan;
+    } else if (runtime.boostCooldown > 0) {
+      pct = 1 - runtime.boostCooldown / BOOST_CD;
+      ctx.fillStyle = FTL.blue;
+    } else {
+      pct = 1;
+      ctx.fillStyle = FTL.cyan;
+    }
+    ctx.fillRect(barX, barY, Math.round(barW * pct), barH);
+    ctx.strokeStyle = FTL.panelBorder;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
+
+    // Speed indicator
+    ctx.fillStyle = FTL.textDim;
+    ctx.font = "11px monospace";
+    ctx.fillText(`ALT SPD ${Math.round(runtime.scrollSpeed)}`, bx + 10, by + 48);
+
+    ctx.textAlign = "left";
+  }
+
+  function drawStartScreen() {
+    ctx.fillStyle = FTL.bg;
+    ctx.fillRect(0, 0, W, H);
+    drawStars();
+
+    // Title glow
+    ctx.fillStyle = "rgba(72, 200, 232, 0.08)";
+    ctx.beginPath();
+    ctx.ellipse(W / 2, H / 2 - 70, 320, 80, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = FTL.cyan;
+    ctx.font = "bold 58px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("GATORNAUTS", W / 2, H / 2 - 50);
+
+    ctx.fillStyle = FTL.textDim;
+    ctx.font = "15px monospace";
+    ctx.fillText("8-BIT ROCKET FLYER", W / 2, H / 2 - 14);
+
+    ctx.fillStyle = FTL.text;
+    ctx.font = "17px monospace";
+    ctx.fillText("← →  steer     ↑ / SPACE  boost", W / 2, H / 2 + 28);
+    ctx.fillText("Dodge asteroid walls & alien gators!", W / 2, H / 2 + 56);
+
+    const blink = Math.floor(Date.now() / 500) % 2;
+    if (blink) {
+      ctx.fillStyle = FTL.green;
+      ctx.font = "bold 22px monospace";
+      ctx.fillText("PRESS ↑  OR  THRUST  TO  LAUNCH", W / 2, H / 2 + 112);
+    }
+
+    // Draw a decorative rocket on start screen
+    ctx.save();
+    ctx.translate(W / 2, H / 2 + 165);
+    ctx.scale(1.6, 1.6);
+    const fH2 = 20 + Math.sin(Date.now() / 80) * 6;
+    ctx.fillStyle = FTL.orange;
+    ctx.beginPath(); ctx.moveTo(-6, 22); ctx.lineTo(0, 22 + fH2); ctx.lineTo(6, 22); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = FTL.blueDark; ctx.strokeStyle = FTL.blueLight; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-10, 22); ctx.lineTo(-10, -8); ctx.lineTo(10, -8); ctx.lineTo(10, 22); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = FTL.white; ctx.beginPath(); ctx.moveTo(-10, -8); ctx.quadraticCurveTo(-10, -26, 0, -32); ctx.quadraticCurveTo(10, -26, 10, -8); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = FTL.blue; ctx.strokeStyle = FTL.blueLight; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(-10, 22); ctx.lineTo(-18, 32); ctx.lineTo(-10, 12); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(10, 22); ctx.lineTo(18, 32); ctx.lineTo(10, 12); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+
+    ctx.textAlign = "left";
+  }
+
+  function drawGameOverScreen() {
+    ctx.fillStyle = "rgba(10, 14, 20, 0.78)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = FTL.red;
+    ctx.font = "bold 52px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("MISSION FAILED", W / 2, H / 2 - 64);
 
     ctx.fillStyle = FTL.textBright;
-    ctx.font = "10px JetBrains Mono, monospace";
-    ctx.fillText("SUBSYSTEMS", rx + 12, 28);
-    ctx.font = font;
+    ctx.font = "bold 32px monospace";
+    ctx.fillText(`SCORE  ${runtime.score}`, W / 2, H / 2 - 14);
 
-    const subsystems = [
-      { name: "ENGINES", pct: ship.fuel, thresh: 30 },
-      { name: "PROPELLANT", pct: runtime.propMass, thresh: 25 },
-      { name: "GUIDANCE", pct: runtime.phase >= PHASE.TRANSIT ? 100 : 60, thresh: 0 },
-      { name: "WEAPONS", pct: runtime.gators.length ? (runtime.gatorsKilled / Math.max(1, runtime.gatorsTotal)) * 100 : 100, thresh: 0 },
-    ];
-    let sy = 48;
-    subsystems.forEach(s => {
-      const barW = 80, barH = 6;
-      const fill = clamp(s.pct, 0, 100) / 100;
-      ctx.fillStyle = FTL.textDim;
-      ctx.fillText(s.name, rx + 12, sy);
-      ctx.fillStyle = "rgba(255,255,255,0.06)";
-      ctx.fillRect(rx + 100, sy - 7, barW, barH);
-      ctx.fillStyle = s.pct > s.thresh ? FTL.green : FTL.red;
-      ctx.fillRect(rx + 100, sy - 7, barW * fill, barH);
-      ctx.fillStyle = FTL.text;
-      ctx.fillText(`${Math.round(s.pct)}%`, rx + 186, sy);
-      sy += 16;
-    });
-
-    // Aero data (launch/separation only)
-    if (runtime.phase <= 2) {
-      sy += 4;
+    if (runtime.score > 0 && runtime.score >= runtime.highScore) {
       ctx.fillStyle = FTL.yellow;
-      ctx.font = "10px JetBrains Mono, monospace";
-      ctx.fillText("AERODYNAMICS", rx + 12, sy);
-      ctx.font = font;
-      sy += 14;
-      ctx.fillStyle = runtime.currentQ > runtime.maxQ * 0.9 && runtime.currentQ > 20 ? FTL.red : FTL.text;
-      ctx.fillText(`Q ${runtime.currentQ.toFixed(0).padStart(5)} Pa`, rx + 12, sy);
-      ctx.fillStyle = FTL.text;
-      ctx.fillText(`MAX ${runtime.maxQ.toFixed(0).padStart(4)} Pa`, rx + 125, sy);
+      ctx.font = "bold 20px monospace";
+      ctx.fillText("✦ NEW HIGH SCORE ✦", W / 2, H / 2 + 22);
+    } else {
+      ctx.fillStyle = FTL.textDim;
+      ctx.font = "18px monospace";
+      ctx.fillText(`BEST  ${runtime.highScore}`, W / 2, H / 2 + 22);
     }
 
-    // Gator tracker
-    if (runtime.gatorsTotal > 0) {
-      sy += 18;
-      const alive = runtime.gators.filter(g => g.alive).length;
-      ctx.fillStyle = alive > 0 ? FTL.red : FTL.green;
-      ctx.font = "10px JetBrains Mono, monospace";
-      ctx.fillText("HOSTILES", rx + 12, sy);
-      ctx.font = font;
-      ctx.fillStyle = alive > 0 ? FTL.orange : FTL.green;
-      ctx.fillText(`${runtime.gatorsKilled}/${runtime.gatorsTotal}`, rx + 80, sy);
-      if (alive === 0) {
-        ctx.fillStyle = FTL.green;
-        ctx.fillText("CLEAR", rx + 120, sy);
-      }
+    const blink = Math.floor(Date.now() / 500) % 2;
+    if (blink) {
+      ctx.fillStyle = FTL.green;
+      ctx.font = "bold 20px monospace";
+      ctx.fillText("PRESS ↑ OR THRUST TO TRY AGAIN", W / 2, H / 2 + 72);
     }
 
-    // Mission status bar at bottom
-    ctx.fillStyle = FTL.panel;
-    ctx.fillRect(14, runtime.height - 44, runtime.width - 28, 30);
-    ctx.strokeStyle = FTL.panelBorder;
-    ctx.strokeRect(14, runtime.height - 44, runtime.width - 28, 30);
-    ctx.fillStyle = FTL.textDim;
-    ctx.font = font;
-    wrapCanvasText(runtime.statusLine, 26, runtime.height - 26, runtime.width - 52, 14);
-
-    // Separation / staging alert
-    if (runtime.phase === PHASE.SEPARATION) {
-      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 160);
-      ctx.fillStyle = `rgba(212, 168, 40, ${0.2 + pulse * 0.4})`;
-      const alertW = 340, alertH = 34;
-      ctx.fillRect(runtime.width * 0.5 - alertW / 2, 14, alertW, alertH);
-      ctx.strokeStyle = FTL.yellow;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(runtime.width * 0.5 - alertW / 2, 14, alertW, alertH);
-      ctx.fillStyle = "#111";
-      ctx.font = "13px JetBrains Mono, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`STAGE 1 SEPARATION  [${runtime.boosterTimer.toFixed(1)}s]`, runtime.width * 0.5, 36);
-      ctx.textAlign = "left";
-    }
-  }
-
-  function wrapCanvasText(text, x, y, maxWidth, lineHeight) {
-    const words = `${text || ""}`.split(/\s+/).filter(Boolean);
-    let line = "";
-    let lineY = y;
-    words.forEach((word) => {
-      const next = line ? `${line} ${word}` : word;
-      if (ctx.measureText(next).width > maxWidth && line) {
-        ctx.fillText(line, x, lineY);
-        line = word;
-        lineY += lineHeight;
-      } else {
-        line = next;
-      }
-    });
-    if (line) ctx.fillText(line, x, lineY);
-  }
-
-  function drawTrajectory() {
-    // Past trail
-    if (runtime.trail.length > 1) {
-      ctx.strokeStyle = "rgba(72, 200, 232, 0.2)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      const p0 = worldToScreen(runtime.trail[0].x, runtime.trail[0].y);
-      ctx.moveTo(p0.x, p0.y);
-      for (let i = 1; i < runtime.trail.length; i++) {
-        const pt = worldToScreen(runtime.trail[i].x, runtime.trail[i].y);
-        ctx.lineTo(pt.x, pt.y);
-      }
-      ctx.stroke();
-    }
-
-    // Predicted trajectory (dotted line)
-    if (runtime.mode === STATE.PLAYING && runtime.ship) {
-      const pred = predictTrajectory(
-        runtime.ship.x, runtime.ship.y,
-        runtime.ship.vx, runtime.ship.vy,
-        300, 0.1
-      );
-      ctx.fillStyle = "rgba(72, 200, 232, 0.12)";
-      pred.forEach(pt => {
-        const s = worldToScreen(pt.x, pt.y);
-        ctx.fillRect(Math.floor(s.x), Math.floor(s.y), 2, 2);
-      });
-    }
+    ctx.textAlign = "left";
   }
 
   function drawScanlines() {
-    ctx.fillStyle = "rgba(0, 0, 0, 0.06)";
-    for (let y = 0; y < runtime.height; y += 3) {
-      ctx.fillRect(0, y, runtime.width, 1);
-    }
+    ctx.fillStyle = "rgba(0,0,0,0.10)";
+    for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 2);
   }
 
   function drawVignette() {
-    const grd = ctx.createRadialGradient(
-      runtime.width * 0.5, runtime.height * 0.5, runtime.height * 0.3,
-      runtime.width * 0.5, runtime.height * 0.5, runtime.height * 0.9
-    );
-    grd.addColorStop(0, "rgba(0,0,0,0)");
-    grd.addColorStop(1, "rgba(0,0,0,0.45)");
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, runtime.width, runtime.height);
+    const grad = ctx.createRadialGradient(W / 2, H / 2, H * 0.28, W / 2, H / 2, H * 0.82);
+    grad.addColorStop(0, "rgba(0,0,0,0)");
+    grad.addColorStop(1, "rgba(0,0,0,0.42)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
   }
 
   function drawFrame() {
-    resizeCanvas();
-    pixelMode(true);
-    const p = palette();
-
-    // FTL deep space background
     ctx.fillStyle = FTL.bg;
-    ctx.fillRect(0, 0, runtime.width, runtime.height);
+    ctx.fillRect(0, 0, W, H);
 
-    drawStars(p);
-    drawEarth(p);
-    drawMoonBody(p);
-    drawTrajectory();
-
-    if (runtime.booster?.active) {
-      drawRocketBody({
-        x: runtime.booster.x,
-        y: runtime.booster.y,
-        angle: 0,
-      }, true, false, p, runtime.booster.spin);
+    if (runtime.mode === STATE.START_SCREEN) {
+      drawStartScreen();
+      drawScanlines();
+      return;
     }
 
-    const thrusterOn = runtime.mode === STATE.PLAYING && input.up && runtime.ship.fuel > 0;
-    const isFullStack = runtime.phase <= PHASE.SEPARATION;
-    const isStage2 = runtime.phase === PHASE.ORBIT;
-    drawRocketBody(runtime.ship, isFullStack || isStage2, thrusterOn, p);
-    drawGators();
-    drawLasers();
+    drawStars();
+
+    // Earth glow at bottom (you launched from there)
+    const earthGrad = ctx.createRadialGradient(W / 2, H + 70, 30, W / 2, H + 70, 200);
+    earthGrad.addColorStop(0, "rgba(40, 100, 200, 0.5)");
+    earthGrad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = earthGrad;
+    ctx.fillRect(0, H - 110, W, 200);
+
+    // Moon hint at top
+    ctx.fillStyle = "rgba(200, 210, 230, 0.12)";
+    ctx.beginPath();
+    ctx.arc(W / 2, -30, 90, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(200, 210, 230, 0.06)";
+    ctx.fillRect(0, 0, W, 18);
+
+    drawObstacles();
+    drawRocket(runtime.boostTimer > 0);
     drawParticles();
+    drawHud();
 
-    // FTL-style overlay effects
-    drawVignette();
-    drawScanlines();
-
-    drawHud(p);
-
-    if (runtime.mode !== STATE.PLAYING) {
-      // FTL-style modal panel
-      const panX = Math.floor(runtime.width * 0.15);
-      const panY = Math.floor(runtime.height * 0.22);
-      const panW = Math.floor(runtime.width * 0.7);
-      const panH = Math.floor(runtime.height * 0.32);
-
-      // Panel background with double border (FTL style)
-      ctx.fillStyle = FTL.panel;
-      ctx.fillRect(panX, panY, panW, panH);
-      // Outer border
-      ctx.strokeStyle = runtime.mode === STATE.SUCCESS ? FTL.green
-        : runtime.mode === STATE.GAME_OVER ? FTL.red : FTL.panelBorder;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(panX, panY, panW, panH);
-      // Inner border highlight
-      ctx.strokeStyle = FTL.panelHighlight;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(panX + 3, panY + 3, panW - 6, panH - 6);
-
-      // Header bar
-      const hdrColor = runtime.mode === STATE.SUCCESS ? FTL.green
-        : runtime.mode === STATE.GAME_OVER ? FTL.red : FTL.blue;
-      ctx.fillStyle = hdrColor;
-      ctx.fillRect(panX + 1, panY + 1, panW - 2, 28);
-
-      ctx.textAlign = "center";
-      ctx.fillStyle = FTL.textBright;
-      ctx.font = "700 18px JetBrains Mono, monospace";
-      const title = runtime.mode === STATE.SUCCESS
-        ? "TOUCHDOWN CONFIRMED"
-        : runtime.mode === STATE.GAME_OVER
-          ? "MISSION LOST"
-          : "G A T O R N A U T S";
-      ctx.fillText(title, runtime.width * 0.5, panY + 20);
-
-      // Subtitle
-      ctx.font = "11px JetBrains Mono, monospace";
-      ctx.fillStyle = FTL.text;
-      wrapCanvasText(runtime.message, panX + 24, panY + 52, panW - 48, 16);
-
-      // Action prompt
-      ctx.fillStyle = FTL.textDim;
-      ctx.font = "10px JetBrains Mono, monospace";
-      const prompt = runtime.mode === STATE.START_SCREEN
-        ? "[ ENTER / TAP RESTART TO LAUNCH ]"
-        : "[ ENTER / RESTART TO FLY AGAIN ]";
-      ctx.fillText(prompt, runtime.width * 0.5, panY + panH - 16);
-      ctx.textAlign = "left";
+    // Crash flash
+    if (runtime.crashFlash > 0) {
+      ctx.fillStyle = `rgba(220, 60, 60, ${Math.min(0.55, runtime.crashFlash)})`;
+      ctx.fillRect(0, 0, W, H);
     }
+
+    if (runtime.mode === STATE.GAME_OVER) drawGameOverScreen();
+
+    drawScanlines();
+    drawVignette();
   }
 
+  // ── Game loop ──
   function loop(ts) {
-    if (!runtime.open) return;
-    const dt = clamp((ts - (runtime.lastTs || ts)) / 1000, 0.008, 0.033);
+    if (!runtime.open) { runtime.rafId = 0; return; }
+    const dt = Math.min((ts - runtime.lastTs) / 1000, 0.05);
     runtime.lastTs = ts;
-    updateMission(dt);
+    updateGame(dt);
     drawFrame();
     runtime.rafId = requestAnimationFrame(loop);
   }
 
+  // ── Input handling ──
   function normalizedKey(key) {
-    return `${key || ""}`.toLowerCase();
+    return typeof key === "string" ? key.toLowerCase() : "";
   }
 
   function feedUnlockSequence(key) {
     runtime.unlockBuffer.push(key);
     if (runtime.unlockBuffer.length > SECRET_SEQUENCE.length) runtime.unlockBuffer.shift();
-    const matches = SECRET_SEQUENCE.every((token, index) => runtime.unlockBuffer[index] === token);
-    if (matches) {
+    if (runtime.unlockBuffer.join(",") === SECRET_SEQUENCE.join(",")) {
       runtime.unlockBuffer = [];
       open();
     }
   }
 
   function isTextInputTarget(target) {
-    const tag = target?.tagName?.toLowerCase();
-    return tag === "input" || tag === "textarea" || target?.isContentEditable;
+    return target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
   }
 
   function handleKeyDown(event) {
+    feedUnlockSequence(normalizedKey(event.key));
+    if (!runtime.open) return;
+    if (isTextInputTarget(event.target)) return;
     const key = normalizedKey(event.key);
-    if (!runtime.open) {
-      if (!isTextInputTarget(event.target)) feedUnlockSequence(key);
-      return;
-    }
-
-    if (["arrowup", "arrowleft", "arrowright", " ", "space", "enter", "escape"].includes(key)) {
+    if (key === "arrowleft") { event.preventDefault(); input.left = true; }
+    if (key === "arrowright") { event.preventDefault(); input.right = true; }
+    if (key === "arrowup" || key === " " || key === "spacebar") {
       event.preventDefault();
+      if (runtime.mode !== STATE.PLAYING) startPlaying();
+      else input.boost = true;
     }
-
-    if (key === "escape") {
-      close();
-      return;
-    }
-
-    if (runtime.mode !== STATE.PLAYING && (key === "enter" || key === " ")) {
-      startPlaying();
-      return;
-    }
-
-    if (key === "arrowup") input.up = true;
-    if (key === "arrowleft") input.left = true;
-    if (key === "arrowright") input.right = true;
-    if (key === " " || key === "spacebar") input.detachPressed = true;
+    if (key === "enter" && runtime.mode === STATE.GAME_OVER) startPlaying();
   }
 
   function handleKeyUp(event) {
+    if (!runtime.open) return;
     const key = normalizedKey(event.key);
-    if (key === "arrowup") input.up = false;
     if (key === "arrowleft") input.left = false;
     if (key === "arrowright") input.right = false;
+    if (key === "arrowup" || key === " " || key === "spacebar") input.boost = false;
   }
 
   function bindTouchControls() {
     mobileControls?.querySelectorAll("[data-trajectory-action]").forEach((button) => {
       const action = button.dataset.trajectoryAction;
       const setAction = (pressed) => {
-        if (action === "up") input.up = pressed;
         if (action === "left") input.left = pressed;
         if (action === "right") input.right = pressed;
-        if (action === "detach" && pressed) input.detachPressed = true;
+        if (action === "up" || action === "boost") {
+          input.boost = pressed;
+          if (pressed && runtime.mode !== STATE.PLAYING) startPlaying();
+        }
       };
-
       const releasePointer = (pointerId) => {
         if (touchPointers.get(pointerId) === action) touchPointers.delete(pointerId);
         if (![...touchPointers.values()].includes(action)) setAction(false);
       };
-
       button.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         if (!runtime.open) return;
         button.setPointerCapture?.(event.pointerId);
         touchPointers.set(event.pointerId, action);
-        if (runtime.mode !== STATE.PLAYING && action === "up") {
-          startPlaying();
-        }
         setAction(true);
       });
-      button.addEventListener("pointerup", (event) => {
-        releasePointer(event.pointerId);
-      });
-      button.addEventListener("pointercancel", (event) => {
-        releasePointer(event.pointerId);
-      });
+      button.addEventListener("pointerup", (event) => { releasePointer(event.pointerId); });
+      button.addEventListener("pointercancel", (event) => { releasePointer(event.pointerId); });
       button.addEventListener("pointerleave", (event) => {
         if (event.pointerType !== "mouse") releasePointer(event.pointerId);
       });
@@ -6978,25 +6133,21 @@ const trajectoryArcade = (() => {
 
   function init() {
     buildStars();
-    resetMission();
+    resetGame();
     bindThemeTapUnlock();
     bindTouchControls();
     closeBtn?.addEventListener("click", close);
     $("trajectory-close-x")?.addEventListener("click", close);
     $("trajectory-launch-btn")?.addEventListener("click", open);
-    restartBtn?.addEventListener("click", () => {
-      startPlaying();
-    });
+    restartBtn?.addEventListener("click", startPlaying);
     $("trajectory-backdrop")?.addEventListener("click", close);
-    window.addEventListener("resize", () => {
-      if (runtime.open) drawFrame();
-    });
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("keyup", handleKeyUp);
   }
 
   return { init, open, close };
 })();
+
 
 document.querySelectorAll("[data-view-target]").forEach((button) => {
   button.addEventListener("click", () => {
