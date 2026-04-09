@@ -254,6 +254,14 @@
 
       <div class="metric-ribbon">
         <div class="metric-chip">
+          <span class="metric-label">🌬️ IAQ</span>
+          <span class="metric-value" id="v-iaq">--</span>
+        </div>
+        <div class="metric-chip">
+          <span class="metric-label">🧪 VOC</span>
+          <span class="metric-value" id="v-voc">--</span>
+        </div>
+        <div class="metric-chip">
           <span class="metric-label">💨 CO2eq</span>
           <span class="metric-value" id="v-co2">--</span>
         </div>
@@ -273,6 +281,8 @@
       <details class="metric-legend">
         <summary>Metric glossary</summary>
         <div class="metric-legend-items">
+          <span><strong>IAQ:</strong> indoor air quality index (lower is better)</span>
+          <span><strong>VOC:</strong> volatile organic compound concentration</span>
           <span><strong>CO2eq:</strong> stuffiness / ventilation proxy</span>
           <span><strong>Outdoor AQI:</strong> outside-air quality</span>
           <span><strong>Gas R:</strong> sensor resistance, often higher when cleaner</span>
