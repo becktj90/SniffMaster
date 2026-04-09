@@ -98,6 +98,7 @@
       <button class="section-btn" type="button" data-view-target="environment">Local Area</button>
       <button class="section-btn" type="button" data-view-target="analysis">Air & Signal</button>
       <button class="section-btn" type="button" data-view-target="history">Trends</button>
+      <button class="section-btn" type="button" data-view-target="space">Space</button>
       <button class="section-btn" type="button" data-view-target="labs">Labs</button>
     </nav>
   </div>
@@ -554,7 +555,7 @@
       <div class="source-caption">Source: public melody_library.h · browser synth playback · secure portal command relay</div>
     </section>
 
-    <section class="card orbital-card" id="card-space" data-view="dashboard space">
+    <section class="card orbital-card" id="card-space" data-view="space">
       <div class="card-header">
         <span>Space Coast Launch Deck</span>
         <span class="header-pill" id="launch-badge">No launch feed</span>
@@ -596,7 +597,7 @@
       <div class="source-caption">Source: <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a> · Cape launch manifest · curated Space Coast daybook</div>
     </section>
 
-    <section class="card apod-card" id="card-history" data-view="dashboard space">
+    <section class="card apod-card" id="card-history" data-view="space">
       <div class="card-header">
         <span>Astronomy Picture of the Day</span>
         <span class="header-pill" id="history-badge">NASA APOD</span>
@@ -1031,15 +1032,41 @@
       <div class="source-caption">Source: relay snapshot history aggregated by weekday and hour</div>
     </section>
 
-    <section class="card" id="card-weather-intel" data-view="environment">
+    <section class="card" id="card-weather-intel" data-view="environment analysis">
       <div class="card-header">
         <span>Local Weather</span>
         <span class="header-pill" id="weather-intel-badge">Outdoor conditions</span>
       </div>
       <div class="conditions-summary-shell">
-        <div class="conditions-summary-kicker">🤖 AI Conditions Summary</div>
+        <div class="conditions-summary-kicker">🔍 Smart Conditions Summary</div>
         <p class="conditions-summary-text" id="conditions-summary-text">Conditions summary will appear once the dashboard has a weather snapshot.</p>
         <div class="conditions-summary-mode" id="conditions-summary-mode">Awaiting data</div>
+      </div>
+      <div class="weather-forecast-shell">
+        <div class="weather-forecast-head">
+          <div class="weather-forecast-kicker">3-Day Outlook</div>
+          <div class="weather-forecast-summary" id="weather-forecast-summary">Forecast guidance pending</div>
+        </div>
+        <div class="weather-forecast-grid" id="weather-forecast-grid">
+          <div class="forecast-tile">
+            <div class="forecast-day">Day 1</div>
+            <div class="forecast-condition">Waiting for forecast</div>
+            <div class="forecast-temps">-- / --</div>
+            <div class="forecast-meta">Precip -- · Wind --</div>
+          </div>
+          <div class="forecast-tile">
+            <div class="forecast-day">Day 2</div>
+            <div class="forecast-condition">Waiting for forecast</div>
+            <div class="forecast-temps">-- / --</div>
+            <div class="forecast-meta">Precip -- · Wind --</div>
+          </div>
+          <div class="forecast-tile">
+            <div class="forecast-day">Day 3</div>
+            <div class="forecast-condition">Waiting for forecast</div>
+            <div class="forecast-temps">-- / --</div>
+            <div class="forecast-meta">Precip -- · Wind --</div>
+          </div>
+        </div>
       </div>
       <div class="map-shell">
         <div id="weather-map" aria-label="Interactive weather and environmental layers map"></div>
@@ -1093,32 +1120,6 @@
             <div class="weather-brief-kicker">Local Forecast Insight</div>
             <p class="weather-brief-text" id="weather-briefing-text">A local-area forecast briefing will appear here once the dashboard has a weather fix.</p>
             <div class="weather-brief-mode" id="weather-briefing-mode">Deterministic local forecast standby</div>
-          </div>
-          <div class="weather-forecast-shell">
-            <div class="weather-forecast-head">
-              <div class="weather-forecast-kicker">3-Day Outlook</div>
-              <div class="weather-forecast-summary" id="weather-forecast-summary">Forecast guidance pending</div>
-            </div>
-            <div class="weather-forecast-grid" id="weather-forecast-grid">
-              <div class="forecast-tile">
-                <div class="forecast-day">Day 1</div>
-                <div class="forecast-condition">Waiting for forecast</div>
-                <div class="forecast-temps">-- / --</div>
-                <div class="forecast-meta">Precip -- · Wind --</div>
-              </div>
-              <div class="forecast-tile">
-                <div class="forecast-day">Day 2</div>
-                <div class="forecast-condition">Waiting for forecast</div>
-                <div class="forecast-temps">-- / --</div>
-                <div class="forecast-meta">Precip -- · Wind --</div>
-              </div>
-              <div class="forecast-tile">
-                <div class="forecast-day">Day 3</div>
-                <div class="forecast-condition">Waiting for forecast</div>
-                <div class="forecast-temps">-- / --</div>
-                <div class="forecast-meta">Precip -- · Wind --</div>
-              </div>
-            </div>
           </div>
           <div class="weather-detail-grid">
             <div class="weather-detail">
