@@ -3575,7 +3575,6 @@ function renderStatusStrip(d) {
   $("status-updated").textContent = num(d.receivedAt) ? `${fmtAge(d.receivedAt)} · ${fmtStamp(d.receivedAt)}` : "No snapshot yet";
   setHeaderPill("status-badge", isLive ? "Live feed" : (hasSnapshot ? "Feed catching up" : "Awaiting first sync"), isLive ? "good" : "warn");
   $("header-calibration").textContent = calibration.short;
-  $("header-presence").textContent = headerPresenceText(d);
 }
 
 function renderTelemetry(d) {
@@ -3589,8 +3588,9 @@ function renderTelemetry(d) {
   $("v-uptime-card").textContent = fmtUptime(d.uptime).replace(/^Up /, "");
   $("header-network").textContent = headerNetworkText(d);
   $("header-city").textContent = d.city || "Location syncing";
+  const outdoorTempStr = Number.isFinite(num(d.feelsLikeF, NaN)) ? ` · ${num(d.feelsLikeF).toFixed(0)}F` : "";
   $("header-weather").textContent = d.weatherCondition
-    ? `${d.weatherCondition} · ${num(d.tempF).toFixed(0)}F`
+    ? `${d.weatherCondition}${outdoorTempStr}`
     : "Weather pending";
   $("header-time").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
   $("header-date").textContent = fmtLocationDate(d.receivedAt, d.utcOffsetSec);
@@ -4717,10 +4717,13 @@ async function fetchLatest() {
         render(data);
     } catch (err) {
         console.error("fetchLatest failed:", err);
-        // Keep the status amber (stale) instead of red (offline) when we already
-        // have data from a previous successful fetch — only go red on true no-data.
+        // Only go amber when the cached data itself is stale; keep green if it
+        // is still fresh so a single failed poll does not falsely alarm.
         if (lastData?.receivedAt) {
-            $("conn-dot").className = "dot stale";
+            const dataAge = Date.now() - lastData.receivedAt;
+            if (dataAge >= STALE_MS) {
+                $("conn-dot").className = "dot stale";
+            }
             $("conn-label").textContent = `Feed unavailable · ${fmtAge(lastData.receivedAt)}`;
         } else {
             $("conn-dot").className = "dot offline";
