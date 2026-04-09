@@ -1704,6 +1704,18 @@ body[data-theme="retro90s"] .footer-bar {
   grid-column: span 12;
 }
 
+#card-cause,
+#card-occupancy,
+#card-theme {
+  grid-column: span 6;
+}
+
+#card-specs,
+#card-pseudocode,
+#card-architecture {
+  grid-column: span 12;
+}
+
 #card-weather-intel {
   min-height: 330px;
 }
@@ -4759,7 +4771,10 @@ body[data-theme="retro90s"] .footer-bar {
   #card-chart,
   #card-classifier,
   #card-bro,
-  #card-events {
+  #card-events,
+  #card-cause,
+  #card-occupancy,
+  #card-theme {
     grid-column: span 12;
   }
 
@@ -4907,7 +4922,10 @@ body[data-theme="retro90s"] .footer-bar {
   #card-chart,
   #card-classifier,
   #card-bro,
-  #card-events {
+  #card-events,
+  #card-cause,
+  #card-occupancy,
+  #card-theme {
     grid-column: span 12;
   }
 
