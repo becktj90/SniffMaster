@@ -5180,8 +5180,8 @@ const trajectoryArcade = (() => {
 
   // ── Game constants ──
   const ROCKET_Y = H - 100;          // fixed screen Y of rocket
-  const ROCKET_W = 24;               // half-width for collision
-  const ROCKET_H = 38;               // half-height for collision
+  const ROCKET_W = 24;               // full collision width (half = 12px each side)
+  const ROCKET_H = 38;               // full collision height (half = 19px each side)
   const STEER_SPEED = 350;           // px/sec lateral
   const SCROLL_BASE = 150;           // starting scroll speed px/sec
   const SCROLL_MAX = 420;
