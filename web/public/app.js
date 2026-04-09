@@ -2475,6 +2475,103 @@ async function ensureWeatherBriefing(d) {
   })();
 }
 
+const OCCUPANCY_BRIEFING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function renderOccupancyCard(payload) {
+  if (!payload) return;
+  const index = num(payload.occupancyIndex, NaN);
+  const deviceCount = num(payload.deviceCount, NaN);
+
+  setHeaderPill("occupancy-badge", payload.densityLabel || "Space density", "neutral");
+
+  const indexEl = $("occupancy-index-value");
+  if (indexEl) indexEl.textContent = Number.isFinite(index) ? `${Math.round(index)}` : "--";
+
+  const labelEl = $("occupancy-density-label");
+  if (labelEl) labelEl.textContent = payload.densityLabel || "Waiting";
+
+  const noteEl = $("occupancy-density-note");
+  if (noteEl) noteEl.textContent = payload.densityNote || "Space density will appear once scan data arrives.";
+
+  const fillEl = $("occupancy-index-fill");
+  if (fillEl && Number.isFinite(index)) {
+    fillEl.style.width = `${clamp(index, 0, 100)}%`;
+    fillEl.style.background = index < 25 ? "var(--mint)"
+      : index < 55 ? "var(--lime)"
+      : index < 80 ? "var(--amber)"
+      : "var(--red)";
+  }
+
+  const rssiEl = $("occupancy-rssi-badge");
+  if (rssiEl) {
+    const rssi = num(payload.avgRssi, NaN);
+    rssiEl.textContent = Number.isFinite(rssi) ? `${Math.round(rssi)} dBm` : "--";
+  }
+
+  const countEl = $("occupancy-device-count");
+  if (countEl) {
+    countEl.textContent = Number.isFinite(deviceCount)
+      ? `${deviceCount} device${deviceCount !== 1 ? "s" : ""} detected`
+      : "Waiting for first scan.";
+  }
+
+  const trendEl = $("occupancy-trend-note");
+  if (trendEl && payload.trend) {
+    const { direction, delta } = payload.trend;
+    const sign = delta > 0 ? "+" : "";
+    trendEl.textContent = direction === "stable"
+      ? "Occupancy is holding steady."
+      : `Occupancy is ${direction} (${sign}${Math.round(delta)} points since last read).`;
+  }
+
+  const briefingEl = $("occupancy-briefing");
+  if (briefingEl && payload.briefing) briefingEl.textContent = payload.briefing;
+
+  const sourceEl = $("occupancy-source");
+  if (sourceEl) {
+    const modeNote = payload.mode === "openai" ? "OpenAI occupancy insight" : "deterministic occupancy logic";
+    sourceEl.textContent = `Source: device passive scan · MAC deduplication · 30-second rolling window · ${modeNote}`;
+  }
+
+  const chartEl = $("occupancy-bar-chart");
+  if (chartEl && Array.isArray(payload.history) && payload.history.length > 0) {
+    const history = payload.history.slice(0, 24).reverse();
+    const maxIdx = Math.max(...history.map((h) => num(h.occupancyIndex, 0)), 1);
+    chartEl.innerHTML = `<div class="occupancy-bar-grid">${history.map((h) => {
+      const pct = clamp((num(h.occupancyIndex, 0) / maxIdx) * 100, 2, 100);
+      const color = pct > 80 ? "var(--red)" : pct > 55 ? "var(--amber)" : pct > 25 ? "var(--lime)" : "var(--mint)";
+      return `<div class="occupancy-bar-col" title="Index ${Math.round(num(h.occupancyIndex, 0))}">
+        <div class="occupancy-bar-fill" style="height:${pct}%;background:${color}"></div>
+      </div>`;
+    }).join("")}</div>`;
+  }
+}
+
+async function ensureOccupancyBriefing() {
+  const cached = occupancyBriefingState.data
+    && Date.now() - occupancyBriefingState.fetchedAt < OCCUPANCY_BRIEFING_TTL_MS;
+  if (cached) {
+    renderOccupancyCard(occupancyBriefingState.data);
+    return;
+  }
+  if (occupancyBriefingState.pending) return;
+
+  occupancyBriefingState.pending = (async () => {
+    try {
+      const res = await fetch("/api/occupancy-briefing", { cache: "no-store" });
+      if (res.status === 204) return;
+      if (!res.ok) throw new Error(`occupancy-briefing ${res.status}`);
+      occupancyBriefingState.data = await res.json();
+      occupancyBriefingState.fetchedAt = Date.now();
+      renderOccupancyCard(occupancyBriefingState.data);
+    } catch (_) {
+      // silent — card stays in standby state
+    } finally {
+      occupancyBriefingState.pending = null;
+    }
+  })();
+}
+
 const LAUNCH_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 async function ensureLaunchData() {
@@ -4581,6 +4678,7 @@ function render(data) {
 
   ensureWeatherBriefing(merged);
   ensureLaunchData();
+  ensureOccupancyBriefing();
 
   if (historyData.length) {
     drawChart(historyData);
