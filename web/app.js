@@ -249,7 +249,8 @@ let occupancyBriefingState = {
   fetchedAt: 0,
   data: null,
   pending: null,
-};let launchState = {
+};
+let launchState = {
   fetchedAt: 0,
   data: null,
   pending: null,
