@@ -59,7 +59,7 @@ function formatLaunchTime(launch) {
         month: "short", day: "numeric", year: "numeric",
         hour: "2-digit", minute: "2-digit", timeZoneName: "short",
       });
-    } catch { /* fall through */ }
+    } catch { /* t0 string was not a valid date — fall through to next format */ }
   }
   const winOpen = launch.win_open;
   if (winOpen) {
@@ -69,7 +69,7 @@ function formatLaunchTime(launch) {
         month: "short", day: "numeric", year: "numeric",
         hour: "2-digit", minute: "2-digit", timeZoneName: "short",
       });
-    } catch { /* fall through */ }
+    } catch { /* win_open string was not a valid date — fall through to next format */ }
   }
   if (launch.date_str) return launch.date_str;
   const est = launch.est_date;
