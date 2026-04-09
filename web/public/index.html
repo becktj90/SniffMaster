@@ -47,10 +47,6 @@
               <span id="header-calibration">Cal pending</span>
             </div>
             <div class="header-chip">
-              <span class="tiny-icon tiny-icon-presence" aria-hidden="true"></span>
-              <span id="header-presence">Presence idle</span>
-            </div>
-            <div class="header-chip">
               <span class="tiny-icon tiny-icon-time" aria-hidden="true"></span>
               <span id="header-time">--:--</span>
             </div>
@@ -233,27 +229,27 @@
 
       <div class="metric-ribbon">
         <div class="metric-chip">
-          <span class="metric-label">IAQ</span>
+          <span class="metric-label">🌿 IAQ</span>
           <span class="metric-value" id="v-iaq">--</span>
         </div>
         <div class="metric-chip">
-          <span class="metric-label">VOC</span>
+          <span class="metric-label">🧪 VOC</span>
           <span class="metric-value" id="v-voc">--</span>
         </div>
         <div class="metric-chip">
-          <span class="metric-label">CO2eq</span>
+          <span class="metric-label">💨 CO2eq</span>
           <span class="metric-value" id="v-co2">--</span>
         </div>
         <div class="metric-chip">
-          <span class="metric-label">Outdoor AQI</span>
+          <span class="metric-label">🌍 Outdoor AQI</span>
           <span class="metric-value" id="v-aqi">--</span>
         </div>
         <div class="metric-chip">
-          <span class="metric-label">Gas R</span>
+          <span class="metric-label">⚡ Gas R</span>
           <span class="metric-value" id="v-gasr">--</span>
         </div>
         <div class="metric-chip">
-          <span class="metric-label">dVOC</span>
+          <span class="metric-label">📈 dVOC</span>
           <span class="metric-value" id="v-dvoc">--</span>
         </div>
       </div>
@@ -460,44 +456,6 @@
       </div>
       <div class="office-briefing" id="office-briefing">Office impact briefing will appear here once the room posts a live snapshot.</div>
       <div class="source-caption">Source: BME688 device telemetry · BSEC2-derived proxies · local comfort, cognition, and persistence heuristics</div>
-    </section>
-
-    <section class="card" id="card-occupancy" data-view="analysis">
-      <div class="card-header">
-        <span>BLE Occupancy</span>
-        <span class="header-pill" id="occupancy-badge">Space density</span>
-      </div>
-      <p class="card-summary">Passive Bluetooth scan counts to estimate how many devices — and by proxy, people — are present in the space.</p>
-      <details class="microcopy">
-        <summary>Learn more</summary>
-        <p>The sensor runs short passive BLE scans every 20 seconds and counts unique device addresses within a 30-second rolling window. Each device likely represents a phone, laptop, or wearable. Devices weaker than −90 dBm are filtered as background noise. The occupancy index (0–100) saturates at 10 devices.</p>
-      </details>
-      <div class="office-grid">
-        <div class="office-focus-panel">
-          <div class="office-kicker">Occupancy Index</div>
-          <div class="office-focus-row">
-            <div class="office-focus-value" id="occupancy-index-value">--</div>
-            <div class="office-focus-copy">
-              <div class="office-focus-band" id="occupancy-density-label">Waiting</div>
-              <div class="office-focus-note" id="occupancy-density-note">Space density will appear once BLE data arrives.</div>
-            </div>
-          </div>
-          <div class="office-focus-bar">
-            <div class="office-focus-fill" id="occupancy-index-fill"></div>
-          </div>
-        </div>
-        <div class="office-risk-panel">
-          <div class="office-kicker">Signal Quality</div>
-          <div class="office-risk-badge" id="occupancy-rssi-badge">--</div>
-          <div class="office-risk-status" id="occupancy-device-count">Waiting for first BLE scan.</div>
-          <div class="office-risk-note" id="occupancy-trend-note">Trend will appear after two or more readings.</div>
-        </div>
-      </div>
-      <div id="occupancy-bar-chart" class="occupancy-bar-shell">
-        <div class="occupancy-bar-empty">Waiting for BLE occupancy history.</div>
-      </div>
-      <div class="occupancy-briefing" id="occupancy-briefing">Occupancy briefing will appear once the device posts BLE scan data.</div>
-      <div class="source-caption" id="occupancy-source">Source: BLE passive scan · device MAC deduplication · 30-second rolling window</div>
     </section>
 
     <section class="card" id="card-dadabase" data-view="labs">
@@ -777,16 +735,16 @@
           <div class="hardware-copy">
             <div class="hardware-kicker">Controller</div>
             <h3 class="hardware-name">Seeed Studio XIAO ESP32-S3</h3>
-            <p class="hardware-note">Runs the local sensing loop, BLE presence layer, event logic, melody engine, OLED UI, and secure web relay.</p>
+            <p class="hardware-note">Runs the local sensing loop, event logic, melody engine, OLED UI, and secure web relay.</p>
             <div class="hardware-chip-row">
               <span class="hardware-chip">240 MHz ESP32-S3</span>
-              <span class="hardware-chip">Wi-Fi + BLE</span>
+              <span class="hardware-chip">Wi-Fi</span>
               <span class="hardware-chip">USB-C / battery friendly</span>
             </div>
             <ul class="hardware-specs">
               <li><strong>Role:</strong> sensor fusion, edge logic, display updates, portal sync</li>
               <li><strong>Interfaces:</strong> I2C to BME688, GPIO/button/buzzer, OLED on Grove expansion base</li>
-              <li><strong>Why it fits:</strong> enough compute for BSEC2, BLE proximity, and lightweight inference without cloud dependence</li>
+              <li><strong>Why it fits:</strong> enough compute for BSEC2 and lightweight inference without cloud dependence</li>
             </ul>
           </div>
         </article>
@@ -1010,6 +968,26 @@
         <span>Local Weather</span>
         <span class="header-pill" id="weather-intel-badge">Outdoor conditions</span>
       </div>
+      <div class="conditions-summary-shell">
+        <div class="conditions-summary-kicker">🤖 AI Conditions Summary</div>
+        <p class="conditions-summary-text" id="conditions-summary-text">Conditions summary will appear once the dashboard has a weather snapshot.</p>
+        <div class="conditions-summary-mode" id="conditions-summary-mode">Awaiting data</div>
+      </div>
+      <div class="map-shell">
+        <div id="weather-map" aria-label="Interactive weather and environmental layers map"></div>
+        <div class="map-fallback" id="map-fallback">Loading map...</div>
+        <div class="map-layer-toolbar" id="map-layer-toolbar">
+          <button class="map-layer-chip is-active" id="map-layer-rain" type="button" title="Rain radar">🌧 Rain</button>
+          <button class="map-layer-chip" id="map-layer-satellite" type="button" title="Infrared satellite / storm clouds">🌩 Storms</button>
+          <button class="map-layer-chip" id="map-layer-wind" type="button" title="Wind info">💨 Wind</button>
+        </div>
+        <div class="map-overlay">
+          <div class="map-title" id="map-city">Location pending</div>
+          <div class="map-wind-badge" id="map-wind-badge"></div>
+          <a id="map-link" href="https://www.openstreetmap.org" target="_blank" rel="noreferrer">Open street map</a>
+          <button class="map-fullscreen-btn" id="map-fullscreen-btn" title="Fullscreen map" aria-label="Fullscreen map">⛶</button>
+        </div>
+      </div>
       <div class="weather-visual-row">
         <div class="sky-widget">
           <div class="sky-stage" id="sky-stage">
@@ -1117,15 +1095,6 @@
             </div>
           </div>
         </div>
-        <div class="map-shell">
-          <div id="weather-map" aria-label="Interactive weather and environmental layers map"></div>
-          <div class="map-fallback" id="map-fallback">Loading map...</div>
-          <div class="map-overlay">
-            <div class="map-title" id="map-city">Location pending</div>
-            <a id="map-link" href="https://www.openstreetmap.org" target="_blank" rel="noreferrer">Open street map</a>
-            <button class="map-fullscreen-btn" id="map-fullscreen-btn" title="Fullscreen map" aria-label="Fullscreen map">⛶</button>
-          </div>
-        </div>
       </div>
       <div class="source-caption" id="source-weather">Source: device weather snapshot · Open-Meteo forecast · OpenStreetMap map · RainViewer radar</div>
     </section>
@@ -1187,8 +1156,8 @@
           <tr><td>Gas Resistance</td><td>10 kΩ – 2 MΩ</td><td>MOX response: low R = reducing gases, high R = clean air</td></tr>
           <tr><td>Odor Channels</td><td>12 base + 8 derived</td><td>SmellNet TFLite model + cross-correlation post-processing</td></tr>
           <tr><td>ML Model</td><td>SmellNet v1 (TFLite)</td><td>7-feature input, 12-class output, ~4 KB quantized</td></tr>
-          <tr><td>Connectivity</td><td>WiFi 802.11 b/g/n + BLE 5</td><td>Multi-SSID failover, HTTPS to Vercel + OpenAI + AIO</td></tr>
-          <tr><td>Power</td><td>USB-C 5V, ~120 mA active</td><td>WiFi + BLE + sensor + OLED + buzzer</td></tr>
+          <tr><td>Connectivity</td><td>WiFi 802.11 b/g/n</td><td>Multi-SSID failover, HTTPS to Vercel + OpenAI + AIO</td></tr>
+          <tr><td>Power</td><td>USB-C 5V, ~100 mA active</td><td>WiFi + sensor + OLED + buzzer</td></tr>
           <tr><td>Stack Size</td><td>16 KB loop task</td><td>Increased from 8 KB default for HTTPS + JSON payloads</td></tr>
         </tbody>
       </table>
@@ -1223,7 +1192,6 @@ loop():
   handleButton()                    // gesture state machine
   bsecRan = envSensor.run()         // poll BME688 via BSEC2
   melTick()                         // background melody engine
-  blePresenceTick()                 // BLE proximity scanner
   maintainWiFi()                    // multi-SSID failover
   pollPortalCommand()               // check for remote actions
 
@@ -1309,7 +1277,7 @@ loop():
       </div>
       <ul class="system-list">
         <li><strong>Indoor air quality:</strong> continuous IAQ/VOC/CO2 monitoring with trend analysis and ventilation recommendations</li>
-        <li><strong>Occupancy sensing:</strong> CO2 accumulation rate and BLE proximity for meeting-room vitality assessment</li>
+        <li><strong>Occupancy sensing:</strong> CO2 accumulation rate for meeting-room vitality assessment</li>
         <li><strong>HVAC diagnostics:</strong> room-to-room comparison of ventilation effectiveness using CFI and VTR indices</li>
         <li><strong>Odor classification:</strong> real-time 12-channel odor scoring with cross-correlation and home baseline suppression</li>
         <li><strong>Event detection:</strong> sub-second response to rapid VOC spikes (cooking, cleaning products, biological events)</li>
@@ -1385,7 +1353,6 @@ loop():
           <button class="chrome-btn remote-action-btn" data-remote-action="refresh" type="button" disabled>Sync Device Now</button>
           <button class="chrome-btn remote-action-btn" data-remote-action="breath_check" type="button" disabled>Run Breath Check</button>
           <button class="chrome-btn remote-action-btn" data-remote-action="ghost_scan" type="button" disabled>Run Ghost Scan</button>
-          <button class="chrome-btn remote-action-btn" data-remote-action="presence_probe" type="button" disabled>Run Presence Probe</button>
         </div>
       </div>
       <div style="overflow-x:auto">
