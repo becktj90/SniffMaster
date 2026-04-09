@@ -78,14 +78,9 @@ const HEATMAP_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const HEATMAP_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const POLL_MS = 10000;
-const STALE_MS = 900000; // 15 minutes — status stays green until data is 15 minutes old
-// Manual location for weather map — Cape Canaveral Space Force Station, FL
-// (matches the server-side default; does not depend on device WiFi geolocation)
-const MANUAL_MAP_LAT = 28.4889;
-const MANUAL_MAP_LON = -80.5778;
-const MANUAL_MAP_CITY = "Cape Canaveral, FL";
+const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
-const WEATHER_BRIEFING_TTL_MS = 30 * 60 * 1000;
+const WEATHER_BRIEFING_TTL_MS = 60 * 60 * 1000; // 1-hour cadence for AI weather prediction
 const DADABASE_TTL_MS = 15 * 60 * 1000;
 const DURATION_MACROS = {
   ML_WHOLE: (bpm) => 240000 / bpm,
@@ -165,57 +160,66 @@ const THEME_META = {
 const DEFAULT_THEME = "obsidian";
 const DEFAULT_MAP_LAYERS = {
   radar: true,
-  night: false,
-  epa: false,
-  crime: false,
 };
 const VIEW_META = {
   dashboard: {
-    title: "Dashboard",
-    subtitle: "Live room status, key metrics, and current guidance in one scan-friendly view.",
+    title: "Overview",
+    subtitle: "Current room condition, key metrics, and priority guidance at a glance.",
   },
   environment: {
-    title: "Environment",
-    subtitle: "Raw inputs, derived air metrics, and simplified outdoor context.",
+    title: "Local Area",
+    subtitle: "Outdoor conditions, weather context, and live environmental map.",
   },
   analysis: {
-    title: "Analysis",
-    subtitle: "Classifier output, odor intensity, vitality, and breath-related interpretation.",
+    title: "Air & Signal",
+    subtitle: "Air classification, odor intensity, occupancy, and room intelligence.",
   },
   history: {
-    title: "History",
+    title: "Trends",
     subtitle: "Daily rhythm patterns and the timestamped event log.",
+  },
+  space: {
+    title: "Space",
+    subtitle: "Space Coast launch schedule and NASA Astronomy Picture of the Day.",
   },
   labs: {
     title: "Labs",
-    subtitle: "Experimental and playful features separated from the primary instrument views.",
+    subtitle: "Experimental and playful features.",
   },
 };
 
 const VIEW_SECTIONS = {
   dashboard: [
-    { id: "card-hero", label: "Snapshot" },
-    { id: "card-status", label: "Status" },
+    { id: "card-hero", label: "Room Status" },
+    { id: "card-status", label: "System" },
+    { id: "card-intel", label: "Air Intelligence" },
+    { id: "card-cause", label: "Cause Engine" },
     { id: "card-office", label: "Vitality" },
-    { id: "card-space", label: "Launches" },
-    { id: "card-history", label: "History" },
   ],
   environment: [
-    { id: "card-status", label: "Status" },
-    { id: "card-telemetry", label: "Raw Inputs" },
-    { id: "card-derived", label: "Derived" },
-    { id: "card-weather-intel", label: "Weather" },
+    { id: "card-status", label: "System" },
+    { id: "card-telemetry", label: "Raw Sensors" },
+    { id: "card-derived", label: "Air Metrics" },
+    { id: "card-weather-intel", label: "Weather & Map" },
   ],
   analysis: [
+    { id: "card-weather-intel", label: "Smart Summary & Map" },
+    { id: "card-bro", label: "Room Intel" },
+    { id: "card-intel", label: "Air Intel" },
+    { id: "card-cause", label: "Cause Engine" },
     { id: "card-office", label: "Vitality" },
-    { id: "card-odor", label: "Classification" },
+    { id: "card-occupancy", label: "Presence" },
+    { id: "card-odor", label: "Odor Class" },
     { id: "card-breath", label: "Breath" },
-    { id: "card-fart", label: "Stank" },
-    { id: "card-bro", label: "Readout" },
+    { id: "card-fart", label: "Intensity" },
   ],
   history: [
-    { id: "card-chart", label: "Rhythm" },
-    { id: "card-events", label: "Events" },
+    { id: "card-chart", label: "Daily Rhythm" },
+    { id: "card-events", label: "Event Log" },
+  ],
+  space: [
+    { id: "card-space", label: "Launch Deck" },
+    { id: "card-history", label: "Astro Pic" },
   ],
   labs: [
     { id: "card-dadabase", label: "Dadabase" },
@@ -258,10 +262,12 @@ let launchState = {
   data: null,
   pending: null,
 };
-let scopeSettings = {
-  series: { voc: true, clean: true, dvoc: true },
-  window: 20,
+let apodState = {
+  fetchedAt: 0,
+  data: null,
+  pending: null,
 };
+let lastSassyMsg = "";
 let dadabaseState = {
   fetchedAt: 0,
   data: null,
@@ -273,8 +279,11 @@ let mapLayerPrefs = loadMapLayerPrefs();
 let activeView = loadViewPref();
 let mapLayers = {
   radar: null,
-  night: null,
-  epa: null,
+  satellite: null,
+};
+let mapLayerActive = {
+  rain: true,
+  satellite: false,
 };
 let rainViewerState = {
   fetchedAt: 0,
@@ -283,6 +292,10 @@ let rainViewerState = {
 let manualRefreshPending = false;
 let remoteCommandPending = false;
 let viewSubmenuOpen = false;
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
 
 applyTheme(loadThemePref(), { skipUi: true });
 
@@ -316,35 +329,17 @@ function escapeHtml(value) {
 }
 
 function loadMapLayerPrefs() {
-  try {
-    const raw = localStorage.getItem(MAP_PREF_KEY);
-    if (!raw) return { ...DEFAULT_MAP_LAYERS };
-    const parsed = JSON.parse(raw);
-    return {
-      radar: Boolean(parsed.radar ?? DEFAULT_MAP_LAYERS.radar),
-      night: false,
-      epa: false,
-      crime: false,
-    };
-  } catch (_) {
-    return { ...DEFAULT_MAP_LAYERS };
-  }
+  return { radar: true };
 }
 
 function saveMapLayerPrefs() {
-  try {
-    localStorage.setItem(MAP_PREF_KEY, JSON.stringify({
-      radar: Boolean(mapLayerPrefs.radar),
-      night: Boolean(mapLayerPrefs.night),
-      epa: Boolean(mapLayerPrefs.epa),
-    }));
-  } catch (_) {}
+  // radar is always-on; no user preferences to persist
 }
 
 function loadViewPref() {
   try {
     const hash = `${window.location.hash || ""}`.replace(/^#/, "");
-    const alias = { home: "dashboard", air: "analysis", weather: "environment", space: "dashboard", paranormal: "labs" };
+    const alias = { home: "dashboard", air: "analysis", weather: "environment", paranormal: "labs" };
     if (VIEW_META[hash]) return hash;
     if (alias[hash] && VIEW_META[alias[hash]]) return alias[hash];
     const raw = localStorage.getItem(VIEW_PREF_KEY);
@@ -464,15 +459,8 @@ function calibrationNarrative(d) {
   };
 }
 
-function headerPresenceText(d) {
-  const state = `${d.blePresenceState || ""}`.trim();
-  const conf = Math.round(num(d.blePresenceConf, NaN));
-  const enabled = d.blePresenceEnabled === true
-    || Boolean(state)
-    || Number.isFinite(conf);
-  if (!enabled) return "Presence off";
-  const label = humanLabel(state || "Idle", "Idle");
-  return Number.isFinite(conf) && conf > 0 ? `${label} ${conf}%` : label;
+function headerPresenceText(_d) {
+  return "";
 }
 
 function headerNetworkText(d) {
@@ -1775,8 +1763,17 @@ function trimHeadline(text, maxLen = 96) {
   return `${cut.slice(0, end).trim()}...`;
 }
 
+// Regex matching known device-side AI failure messages that should never be displayed.
+const AI_FAILURE_PATTERNS = /gpt is ghosting|openai is|ai is offline|cannot reach|api error|failed to fetch|no response/i;
+
 function heroSummaryText(d) {
-  const aiLine = trimHeadline(d?.sassy, 104);
+  const raw = `${d?.sassy || ""}`.trim();
+  // Filter known device-side AI failure messages so we never display them
+  const isGhosting = !raw || AI_FAILURE_PATTERNS.test(raw);
+  if (!isGhosting) {
+    lastSassyMsg = raw; // cache the last good message
+  }
+  const aiLine = trimHeadline(isGhosting ? (lastSassyMsg || "") : raw, 104);
   return aiLine || roomSummary(d);
 }
 
@@ -2135,25 +2132,73 @@ function weatherMapLinks(d) {
   };
 }
 
-function setMapLayerStatus(text) {
-  const el = $("map-layer-status");
-  if (el) el.textContent = text;
+function setMapLayerStatus(_text) {
+  // no-op: layer status element removed from UI
+}
+
+async function fetchRainViewerSatelliteTileUrl() {
+  try {
+    const res = await fetch("https://api.rainviewer.com/public/weather-maps.json", { cache: "no-store" });
+    if (!res.ok) return "";
+    const data = await res.json();
+    const frames = data?.satellite?.infrared;
+    if (!Array.isArray(frames) || !frames.length) return "";
+    const frame = frames[frames.length - 1];
+    const host = data?.host;
+    if (!frame?.path || !host) return "";
+    return `${host}${frame.path}/256/{z}/{x}/{y}/0/0.png`;
+  } catch (_) {
+    return "";
+  }
+}
+
+async function ensureSatelliteLayer() {
+  if (mapLayers.satellite) return mapLayers.satellite;
+  if (!window.L) return null;
+  const tileUrl = await fetchRainViewerSatelliteTileUrl();
+  if (!tileUrl) return null;
+  mapLayers.satellite = window.L.tileLayer(tileUrl, {
+    opacity: 0.55,
+    attribution: "Satellite © RainViewer",
+    maxNativeZoom: 4,
+    maxZoom: 18,
+  });
+  return mapLayers.satellite;
 }
 
 function renderMapLayerButtons() {
-  document.querySelectorAll(".map-layer-chip").forEach((button) => {
-    const key = button.dataset.layer;
-    const active = Boolean(mapLayerPrefs[key]);
-    button.classList.toggle("is-active", active);
-    const unavailable = key === "crime";
-    button.classList.toggle("is-unavailable", unavailable && !active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  });
+  const rainBtn = $("map-layer-rain");
+  const satBtn = $("map-layer-satellite");
+  if (rainBtn) {
+    rainBtn.classList.toggle("is-active", mapLayerActive.rain);
+    rainBtn.onclick = () => {
+      mapLayerActive.rain = !mapLayerActive.rain;
+      syncMapLayers();
+      renderMapLayerButtons();
+    };
+  }
+  if (satBtn) {
+    satBtn.classList.toggle("is-active", mapLayerActive.satellite);
+    satBtn.onclick = async () => {
+      mapLayerActive.satellite = !mapLayerActive.satellite;
+      await syncMapLayers();
+      renderMapLayerButtons();
+    };
+  }
+  // Wind button just toggles wind badge visibility
+  const windBtn = $("map-layer-wind");
+  const windBadge = $("map-wind-badge");
+  if (windBtn) {
+    windBtn.onclick = () => {
+      if (windBadge) windBadge.style.display = windBadge.style.display === "none" ? "" : "none";
+      windBtn.classList.toggle("is-active");
+    };
+  }
 }
 
 async function fetchRainViewerTileUrl() {
   const now = Date.now();
-  if (rainViewerState.tileUrl && now - rainViewerState.fetchedAt < 8 * 60 * 1000) {
+  if (rainViewerState.tileUrl && now - rainViewerState.fetchedAt < 5 * 60 * 1000) {
     return rainViewerState.tileUrl;
   }
 
@@ -2192,76 +2237,6 @@ async function ensureRadarLayer() {
   return mapLayers.radar;
 }
 
-function ensureNightLightsLayer() {
-  if (mapLayers.night) return mapLayers.night;
-  if (!window.L) return null;
-
-  mapLayers.night = window.L.tileLayer.wms("https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi", {
-    layers: "VIIRS_Black_Marble",
-    format: "image/png",
-    transparent: true,
-    opacity: 0.48,
-    attribution: "Night lights © NASA GIBS",
-    maxZoom: 12,
-  });
-  return mapLayers.night;
-}
-
-function epaMarkerTone(props) {
-  const serious = `${props.FAC_CURR_SNC_FLG || ""}`.toUpperCase() === "Y";
-  const count = num(props.CURRENT_VIO_CNT, 0);
-  if (serious || count >= 2) return { color: "#e74c3c", radius: 7 };
-  if (count >= 1) return { color: "#f1c40f", radius: 6 };
-  return { color: "#00f2ff", radius: 5 };
-}
-
-function ensureEpaLayer() {
-  if (mapLayers.epa) return mapLayers.epa;
-  if (!(window.L && window.L.esri)) return null;
-
-  mapLayers.epa = window.L.esri.featureLayer({
-    url: "https://echogeo.epa.gov/arcgis/rest/services/ECHO/Facilities/MapServer/0",
-    where: "CURRENT_VIO_CNT > 0 OR FAC_CURR_SNC_FLG = 'Y'",
-    fields: [
-      "FAC_NAME",
-      "FAC_CITY",
-      "FAC_STATE",
-      "FAC_CURR_SNC_FLG",
-      "CURRENT_VIO_CNT",
-      "FAC_3YR_COMPLIANCE_STATUS",
-      "FAC_PROGRAMS_IN_SNC",
-    ],
-    pointToLayer(geojson, latlng) {
-      const tone = epaMarkerTone(geojson.properties || {});
-      return window.L.circleMarker(latlng, {
-        radius: tone.radius,
-        color: "rgba(9, 12, 16, 0.92)",
-        weight: 1.6,
-        fillColor: tone.color,
-        fillOpacity: 0.88,
-        className: "epa-marker",
-      });
-    },
-  });
-
-  mapLayers.epa.bindPopup((layer) => {
-    const props = layer.feature?.properties || {};
-    const count = Math.round(num(props.CURRENT_VIO_CNT, 0));
-    const snc = `${props.FAC_CURR_SNC_FLG || ""}`.toUpperCase() === "Y" ? "Yes" : "No";
-    const programs = Math.round(num(props.FAC_PROGRAMS_IN_SNC, 0));
-    return `
-      <strong>${escapeHtml(props.FAC_NAME || "EPA facility")}</strong><br>
-      ${escapeHtml(props.FAC_CITY || "")}${props.FAC_STATE ? `, ${escapeHtml(props.FAC_STATE)}` : ""}<br>
-      Current violations: ${count}<br>
-      Significant noncompliance: ${snc}<br>
-      Programs in SNC: ${programs}<br>
-      3-year status: ${escapeHtml(props.FAC_3YR_COMPLIANCE_STATUS || "Unknown")}
-    `;
-  });
-
-  return mapLayers.epa;
-}
-
 function ensureWeatherMap() {
   if (weatherMap || !window.L) return weatherMap;
   const el = $("weather-map");
@@ -2278,99 +2253,78 @@ function ensureWeatherMap() {
     maxZoom: 19,
   }).addTo(weatherMap);
 
-  weatherMarker = window.L.circleMarker([MANUAL_MAP_LAT, MANUAL_MAP_LON], {
+  weatherMarker = window.L.circleMarker([CAPE_MAP_LAT, CAPE_MAP_LON], {
     radius: 7,
     color: "rgba(9, 12, 16, 0.92)",
     weight: 2,
     fillColor: "#00f2ff",
     fillOpacity: 0.95,
   }).addTo(weatherMap);
-  weatherMap.setView([MANUAL_MAP_LAT, MANUAL_MAP_LON], 10);
+  weatherMap.setView([CAPE_MAP_LAT, CAPE_MAP_LON], 10);
   renderMapLayerButtons();
   return weatherMap;
 }
 
 async function syncMapLayers() {
   if (!weatherMap) return;
-
-  const active = [];
-
-  if (mapLayerPrefs.radar) {
-    const radarLayer = await ensureRadarLayer();
-    if (radarLayer && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
-    if (radarLayer) active.push("Radar");
-  } else if (mapLayers.radar && weatherMap.hasLayer(mapLayers.radar)) {
-    weatherMap.removeLayer(mapLayers.radar);
+  const radarLayer = await ensureRadarLayer();
+  if (radarLayer) {
+    if (mapLayerActive.rain && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
+    else if (!mapLayerActive.rain && weatherMap.hasLayer(radarLayer)) weatherMap.removeLayer(radarLayer);
   }
-
-  if (mapLayerPrefs.night) {
-    const nightLayer = ensureNightLightsLayer();
-    if (nightLayer && !weatherMap.hasLayer(nightLayer)) nightLayer.addTo(weatherMap);
-    if (nightLayer) active.push("Night Lights");
-  } else if (mapLayers.night && weatherMap.hasLayer(mapLayers.night)) {
-    weatherMap.removeLayer(mapLayers.night);
+  const satLayer = await ensureSatelliteLayer();
+  if (satLayer) {
+    if (mapLayerActive.satellite && !weatherMap.hasLayer(satLayer)) satLayer.addTo(weatherMap);
+    else if (!mapLayerActive.satellite && weatherMap.hasLayer(satLayer)) weatherMap.removeLayer(satLayer);
   }
-
-  if (mapLayerPrefs.epa) {
-    const epaLayer = ensureEpaLayer();
-    if (epaLayer && !weatherMap.hasLayer(epaLayer)) epaLayer.addTo(weatherMap);
-    if (epaLayer) active.push("EPA Watch");
-  } else if (mapLayers.epa && weatherMap.hasLayer(mapLayers.epa)) {
-    weatherMap.removeLayer(mapLayers.epa);
-  }
-
-  let note = active.length
-    ? `${active.join(", ")} weather layer active.`
-    : "Base weather map active.";
-
-  if (mapLayerPrefs.crime) {
-    mapLayerPrefs.crime = false;
-    saveMapLayerPrefs();
-    note = `${note} Experimental overlays are disabled in the simplified weather view.`;
-  }
-
-  renderMapLayerButtons();
-  setMapLayerStatus(note);
 }
 
+// Default map location: Cape Canaveral Space Force Station, FL
+const CAPE_MAP_LAT = 28.2062;
+const CAPE_MAP_LON = -80.6874;
+
 function syncWeatherMapPosition(d) {
-  const map = ensureWeatherMap();
-  const fallback = $("map-fallback");
-  if (!map) {
-    if (fallback) fallback.style.display = "flex";
-    setMapLayerStatus("Map engine unavailable in this browser.");
-    return;
-  }
-
-  if (!hasLocationFix(d)) {
-    // Always show the map at the manual/default location — do not wait for a GPS fix
-    const defaultTarget = [MANUAL_MAP_LAT, MANUAL_MAP_LON];
-    if (fallback) fallback.style.display = "none";
-    if (weatherMarker) {
-      weatherMarker.setLatLng(defaultTarget);
-      weatherMarker.bindTooltip(`${escapeHtml(MANUAL_MAP_CITY)}<br>${MANUAL_MAP_LAT.toFixed(4)}, ${MANUAL_MAP_LON.toFixed(4)}`);
+    const map = ensureWeatherMap();
+    const fallback = $("map-fallback");
+    if (!map) {
+        if (fallback) fallback.style.display = "flex";
+        setMapLayerStatus("Map engine unavailable in this browser.");
+        return;
     }
+
+    // Always show the map — use device GPS when available, otherwise default to
+    // Cape Canaveral so live weather layers are visible without a GPS fix.
+    if (fallback) fallback.style.display = "none";
+
+    const lat = hasLocationFix(d) ? num(d.lat) : CAPE_MAP_LAT;
+    const lon = hasLocationFix(d) ? num(d.lon) : CAPE_MAP_LON;
+    const label = hasLocationFix(d)
+        ? (d.city || "SniffMaster location")
+        : "Cape Canaveral, FL (default)";
+    const target = [lat, lon];
+    if (weatherMarker) {
+        weatherMarker.setLatLng(target);
+        weatherMarker.bindTooltip(`${escapeHtml(label)}<br>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+    }
+
     const center = weatherMap.getCenter();
-    const drift = Math.abs(center.lat - MANUAL_MAP_LAT) + Math.abs(center.lng - MANUAL_MAP_LON);
-    if (drift > 0.04) weatherMap.setView(defaultTarget, 10);
-    setMapLayerStatus(`Showing manual location: ${MANUAL_MAP_CITY}`);
-    return;
-  }
+    const drift = Math.abs(center.lat - lat) + Math.abs(center.lng - lon);
+    if (drift > 0.04) {
+        weatherMap.setView(target, 11);
+    }
 
-  if (fallback) fallback.style.display = "none";
-  const lat = num(d.lat);
-  const lon = num(d.lon);
-  const target = [lat, lon];
-  if (weatherMarker) {
-    weatherMarker.setLatLng(target);
-    weatherMarker.bindTooltip(`${escapeHtml(d.city || "SniffMaster location")}<br>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
-  }
-
-  const center = weatherMap.getCenter();
-  const drift = Math.abs(center.lat - lat) + Math.abs(center.lng - lon);
-  if (drift > 0.04) {
-    weatherMap.setView(target, 11);
-  }
+    // Update wind badge on map overlay
+    const windBadge = $("map-wind-badge");
+    if (windBadge) {
+        const windSpd = num(d.windSpeed || d.weatherWindSpeed, NaN);
+        const windDir = d.windDir || d.weatherWindDir || "";
+        if (Number.isFinite(windSpd) && windSpd > 0) {
+            windBadge.textContent = `💨 ${Math.round(windSpd)} mph${windDir ? ` ${windDir}` : ""}`;
+            windBadge.style.display = "";
+        } else {
+            windBadge.style.display = "none";
+        }
+    }
 }
 
 function weatherInsightText(d) {
@@ -2410,6 +2364,51 @@ function defaultWeatherBriefing(d) {
   };
 }
 
+function renderConditionsSummary(d, briefing) {
+  const summaryEl = $("conditions-summary-text");
+  const modeEl = $("conditions-summary-mode");
+  if (!summaryEl) return;
+
+  const iaq = num(d.iaq, NaN);
+  const co2 = num(d.co2, NaN);
+  const tempF = num(d.tempF, NaN);
+  const humidity = num(d.humidity, NaN);
+  const outdoorAqi = num(d.outdoorAqi, NaN);
+
+  const indoorParts = [];
+  if (Number.isFinite(iaq)) {
+    indoorParts.push(`IAQ ${Math.round(iaq)}${iaq < 50 ? " (good)" : iaq < 100 ? " (moderate)" : " (elevated)"}`);
+  }
+  if (Number.isFinite(co2)) {
+    indoorParts.push(`CO₂eq ${Math.round(co2)} ppm${co2 > 1000 ? " ⚠" : ""}`);
+  }
+  if (Number.isFinite(tempF) && Number.isFinite(humidity)) {
+    indoorParts.push(`${Math.round(tempF)}°F · ${Math.round(humidity)}% RH`);
+  }
+  if (Number.isFinite(outdoorAqi)) {
+    indoorParts.push(`Outdoor AQI ${Math.round(outdoorAqi)}`);
+  }
+
+  if (briefing?.briefing) {
+    const indoor = indoorParts.length ? `Indoor: ${indoorParts.join(", ")}. ` : "";
+    summaryEl.textContent = `${indoor}${briefing.briefing}`;
+    summaryEl.dataset.snmFilled = "1";
+    if (modeEl) {
+      modeEl.textContent = briefing.mode === "openai" ? "Smart brief · OpenAI" : "Deterministic · Local forecast logic";
+    }
+  } else if (indoorParts.length) {
+    summaryEl.textContent = `${indoorParts.join(" · ")}. Forecast data is still loading.`;
+    summaryEl.dataset.snmFilled = "1";
+    if (modeEl) modeEl.textContent = "Sensor data only";
+  } else {
+    // Only reset to placeholder if never populated with real data
+    if (!summaryEl.dataset.snmFilled) {
+      summaryEl.textContent = "Conditions summary will appear once the dashboard has a weather snapshot.";
+      if (modeEl) modeEl.textContent = "Awaiting data";
+    }
+  }
+}
+
 function renderWeatherForecast(d, briefing) {
   const payload = briefing || defaultWeatherBriefing(d);
   const summaryEl = $("weather-forecast-summary");
@@ -2421,7 +2420,7 @@ function renderWeatherForecast(d, briefing) {
   if (textEl) textEl.textContent = payload.briefing || defaultWeatherBriefing(d).briefing;
   if (modeEl) {
     modeEl.textContent = payload.mode === "openai"
-      ? "Model-generated local area brief"
+      ? "Smart brief · OpenAI"
       : "Deterministic local forecast logic";
   }
   if (summaryEl) summaryEl.textContent = payload.summary || "Forecast guidance pending";
@@ -2432,26 +2431,29 @@ function renderWeatherForecast(d, briefing) {
   if (!gridEl) return;
   const forecast = Array.isArray(payload.forecast) ? payload.forecast.slice(0, 3) : [];
   if (!forecast.length) {
-    gridEl.innerHTML = `
-      <div class="forecast-tile">
-        <div class="forecast-day">Day 1</div>
-        <div class="forecast-condition">Awaiting forecast</div>
-        <div class="forecast-temps">-- / --</div>
-        <div class="forecast-meta">Precip -- · Wind --</div>
-      </div>
-      <div class="forecast-tile">
-        <div class="forecast-day">Day 2</div>
-        <div class="forecast-condition">Awaiting forecast</div>
-        <div class="forecast-temps">-- / --</div>
-        <div class="forecast-meta">Precip -- · Wind --</div>
-      </div>
-      <div class="forecast-tile">
-        <div class="forecast-day">Day 3</div>
-        <div class="forecast-condition">Awaiting forecast</div>
-        <div class="forecast-temps">-- / --</div>
-        <div class="forecast-meta">Precip -- · Wind --</div>
-      </div>
-    `;
+    // Only reset to placeholder state if tiles have never been populated with real data
+    if (!gridEl.dataset.snmFilled) {
+      gridEl.innerHTML = `
+        <div class="forecast-tile">
+          <div class="forecast-day">Day 1</div>
+          <div class="forecast-condition">Awaiting forecast</div>
+          <div class="forecast-temps">-- / --</div>
+          <div class="forecast-meta">Precip -- · Wind --</div>
+        </div>
+        <div class="forecast-tile">
+          <div class="forecast-day">Day 2</div>
+          <div class="forecast-condition">Awaiting forecast</div>
+          <div class="forecast-temps">-- / --</div>
+          <div class="forecast-meta">Precip -- · Wind --</div>
+        </div>
+        <div class="forecast-tile">
+          <div class="forecast-day">Day 3</div>
+          <div class="forecast-condition">Awaiting forecast</div>
+          <div class="forecast-temps">-- / --</div>
+          <div class="forecast-meta">Precip -- · Wind --</div>
+        </div>
+      `;
+    }
     return;
   }
 
@@ -2463,6 +2465,7 @@ function renderWeatherForecast(d, briefing) {
       <div class="forecast-meta">Precip ${Math.round(num(day.precipChance, 0))}% · Wind ${Math.round(num(day.windMph, 0))} mph</div>
     </div>
   `).join("");
+  gridEl.dataset.snmFilled = "1";
 }
 
 async function ensureWeatherBriefing(d) {
@@ -2478,22 +2481,15 @@ async function ensureWeatherBriefing(d) {
 
   if (weatherBriefingState.pending && weatherBriefingState.key === key) return;
 
-  weatherBriefingState.key = key;
   weatherBriefingState.pending = (async () => {
     try {
       const res = await fetch("/api/weather-briefing", { cache: "no-store" });
-      if (res.status === 204) {
-        weatherBriefingState.data = defaultWeatherBriefing(d);
-      } else if (!res.ok) {
-        throw new Error(`weather-briefing ${res.status}`);
-      } else {
-        weatherBriefingState.data = await res.json();
-      }
+      if (!res.ok) throw new Error(`weather-briefing ${res.status}`);
+      weatherBriefingState.data = await res.json();
       weatherBriefingState.fetchedAt = Date.now();
+      weatherBriefingState.key = key;
     } catch (_) {
-      if (!weatherBriefingState.data) {
-        weatherBriefingState.data = defaultWeatherBriefing(d);
-      }
+      // silent — render will fall back to snapshot fields
     } finally {
       weatherBriefingState.pending = null;
     }
@@ -2503,13 +2499,112 @@ async function ensureWeatherBriefing(d) {
       const briefing = weatherBriefingState.data;
       lastData = mergeBriefingIntoSnapshot(lastData, briefing);
       renderWeatherForecast(lastData, briefing);
+      renderConditionsSummary(lastData, briefing);
       renderWeatherIntel(lastData);
       $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(lastData, briefing));
     }
   })();
 }
 
+const OCCUPANCY_BRIEFING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function renderOccupancyCard(payload) {
+  if (!payload) return;
+  const index = num(payload.occupancyIndex, NaN);
+  const deviceCount = num(payload.deviceCount, NaN);
+
+  setHeaderPill("occupancy-badge", payload.densityLabel || "Space density", "neutral");
+
+  const indexEl = $("occupancy-index-value");
+  if (indexEl) indexEl.textContent = Number.isFinite(index) ? `${Math.round(index)}` : "--";
+
+  const labelEl = $("occupancy-density-label");
+  if (labelEl) labelEl.textContent = payload.densityLabel || "Waiting";
+
+  const noteEl = $("occupancy-density-note");
+  if (noteEl) noteEl.textContent = payload.densityNote || "Space density will appear once scan data arrives.";
+
+  const fillEl = $("occupancy-index-fill");
+  if (fillEl && Number.isFinite(index)) {
+    fillEl.style.width = `${clamp(index, 0, 100)}%`;
+    fillEl.style.background = index < 25 ? "var(--mint)"
+      : index < 55 ? "var(--lime)"
+      : index < 80 ? "var(--amber)"
+      : "var(--red)";
+  }
+
+  const rssiEl = $("occupancy-rssi-badge");
+  if (rssiEl) {
+    const rssi = num(payload.avgRssi, NaN);
+    rssiEl.textContent = Number.isFinite(rssi) ? `${Math.round(rssi)} dBm` : "--";
+  }
+
+  const countEl = $("occupancy-device-count");
+  if (countEl) {
+    countEl.textContent = Number.isFinite(deviceCount)
+      ? `${deviceCount} device${deviceCount !== 1 ? "s" : ""} detected`
+      : "Waiting for first scan.";
+  }
+
+  const trendEl = $("occupancy-trend-note");
+  if (trendEl && payload.trend) {
+    const { direction, delta } = payload.trend;
+    const sign = delta > 0 ? "+" : "";
+    trendEl.textContent = direction === "stable"
+      ? "Occupancy is holding steady."
+      : `Occupancy is ${direction} (${sign}${Math.round(delta)} points since last read).`;
+  }
+
+  const briefingEl = $("occupancy-briefing");
+  if (briefingEl && payload.briefing) briefingEl.textContent = payload.briefing;
+
+  const sourceEl = $("occupancy-source");
+  if (sourceEl) {
+    const modeNote = payload.mode === "openai" ? "OpenAI occupancy insight" : "deterministic occupancy logic";
+    sourceEl.textContent = `Source: device passive scan · MAC deduplication · 30-second rolling window · ${modeNote}`;
+  }
+
+  const chartEl = $("occupancy-bar-chart");
+  if (chartEl && Array.isArray(payload.history) && payload.history.length > 0) {
+    const history = payload.history.slice(0, 24).reverse();
+    const maxIdx = Math.max(...history.map((h) => num(h.occupancyIndex, 0)), 1);
+    chartEl.innerHTML = `<div class="occupancy-bar-grid">${history.map((h) => {
+      const pct = clamp((num(h.occupancyIndex, 0) / maxIdx) * 100, 2, 100);
+      const color = pct > 80 ? "var(--red)" : pct > 55 ? "var(--amber)" : pct > 25 ? "var(--lime)" : "var(--mint)";
+      return `<div class="occupancy-bar-col" title="Index ${Math.round(num(h.occupancyIndex, 0))}">
+        <div class="occupancy-bar-fill" style="height:${pct}%;background:${color}"></div>
+      </div>`;
+    }).join("")}</div>`;
+  }
+}
+
+async function ensureOccupancyBriefing() {
+  const cached = occupancyBriefingState.data
+    && Date.now() - occupancyBriefingState.fetchedAt < OCCUPANCY_BRIEFING_TTL_MS;
+  if (cached) {
+    renderOccupancyCard(occupancyBriefingState.data);
+    return;
+  }
+  if (occupancyBriefingState.pending) return;
+
+  occupancyBriefingState.pending = (async () => {
+    try {
+      const res = await fetch("/api/occupancy-briefing", { cache: "no-store" });
+      if (res.status === 204) return;
+      if (!res.ok) throw new Error(`occupancy-briefing ${res.status}`);
+      occupancyBriefingState.data = await res.json();
+      occupancyBriefingState.fetchedAt = Date.now();
+      renderOccupancyCard(occupancyBriefingState.data);
+    } catch (_) {
+      // silent — card stays in standby state
+    } finally {
+      occupancyBriefingState.pending = null;
+    }
+  })();
+}
+
 const LAUNCH_TTL_MS = 60 * 60 * 1000; // 1 hour
+const APOD_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 async function ensureLaunchData() {
   // Use fetchedAt (not data) as the cache sentinel so an empty-launch response also
@@ -2531,11 +2626,7 @@ async function ensureLaunchData() {
             lastData = { ...lastData, launches: launchState.data };
             renderSpaceCard(lastData);
             renderLaunchDeck(lastData);
-            const capeCount = launchState.data.filter((l) => l.isCape).length;
-            const badgeText = capeCount
-              ? `${capeCount} Cape · ${launchState.data.length} total`
-              : `${launchState.data.length} upcoming`;
-            setHeaderPill("launch-badge", badgeText, "good");
+            setHeaderPill("launch-badge", `${launchState.data.length} Cape launches`, "good");
           }
         }
       }
@@ -2547,28 +2638,25 @@ async function ensureLaunchData() {
   })();
 }
 
-const OCCUPANCY_BRIEFING_TTL_MS = 5 * 60 * 1000; // refresh every 5 minutes
-
-async function ensureOccupancyBriefing() {
-  const cached = occupancyBriefingState.data
-    && Date.now() - occupancyBriefingState.fetchedAt < OCCUPANCY_BRIEFING_TTL_MS;
+async function ensureApod() {
+  const cached = apodState.fetchedAt > 0 && Date.now() - apodState.fetchedAt < APOD_TTL_MS;
   if (cached) return;
-  if (occupancyBriefingState.pending) return;
+  if (apodState.pending) return;
 
-  occupancyBriefingState.pending = (async () => {
+  apodState.pending = (async () => {
     try {
-      const res = await fetch("/api/occupancy-briefing", { cache: "no-store" });
-      if (res.status === 204) return; // no BLE data yet
-      if (!res.ok) throw new Error(`occupancy-briefing ${res.status}`);
-      occupancyBriefingState.data = await res.json();
-      occupancyBriefingState.fetchedAt = Date.now();
+      const res = await fetch("/api/apod", { cache: "no-store" });
+      if (res.ok) {
+        const json = await res.json();
+        apodState.fetchedAt = Date.now();
+        apodState.data = json;
+        renderApod(json);
+      }
     } catch (_) {
-      // silent — render will fall back to snapshot fields
+      // silent — non-critical panel
     } finally {
-      occupancyBriefingState.pending = null;
+      apodState.pending = null;
     }
-
-    if (lastData) renderOccupancyCard(lastData);
   })();
 }
 
@@ -3006,15 +3094,15 @@ function broOpening(d) {
   const cfiPercent = officeCfiPercent(d);
   const vtrLevel = officeVtrLevel(d);
 
-  if (vtrLevel >= 2) return "Straight read: this room is dry, stale, and starting to feel like shared exhaust. Fix the air before people feel it even more.";
-  if (cfiPercent < 60) return "Straight read: the room is dragging focus. It is not the team, it is the air.";
+  if (vtrLevel >= 2) return `The room air feels thick and recycled. Humidity and stagnation are stacking against you — this is the kind of air that lingers on people's clothes. Ventilation would make an immediate difference.`;
+  if (cfiPercent < 60) return `CO₂ is climbing and it shows. The air is subtly dull right now — not dangerous, but the kind of condition that quietly erodes focus. Moving some air through would help.`;
   if (bioPeak >= 60) return hasConfidentPrimary(d)
-    ? `Straight read: something biological is driving the room right now, and ${primary} is leading the tape.`
-    : "Straight read: something biological is driving the room right now, even if the classifier is not calling one clean winner.";
-  if (score >= 75) return `Straight read: the room is in rough shape and ${primary} is wearing most of it.`;
-  if (score >= 50) return `Straight read: not catastrophic, but the air is working against the room and ${primary} keeps showing up in the tape.`;
-  if (score >= 25) return `Straight read: the room is mostly holding form, though ${primary} is still hanging around the edges.`;
-  return "Straight read: the room is in a good place. Air is clean, calm, and not asking for attention.";
+    ? `Something biological is leading the room right now — ${primary} is the most likely candidate. The biological channels are elevated and the classifier agrees. Time to ventilate.`
+    : `Biological signals are elevated across the board. The classifier is not committing to a single odor class, but the room air is carrying something. A window or fan would help it clear.`;
+  if (score >= 75) return `The room is carrying a meaningful air load right now, and ${primary} keeps appearing in the signal. Conditions are not yet critical, but trending in the wrong direction.`;
+  if (score >= 50) return `Air quality is in the moderate range — not alarming, but worth watching. ${primary} is the strongest present signal. Good time to consider opening a window before it builds.`;
+  if (score >= 25) return `The room is mostly clean with a light background presence of ${primary}. Conditions are stable and no action is needed right now.`;
+  return `The room is in good shape. Air is calm, clean, and not asking for attention. Conditions are favorable.`;
 }
 
 function broPlayCall(d) {
@@ -3026,13 +3114,13 @@ function broPlayCall(d) {
   const vtrLevel = officeVtrLevel(d);
   const cfiPercent = officeCfiPercent(d);
 
-  if (vtrLevel >= 2) return "Next move: bring in fresh air, add filtration if you have it, and stop letting the room marinate in shared exhale.";
-  if (cfiPercent < 60) return "Next move: fix the air first. Lower CO2 and the room will feel sharper without touching anything else.";
-  if (bioPeak >= 55) return "Next move: crack a window, hit the fan, clear the evidence, and give the room a proper reset.";
-  if (co2 >= 1100 && (outdoorAqi === 0 || outdoorAqi <= 80)) return "Next move: CO2 is running hot. Air the place out and let the room breathe for a minute.";
-  if (outdoorAqi > 0 && outdoorAqi <= 50 && num(d.airScore) >= 35) return "Next move: outside air is friendlier than inside right now. Open the window and take the easy win.";
-  if (hasConfidentPrimary(d) && (primary.includes("laundry") || primary.includes("citrus") || primary.includes("perfume"))) return "Next move: enjoy the clean-air flex, but maybe do not overdo the fragrance victory lap.";
-  return "Next move: hold the line, keep an eye on the trend, and see whether the room settles or drifts.";
+  if (vtrLevel >= 2) return "Bring in fresh air, add filtration if available, and stop the room from marinating in stale exhale.";
+  if (cfiPercent < 60) return "Lower CO₂ first — the room will feel sharper without changing anything else.";
+  if (bioPeak >= 55) return "Open a window, run a fan, and give the room a proper reset.";
+  if (co2 >= 1100 && (outdoorAqi === 0 || outdoorAqi <= 80)) return "CO₂ is elevated. Air the space out and let it breathe for a few minutes.";
+  if (outdoorAqi > 0 && outdoorAqi <= 50 && num(d.airScore) >= 35) return "Outside air is cleaner than inside right now. Opening a window is the easy call.";
+  if (hasConfidentPrimary(d) && (primary.includes("laundry") || primary.includes("citrus") || primary.includes("perfume"))) return "Room is fresh. No action needed — the air is carrying a positive signature.";
+  return "Hold steady and monitor the trend. Conditions look stable.";
 }
 
 function buildBroSummary(d) {
@@ -3047,22 +3135,22 @@ function buildBroReport(d) {
   const cfiPercent = officeCfiPercent(d);
   const vtrLabel = officeVtrLabel(d);
 
-  lines.push("--- QUICK READ ---");
+  lines.push("ROOM CONDITION");
   lines.push(buildBroSummary(d));
   lines.push("");
   if (sniff) {
-    lines.push("--- LIVE ALERT ---");
+    lines.push("LIVE ALERT");
     lines.push(`Priority sulfur post just landed: ${sniff.label} at ${Math.round(num(sniff.vsc_conf))}% (${fmtAge(sniff.receivedAt)}).`);
     lines.push("");
   }
-  lines.push("--- ROOM SNAPSHOT ---");
+  lines.push("CURRENT READINGS");
   lines.push(`Primary lead: ${currentPrimary(d, "No dominant odor class")}`);
   lines.push(`Tier: ${smellTierLabel(num(d.tier))} (${num(d.tier)}/5)`);
   lines.push(`Core stats: Score ${Math.round(num(d.airScore))}/100 | IAQ ${Math.round(num(d.iaq))} | VOC ${num(d.voc).toFixed(2)} | dVOC ${fmtSigned(d.dVoc, 2)} | CO2 ${Math.round(num(d.co2))}`);
   lines.push(`Office vitality: Focus ${cfiPercent}% (${officeCfiBand(d)}) | Transmission risk ${vtrLabel}`);
   lines.push(`Bio stack: Fart ${signals.fart}% | Sulfur ${signals.sulfur}% | VSC proxy ${Math.round(vscProxyConfidence(d))}% | Garbage ${signals.garbage}% | Pet ${signals.pet}%`);
   lines.push("");
-  lines.push("--- WHAT STANDS OUT ---");
+  lines.push("SIGNAL BREAKDOWN");
   if (odors.length) {
     lines.push(`Top mix: ${odors.map((odor) => `${odor.name} ${odor.score}%`).join(" | ")}`);
   } else {
@@ -3073,7 +3161,7 @@ function buildBroReport(d) {
   const melodyReason = `${d.lastMelodyReason || ""}`.trim();
   lines.push(`Audio cue: ${melodyTitle}${melodyReason && melodyTitle !== "none queued" ? ` · ${melodyReason}` : ""}`);
   lines.push("");
-  lines.push("--- NEXT MOVE ---");
+  lines.push("RECOMMENDED ACTION");
   lines.push(broPlayCall(d));
   return lines.join("\n");
 }
@@ -3206,35 +3294,65 @@ async function ensureDadabase(forceRefresh = false) {
   return dadabaseState.pending;
 }
 
-function renderMissionHistory(d) {
-  const title = $("mission-history-title");
-  const context = $("mission-history-context");
-  const date = $("mission-history-date");
-  const list = $("mission-history-list");
-  if (!title || !context || !date || !list) return;
+function renderMissionHistory() {
+  // This function is kept as a no-op for compatibility;
+  // the history card has been replaced by the APOD card.
+}
 
-  const entries = daybookEntriesForSnapshot(d);
-  date.textContent = `Space Coast daybook · ${snapshotMonthDayLabel(d)}`;
-  if (!entries.length) {
-    title.textContent = "No Space Coast history entry is loaded for this date yet.";
-    context.textContent = "The dashboard will fall back to the live device feed once a history note is available.";
-    list.innerHTML = '<div class="history-empty">No additional milestones are listed right now.</div>';
-    setHeaderPill("history-badge", "No entry", "neutral");
+const MAX_APOD_EXPLANATION_LENGTH = 400;
+
+function renderApod(data) {
+  const apodData = data || apodState.data;
+  const dateEl = $("apod-date");
+  const titleEl = $("apod-title");
+  const imageWrap = $("apod-image-wrap");
+  const explanationEl = $("apod-explanation");
+  const copyrightEl = $("apod-copyright");
+  if (!dateEl && !titleEl) return;
+
+  if (!apodData || (!apodData.url && !apodData.videoUrl && !apodData.explanation)) {
+    if (dateEl) dateEl.textContent = "Loading today's picture...";
+    setHeaderPill("history-badge", "Loading", "neutral");
     return;
   }
 
-  title.textContent = `${entries[0].year} · ${entries[0].title}`;
-  context.textContent = entries[0].detail;
-  list.innerHTML = entries.map((entry) => `
-    <article class="history-row">
-      <div class="history-year">${entry.year}</div>
-      <div>
-        <div class="history-row-title">${entry.title}</div>
-        <div class="history-row-detail">${entry.detail}</div>
-      </div>
-    </article>
-  `).join("");
-  setHeaderPill("history-badge", `${entries.length} milestones`, "good");
+  const dateLabel = apodData.date
+    // Use noon UTC so the date always renders correctly regardless of browser timezone
+    ? new Date(`${apodData.date}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+    : "";
+  if (dateEl) dateEl.textContent = dateLabel || "NASA APOD";
+  if (titleEl) {
+    const apodUrl = apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
+    titleEl.innerHTML = `<a href="${escapeHtml(apodUrl)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-underline-offset:3px;">${escapeHtml(apodData.title || "Astronomy Picture of the Day")}</a>`;
+  }
+
+  if (imageWrap) {
+    if (apodData.mediaType === "video" && apodData.videoUrl) {
+      const safeUrl = escapeHtml(apodData.videoUrl);
+      imageWrap.innerHTML = `<iframe src="${safeUrl}" title="${escapeHtml(apodData.title || "APOD Video")}" allowfullscreen loading="lazy"></iframe>`;
+    } else if (apodData.url) {
+      const imgSrc = apodData.url;
+      const hdSrc = apodData.hdurl || imgSrc;
+      const apodUrl = apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
+      imageWrap.innerHTML = `<a href="${escapeHtml(apodUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(apodData.title || "Astronomy Picture of the Day")}" loading="lazy" onerror="this.onerror=null;this.src='${escapeHtml(hdSrc || imgSrc)}'"></a>`;
+    } else {
+      imageWrap.innerHTML = '<div class="apod-placeholder">Image unavailable — <a href="https://apod.nasa.gov/apod/" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>';
+    }
+  }
+
+  if (explanationEl) {
+    const text = apodData.explanation || "";
+    const trimmed = text.length > MAX_APOD_EXPLANATION_LENGTH
+      ? `${text.slice(0, MAX_APOD_EXPLANATION_LENGTH).trim()}…`
+      : text;
+    explanationEl.textContent = trimmed;
+  }
+
+  if (copyrightEl) {
+    copyrightEl.textContent = apodData.copyright ? `© ${apodData.copyright.trim()}` : "";
+  }
+
+  setHeaderPill("history-badge", apodData.title ? apodData.title.slice(0, 28) : "NASA APOD", "good");
 }
 function renderStructuredReport(text) {
   return formatDiagnosticReport(text);
@@ -3357,7 +3475,72 @@ function renderIntelDrawer(d) {
   $("intel-vsc-range").textContent = `${vsc}% sulfur/VSC proxy. This is a classifier-driven sulfur watch channel, not a molecule-specific lab instrument.`;
   $("intel-rqi-range").textContent = `${room}/100 · ${airScoreCondition(room)}. This custom room index treats lower values as cleaner conditions.`;
   $("intel-gasr-range").textContent = `${fmtGasR(d.gasR)}Ω · ${gasResistanceSummary(d.gasR)}`;
-  $("intel-copy").textContent = `Use this panel for short definitions. Direct signals describe the air itself; derived metrics and classifier channels describe how the system interprets it.`;
+  $("intel-copy").textContent = `These readings interpret the air directly. Lower IAQ and VOC values indicate cleaner conditions. High gas resistance (Gas R) typically means cleaner air.`;
+}
+
+function renderCauseCard(d) {
+  const score = num(d.airScore);
+  const iaq = num(d.iaq);
+  const co2 = num(d.co2);
+  const voc = num(d.voc);
+  const humidity = num(d.humidity);
+  const outdoorAqi = num(d.outdoorAqi);
+  const bio = fartSignals(d);
+  const bioPeak = Math.max(bio.fart, bio.sulfur, bio.garbage, bio.pet);
+  const cfiPercent = officeCfiPercent(d);
+  const vtrLevel = officeVtrLevel(d);
+  const primary = currentPrimary(d, "background");
+
+  let driverText = "No dominant stressor";
+  let driverNote = "Air conditions appear stable across all monitored channels.";
+  let actionText = "No action needed — conditions are favorable.";
+  let badgeTone = "good";
+
+  if (bioPeak >= 55) {
+    driverText = "Biological odor event";
+    driverNote = `Active biological signature detected (${primary}). Odor channels are elevated above background.`;
+    actionText = "Open a window or run a fan to clear the air.";
+    badgeTone = "danger";
+  } else if (vtrLevel >= 2) {
+    driverText = "Air stagnation";
+    driverNote = "The room air is recycled and stale. Humidity and CO₂ are stacking together.";
+    actionText = "Ventilate now — fresh air will make an immediate difference.";
+    badgeTone = "warn";
+  } else if (cfiPercent < 60) {
+    driverText = "CO₂ saturation";
+    driverNote = `CO₂ is at ${Math.round(co2)} ppm, which is suppressing air quality and focus.`;
+    actionText = "Introduce fresh air to bring CO₂ below 1000 ppm.";
+    badgeTone = "warn";
+  } else if (score >= 65) {
+    driverText = `Elevated ${primary}`;
+    driverNote = `Room quality index is ${Math.round(score)}/100 — the room is carrying a meaningful air load.`;
+    actionText = "Consider ventilating to help the room recover.";
+    badgeTone = "warn";
+  } else if (outdoorAqi > 100) {
+    driverText = "Poor outdoor air quality";
+    driverNote = `Outdoor AQI is ${Math.round(outdoorAqi)}, which limits ventilation options.`;
+    actionText = "Keep windows closed and monitor indoor conditions.";
+    badgeTone = "warn";
+  } else if (score >= 35) {
+    driverText = `Mild ${primary} presence`;
+    driverNote = "Light air load is present. Conditions are manageable but worth watching.";
+    actionText = "Monitor trend — no immediate action required.";
+    badgeTone = "neutral";
+  }
+
+  const airFactor = iaq < 50 ? "Clean" : iaq < 100 ? "Mild" : iaq < 150 ? "Moderate" : iaq < 200 ? "Elevated" : "High";
+  const occFactor = co2 < 700 ? "Low / empty" : co2 < 900 ? "Light occupancy" : co2 < 1200 ? "Moderate occupancy" : "High occupancy";
+  const outdoorFactor = outdoorAqi <= 0 ? "Pending" : outdoorAqi <= 50 ? "Good" : outdoorAqi <= 100 ? "Moderate" : "Poor";
+  const ventFactor = voc < 0.5 && co2 < 800 ? "Well ventilated" : voc < 1.5 && co2 < 1000 ? "Adequate" : "Restricted";
+
+  setHeaderPill("cause-badge", driverText, badgeTone);
+  const pd = $("cause-primary-driver"); if (pd) pd.textContent = driverText;
+  const pn = $("cause-primary-note"); if (pn) pn.textContent = driverNote;
+  const ca = $("cause-action"); if (ca) ca.textContent = actionText;
+  const fa = $("cause-factor-air"); if (fa) fa.textContent = airFactor;
+  const fo = $("cause-factor-occ"); if (fo) fo.textContent = occFactor;
+  const fod = $("cause-factor-outdoor"); if (fod) fod.textContent = outdoorFactor;
+  const fv = $("cause-factor-vent"); if (fv) fv.textContent = ventFactor;
 }
 
 function setHeaderPill(id, text, tone = "neutral") {
@@ -3419,13 +3602,36 @@ function renderHero(d) {
   $("hero-calibration").textContent = calibration.short;
   $("hero-primary").textContent = currentPrimary(d);
   $("hero-summary").textContent = heroSummaryText(d);
-  $("hero-subtitle").textContent = "Real-time odor intelligence from a BME688-based sensor stack.";
+  const subtitleParts = [];
+  if (num(d.receivedAt)) {
+    const age = Date.now() - num(d.receivedAt);
+    if (age < 30000) subtitleParts.push("Live");
+    else if (age < STALE_MS) subtitleParts.push("Active");
+  }
+  if (num(d.iaqAcc) >= 3) subtitleParts.push("Sensor calibrated");
+  else if (num(d.iaqAcc) > 0) subtitleParts.push(`Calibrating (${num(d.iaqAcc)}/3)`);
+  const subtitleLine = subtitleParts.length
+    ? subtitleParts.join(" · ")
+    : "Your space, monitored continuously.";
+  $("hero-subtitle").textContent = subtitleLine;
   $("hero-tier").textContent = `${smellTierLabel(num(d.tier))} · Tier ${num(d.tier)}/5`;
   $("hero-trends").textContent = `IAQ ${d.iaqTrend || "steady"} | VOC ${d.vocTrend || "steady"}`;
   $("hero-brief-title").textContent = `${briefLead} · ${Math.round(score)}/100 room index`;
   $("hero-brief-primary").textContent = currentPrimary(d, "No dominant odor");
   $("hero-brief-next").textContent = `${windowCall(d)} ${briefTone}`.trim();
   $("hero-brief-status").textContent = statusBits.join(" · ");
+
+  const causeParts = [];
+  if (num(d.voc) > 1.5) causeParts.push("elevated VOC activity");
+  if (num(d.co2) > 1000) causeParts.push("CO₂ buildup from occupancy");
+  if (num(d.iaq) > 150) causeParts.push("deteriorating air quality index");
+  if (num(d.humidity) > 70) causeParts.push("high humidity");
+  if (num(d.outdoorAqi) > 100) causeParts.push("poor outdoor air");
+  if (activeSniff) causeParts.push("active odor event detected");
+  const causeText = causeParts.length
+    ? `Led by ${causeParts.slice(0, 2).join(" and ")}.`
+    : "Air conditions appear stable — no dominant stressor.";
+  $("hero-cause") && ($("hero-cause").textContent = causeText);
   const melodyTagReason = `${d.lastMelodyReason || ""}`.trim();
   const melodyTitle = `${d.lastMelody || ""}`.trim();
   $("hero-melody").textContent = normalizeMelodyTitle(melodyTitle)
@@ -3453,7 +3659,6 @@ function renderStatusStrip(d) {
   $("status-updated").textContent = num(d.receivedAt) ? `${fmtAge(d.receivedAt)} · ${fmtStamp(d.receivedAt)}` : "No snapshot yet";
   setHeaderPill("status-badge", isLive ? "Live feed" : (hasSnapshot ? "Feed catching up" : "Awaiting first sync"), isLive ? "good" : "warn");
   $("header-calibration").textContent = calibration.short;
-  $("header-presence").textContent = headerPresenceText(d);
 }
 
 function renderTelemetry(d) {
@@ -3467,8 +3672,9 @@ function renderTelemetry(d) {
   $("v-uptime-card").textContent = fmtUptime(d.uptime).replace(/^Up /, "");
   $("header-network").textContent = headerNetworkText(d);
   $("header-city").textContent = d.city || "Location syncing";
+  const outdoorTempStr = Number.isFinite(num(d.feelsLikeF, NaN)) ? ` · ${num(d.feelsLikeF).toFixed(0)}F` : "";
   $("header-weather").textContent = d.weatherCondition
-    ? `${d.weatherCondition} · ${num(d.tempF).toFixed(0)}F`
+    ? `${d.weatherCondition}${outdoorTempStr}`
     : "Weather pending";
   $("header-time").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
   $("header-date").textContent = fmtLocationDate(d.receivedAt, d.utcOffsetSec);
@@ -3538,8 +3744,6 @@ function renderOfficeCard(d) {
   const comfort = officeComfortState(d);
   const collab = officeCollaborationState(d);
   const odor = officeOdorState(d);
-  const fatigue = officeFatigueProfile(d);
-  const persistence = officePersistenceProfile(d);
   $("office-attention-title").textContent = attention.title;
   $("office-attention-note").textContent = attention.note;
   $("office-comfort-title").textContent = comfort.title;
@@ -3548,11 +3752,6 @@ function renderOfficeCard(d) {
   $("office-collab-note").textContent = collab.note;
   $("office-odor-title").textContent = odor.title;
   $("office-odor-note").textContent = odor.note;
-  $("office-fatigue-title").textContent = fatigue.title;
-  $("office-fatigue-note").textContent = fatigue.note;
-  $("office-persistence-title").textContent = persistence.title;
-  $("office-persistence-note").textContent = persistence.note;
-  $("office-room-load").textContent = `${Math.round(num(d.airScore))}/100`;
   $("office-briefing").textContent = officeBriefing(d);
 
   const officeTone = vtrLevel >= 2 ? "danger" : cfiPercent < 60 || vtrLevel === 1 ? "warn" : "good";
@@ -3560,107 +3759,6 @@ function renderOfficeCard(d) {
     ? `${vtrLabel} · Focus ${cfiPercent}%`
     : `Focus ${cfiPercent}% · ${vtrLabel}`;
   setHeaderPill("office-badge", officeBadgeText, officeTone);
-}
-
-function renderOccupancyCard(d) {
-  // Prefer data from the dedicated occupancy briefing API; fall back to snapshot fields
-  const briefingData = occupancyBriefingState.data;
-  const index    = clamp(num(briefingData?.occupancyIndex ?? d?.bleOccupancyIndex), 0, 100);
-  const devices  = Math.max(0, num(briefingData?.deviceCount ?? d?.bleDeviceCount));
-  const avgRssi  = briefingData?.avgRssi ?? num(d?.bleAvgRssi, NaN);
-  const label    = briefingData?.densityLabel ?? occupancyDensityLabel(index);
-  const note     = briefingData?.densityNote  ?? occupancyDensityNote(index);
-  const trend    = briefingData?.trend        ?? { direction: "stable", delta: 0 };
-  const enabled  = briefingData?.enabled      ?? Boolean(d?.blePresenceEnabled);
-  const history  = Array.isArray(briefingData?.history) ? briefingData.history : [];
-  const briefing = briefingData?.briefing     ?? "";
-
-  const indexEl = $("occupancy-index-value");
-  if (indexEl) indexEl.textContent = enabled || devices > 0 ? `${index}` : "--";
-
-  const fillEl = $("occupancy-index-fill");
-  if (fillEl) {
-    fillEl.style.width = `${Math.max(3, index)}%`;
-    const hue = index <= 30 ? "#3f6eff" : index <= 65 ? "#e89b0f" : "#e84040";
-    fillEl.style.background = `linear-gradient(90deg, #41236f 0%, ${hue} 100%)`;
-  }
-
-  const densityLabelEl = $("occupancy-density-label");
-  if (densityLabelEl) densityLabelEl.textContent = enabled || devices > 0 ? label : "No BLE feed";
-
-  const densityNoteEl = $("occupancy-density-note");
-  if (densityNoteEl) densityNoteEl.textContent = enabled || devices > 0 ? note : "BLE occupancy data has not arrived yet.";
-
-  const rssiBadgeEl = $("occupancy-rssi-badge");
-  if (rssiBadgeEl) {
-    rssiBadgeEl.textContent = Number.isFinite(avgRssi) ? `${Math.round(avgRssi)} dBm` : "--";
-    rssiBadgeEl.dataset.tone = Number.isFinite(avgRssi) && avgRssi > -70 ? "good" : "neutral";
-  }
-
-  const deviceCountEl = $("occupancy-device-count");
-  if (deviceCountEl) {
-    deviceCountEl.textContent = devices > 0
-      ? `${devices} device${devices !== 1 ? "s" : ""} detected in the scan window`
-      : "No devices detected in the scan window";
-  }
-
-  const trendNoteEl = $("occupancy-trend-note");
-  if (trendNoteEl) {
-    if (trend.direction === "rising") {
-      trendNoteEl.textContent = `Occupancy is rising (↑${Math.abs(trend.delta)} points since last reading).`;
-    } else if (trend.direction === "falling") {
-      trendNoteEl.textContent = `Occupancy is falling (↓${Math.abs(trend.delta)} points since last reading).`;
-    } else {
-      trendNoteEl.textContent = "Occupancy is holding steady.";
-    }
-  }
-
-  // Bar chart from history
-  const chartShell = $("occupancy-bar-chart");
-  if (chartShell) {
-    if (history.length === 0) {
-      chartShell.innerHTML = "<div class=\"occupancy-bar-empty\">Waiting for BLE occupancy history.</div>";
-    } else {
-      const recent = history.slice(0, 32).reverse();
-      const maxIdx = Math.max(...recent.map((h) => num(h.occupancyIndex)), 1);
-      const bars = recent.map((h) => {
-        const pct = Math.round((num(h.occupancyIndex) / maxIdx) * 100);
-        const ts  = h.receivedAt ? fmtStamp(h.receivedAt) : "";
-        const count = num(h.deviceCount);
-        const deviceLabel = `${count} device${count !== 1 ? "s" : ""}`;
-        const tip = ts
-          ? `${num(h.occupancyIndex)}% · ${deviceLabel} · ${ts}`
-          : `${num(h.occupancyIndex)}% · ${deviceLabel}`;
-        return `<div class="occupancy-bar-col" style="height:${Math.max(4, pct)}%" title="${tip.replace(/"/g, "&quot;")}"></div>`;
-      }).join("");
-      chartShell.innerHTML = `<div class="occupancy-bar-chart">${bars}</div>`;
-    }
-  }
-
-  const briefingEl = $("occupancy-briefing");
-  if (briefingEl) {
-    briefingEl.textContent = briefing || "Occupancy briefing will appear once the device posts BLE scan data.";
-  }
-
-  const badgeTone = index > 70 ? "warn" : index > 30 ? "neutral" : "good";
-  const badgeText = enabled || devices > 0 ? `${label} · ${devices} device${devices !== 1 ? "s" : ""}` : "No BLE data";
-  setHeaderPill("occupancy-badge", badgeText, badgeTone);
-}
-
-function occupancyDensityLabel(index) {
-  if (index <= 5)  return "Empty";
-  if (index <= 25) return "Low";
-  if (index <= 55) return "Moderate";
-  if (index <= 80) return "Busy";
-  return "Packed";
-}
-
-function occupancyDensityNote(index) {
-  if (index <= 5)  return "No BLE devices detected. The space appears unoccupied or all devices are out of range.";
-  if (index <= 25) return "A small number of devices are present. The space is likely lightly occupied.";
-  if (index <= 55) return "Several devices detected. Moderate occupancy — typical for a normal work session.";
-  if (index <= 80) return "High device density. The space is busy and shared-air buildup will accelerate.";
-  return "Very high device density. The space is at or near capacity.";
 }
 
 function renderStankGauge(d) {
@@ -3770,35 +3868,35 @@ function renderSkyVisual(d) {
 }
 
 function renderWeatherIntel(d) {
-  const mapCity = $("map-city");
-  const mapLink = $("map-link");
+    const mapCity = $("map-city");
+    const mapLink = $("map-link");
 
-  mapCity.textContent = d.city || "Location pending";
-  $("weather-insight").textContent = weatherInsightText(d);
-  $("v-weather-condition").textContent = d.weatherCondition || "Conditions pending";
-  $("v-weather-temp").textContent = `${num(d.tempF).toFixed(0)}F`;
-  $("v-weather-feels").textContent = `${num(d.feelsLikeF, d.tempF).toFixed(0)}F`;
-  $("v-weather-hum").textContent = `${num(d.humidity).toFixed(0)}%`;
-  $("v-weather-wind").textContent = `${(d.windDir || "--")} ${(d.windSpeed || "").trim()}`.trim();
-  $("v-coords").textContent = fmtCoords(d);
-  $("v-local-time").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
-  $("v-window-call").textContent = windowCall(d);
-  $("v-weather-aqi").textContent = num(d.outdoorAqi) > 0 ? `${Math.round(num(d.outdoorAqi))} ${d.outdoorLevel || ""}`.trim() : "Pending";
-  $("v-pressure-read").textContent = pressureRead(num(d.pressHpa));
+    mapCity.textContent = d.city || "Location pending";
+    $("weather-insight").textContent = weatherInsightText(d);
+    $("v-weather-condition").textContent = d.weatherCondition || "Conditions pending";
+    $("v-weather-temp").textContent = `${num(d.tempF).toFixed(0)}F`;
+    $("v-weather-feels").textContent = `${num(d.feelsLikeF, d.tempF).toFixed(0)}F`;
+    $("v-weather-hum").textContent = `${num(d.humidity).toFixed(0)}%`;
+    $("v-weather-wind").textContent = `${(d.windDir || "--")} ${(d.windSpeed || "").trim()}`.trim();
+    $("v-coords").textContent = fmtCoords(d);
+    $("v-local-time").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
+    $("v-window-call").textContent = windowCall(d);
+    $("v-weather-aqi").textContent = num(d.outdoorAqi) > 0 ? `${Math.round(num(d.outdoorAqi))} ${d.outdoorLevel || ""}`.trim() : "Pending";
+    $("v-pressure-read").textContent = pressureRead(num(d.pressHpa));
 
-  const links = weatherMapLinks(d);
-  if (links) {
-    mapLink.href = links.open;
-  } else {
-    mapLink.href = "https://www.openstreetmap.org";
-  }
-  $("weather-report").innerHTML = renderStructuredReport(buildWeatherReport(d, weatherBriefingState.data));
-  renderMoonVisual(d);
-  renderSkyVisual(d);
-  syncWeatherMapPosition(d);
-  if (hasLocationFix(d)) {
+    const links = weatherMapLinks(d);
+    if (links) {
+        mapLink.href = links.open;
+    } else {
+        mapLink.href = "https://www.openstreetmap.org";
+    }
+    $("weather-report").innerHTML = formatDiagnosticReport(buildWeatherReport(d, weatherBriefingState.data));
+    renderMoonVisual(d);
+    renderSkyVisual(d);
+    syncWeatherMapPosition(d);
     syncMapLayers();
-  }
+    const srcWx = $("source-weather");
+    if (srcWx) srcWx.textContent = "Source: Open-Meteo forecast (Cape Canaveral, FL) · OpenStreetMap · RainViewer radar · OpenAI weather brief when available";
 }
 
 function gasPhaseAxis(d) {
@@ -3820,41 +3918,14 @@ function gasPhaseAxis(d) {
   };
 }
 
-function presencePhaseAxis(d) {
-  const state = `${d.blePresenceState || ""}`.trim();
-  const explicitConf = num(d.blePresenceConf, NaN);
-  const rssi = num(d.bleTargetRssi, NaN);
-  const enabled = d.blePresenceEnabled === true
-    || Number.isFinite(explicitConf)
-    || state
-    || Number.isFinite(rssi);
-
-  if (!enabled) {
-    return {
-      key: "presence",
-      name: "RSSI",
-      label: "No BLE feed",
-      value: 0.06,
-      detail: "Standby",
-      standby: true,
-    };
-  }
-
-  let value = Number.isFinite(explicitConf) ? clamp(explicitConf / 100, 0, 1) : 0.18;
-  if (!Number.isFinite(explicitConf)) {
-    if (/very/i.test(state)) value = 0.82;
-    else if (/near/i.test(state)) value = 0.58;
-    else if (/far/i.test(state)) value = 0.18;
-  }
-
-  const label = state || (Number.isFinite(rssi) ? `RSSI ${Math.round(rssi)} dBm` : "Presence sync");
+function presencePhaseAxis(_d) {
   return {
     key: "presence",
     name: "RSSI",
-    label,
-    value,
-    detail: `${Math.round(value * 100)}% · ${Number.isFinite(rssi) ? `${Math.round(rssi)} dBm` : "confidence"}`,
-    standby: false,
+    label: "BLE off",
+    value: 0.06,
+    detail: "Standby",
+    standby: true,
   };
 }
 
@@ -4130,49 +4201,32 @@ function renderLaunchDeck(d) {
   const shell = $("launch-stack");
   if (!shell) return;
 
-  const launches = Array.isArray(d.launches) ? d.launches.slice(0, 5) : [];
+  const launches = Array.isArray(d.launches) ? d.launches.slice(0, 3) : [];
   if (!launches.length) {
-    shell.innerHTML = '<div class="launch-empty">Launch feed is loading — check back shortly.</div>';
+    // Only reset to placeholder if never populated with real launch data
+    if (!shell.dataset.snmFilled) {
+      shell.innerHTML = '<div class="launch-empty">No Cape launches loaded yet — checking <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a>…</div>';
+    }
     return;
   }
 
-  const hasCape = launches.some((l) => l.isCape);
-  const header = !hasCape
-    ? '<div class="launch-global-note">No Cape launches currently scheduled · showing next global launches</div>'
-    : "";
-
-  shell.innerHTML = header + launches.map((launch, index) => {
-    const capeTag = launch.isCape
-      ? '<span class="launch-cape-tag">KSC / CCSFS</span>'
-      : `<span class="launch-global-tag">${escapeHtml(launch.location || "Global")}</span>`;
-    const netRaw = launch.time;
-    let netDisplay = netRaw || "TBD";
-    if (netRaw && netRaw !== "TBD") {
-      try {
-        const d = new Date(netRaw);
-        if (!Number.isNaN(d.getTime())) {
-          netDisplay = d.toLocaleString(undefined, {
-            month: "short", day: "numeric", year: "numeric",
-            hour: "2-digit", minute: "2-digit", timeZoneName: "short",
-          });
-        }
-      } catch (_) { /* keep raw */ }
-    }
+  shell.innerHTML = launches.map((launch, index) => {
+    const isCape = launch.isCape;
+    const slot = isCape ? `Cape Slot ${index + 1}` : `Global Slot ${index + 1}`;
+    const webcast = launch.webcastUrl
+      ? ` · <a href="${escapeHtml(launch.webcastUrl)}" target="_blank" rel="noopener noreferrer">Webcast</a>`
+      : "";
     return `
-    <article class="launch-card${launch.isCape ? " is-cape" : ""}">
-      <div class="launch-card-head">
-        <div class="launch-kicker">Launch ${index + 1}</div>
-        ${capeTag}
-      </div>
+    <article class="launch-card${isCape ? " is-cape" : ""}">
+      <div class="launch-kicker">${slot}${isCape ? " · KSC/CCSFS" : ""}</div>
       <div class="launch-name">${escapeHtml(launch.name || "Unknown mission")}</div>
-      <div class="launch-line"><strong>NET:</strong> ${escapeHtml(netDisplay)}</div>
-      <div class="launch-line"><strong>Status:</strong> ${escapeHtml(launch.status || "--")}</div>
-      <div class="launch-line"><strong>Provider:</strong> ${escapeHtml(launch.provider || "Unknown")}</div>
-      <div class="launch-line"><strong>Pad:</strong> ${escapeHtml(launch.pad || "TBD")}</div>
-      <div class="launch-line"><strong>Type:</strong> ${escapeHtml(launch.missionType || "Mission")}</div>
-    </article>
-  `;
+      <div class="launch-line"><strong>NET:</strong> ${escapeHtml(launch.time || "TBD")}</div>
+      <div class="launch-line"><strong>Provider:</strong> ${escapeHtml(launch.provider || "Unknown")}${webcast}</div>
+      <div class="launch-line"><strong>Pad:</strong> ${escapeHtml(launch.pad || "TBD")} · ${escapeHtml(launch.location || "")}</div>
+      <div class="launch-line launch-desc">${escapeHtml((launch.missionType || "").slice(0, 100))}</div>
+    </article>`;
   }).join("");
+  shell.dataset.snmFilled = "1";
 }
 
 function renderEventLog(d) {
@@ -4246,11 +4300,10 @@ function drawHeroScope(current, history) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const win = scopeSettings.window;
-  const liveHistory = Array.isArray(history) ? history.slice(0, win).reverse() : [];
+  const liveHistory = Array.isArray(history) ? history.slice(0, 32).reverse() : [];
   const usingHistory = liveHistory.length >= 6;
   const now = Date.now() / 1000;
-  const synthetic = Array.from({ length: win }, (_, index) => {
+  const synthetic = Array.from({ length: 32 }, (_, index) => {
     const phase = now * 0.9 + index * 0.35;
     const vocBase = Math.max(0.2, num(current?.voc, 0.55));
     const airBase = clamp(num(current?.airScore, 18), 0, 100);
@@ -4275,12 +4328,8 @@ function drawHeroScope(current, history) {
   const vocTrendNow = latest.voc - prev.voc;
   const cleanTrendNow = latestClean - clamp(100 - prev.airScore, 0, 100);
 
-  const showVoc = scopeSettings.series.voc;
-  const showClean = scopeSettings.series.clean;
-  const showDvoc = scopeSettings.series.dvoc;
-
   meta.textContent = usingHistory
-    ? `${points.length} samples · VOC ${latest.voc.toFixed(2)} ppm · dVOC ${fmtSigned(latest.dVoc, 2)}`
+    ? `${points.length} live samples · VOC ${latest.voc.toFixed(2)} ppm · dVOC ${fmtSigned(latest.dVoc, 2)}`
     : "Standby trace · synthetic preview until deeper room history arrives";
 
   if ($("scope-chip-voc")) $("scope-chip-voc").textContent = `VOC ${latest.voc.toFixed(2)} ppm`;
@@ -4426,104 +4475,80 @@ function drawHeroScope(current, history) {
   const cleanY = (value) => padT + plotH * (1 - clamp(value / 100, 0, 1));
   const dVocY = (value) => centerY - clamp(value / maxAbsDVoc, -1, 1) * (plotH * 0.28);
 
-  if (showVoc) drawDashedGuide(vocY(1.5), "rgba(73, 232, 255, 0.25)", "VOC 1.5", padL + 6);
-  if (showVoc && maxVoc >= 3.0) {
+  drawDashedGuide(vocY(1.5), "rgba(73, 232, 255, 0.25)", "VOC 1.5", padL + 6);
+  if (maxVoc >= 3.0) {
     drawDashedGuide(vocY(3.0), "rgba(231, 76, 60, 0.24)", "VOC 3.0", padL + 56);
   }
-  if (showDvoc) drawDashedGuide(dVocY(0.3), "rgba(255, 208, 92, 0.18)", "dVOC +0.3", width - padR - 72);
+  drawDashedGuide(dVocY(0.3), "rgba(255, 208, 92, 0.18)", "dVOC +0.3", width - padR - 72);
 
-  if (showVoc) {
-    drawTrace(
-      points.map((p) => p.voc),
-      "#49e8ff",
-      "rgba(73, 232, 255, 0.18)",
-      vocY,
-      2.2
-    );
-  }
-  if (showClean) {
-    drawTrace(
-      cleanSeries.map((value) => value / 100),
-      "#70f8c1",
-      "rgba(112, 248, 193, 0.16)",
-      (value) => padT + plotH * (1 - clamp(value, 0, 1)),
-      2
-    );
-  }
-  if (showDvoc) {
-    drawTrace(
-      points.map((p) => p.dVoc),
-      "#ffd05c",
-      "rgba(255, 208, 92, 0.16)",
-      dVocY,
-      1.7
-    );
-  }
+  drawTrace(
+    points.map((p) => p.voc),
+    "#49e8ff",
+    "rgba(73, 232, 255, 0.18)",
+    vocY,
+    2.2
+  );
+  drawTrace(
+    cleanSeries.map((value) => value / 100),
+    "#70f8c1",
+    "rgba(112, 248, 193, 0.16)",
+    (value) => padT + plotH * (1 - clamp(value, 0, 1)),
+    2
+  );
+  drawTrace(
+    points.map((p) => p.dVoc),
+    "#ffd05c",
+    "rgba(255, 208, 92, 0.16)",
+    dVocY,
+    1.7
+  );
 
   const lastX = padL + plotW;
-  if (showVoc) {
-    ctx.fillStyle = "#49e8ff";
-    ctx.beginPath();
-    ctx.arc(lastX, vocY(latest.voc), 3.5, 0, Math.PI * 2);
-    ctx.fill();
-    drawFlag(lastX, vocY(latest.voc), `${latest.voc.toFixed(2)} ppm`, "#49e8ff");
-  }
-  if (showClean) {
-    ctx.fillStyle = "#70f8c1";
-    ctx.beginPath();
-    ctx.arc(lastX, cleanY(latestClean), 3.5, 0, Math.PI * 2);
-    ctx.fill();
-    drawFlag(lastX, cleanY(latestClean), `${Math.round(latestClean)}% clean`, "#70f8c1");
-  }
-  if (showDvoc) {
-    ctx.fillStyle = "#ffd05c";
-    ctx.beginPath();
-    ctx.arc(lastX, dVocY(latest.dVoc), 3.3, 0, Math.PI * 2);
-    ctx.fill();
-    drawFlag(lastX, dVocY(latest.dVoc), fmtSigned(latest.dVoc, 2), "#ffd05c");
-  }
+  ctx.fillStyle = "#49e8ff";
+  ctx.beginPath();
+  ctx.arc(lastX, vocY(latest.voc), 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#70f8c1";
+  ctx.beginPath();
+  ctx.arc(lastX, cleanY(latestClean), 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#ffd05c";
+  ctx.beginPath();
+  ctx.arc(lastX, dVocY(latest.dVoc), 3.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  drawFlag(lastX, vocY(latest.voc), `${latest.voc.toFixed(2)} ppm`, "#49e8ff");
+  drawFlag(lastX, cleanY(latestClean), `${Math.round(latestClean)}% clean`, "#70f8c1");
+  drawFlag(lastX, dVocY(latest.dVoc), fmtSigned(latest.dVoc, 2), "#ffd05c");
 
   ctx.fillStyle = "rgba(188, 199, 216, 0.72)";
   ctx.font = "11px JetBrains Mono, monospace";
   ctx.textAlign = "right";
-  if (showVoc) {
-    ctx.fillStyle = "rgba(73, 232, 255, 0.84)";
-    ctx.fillText("VOC ppm", padL - 8, padT - 2);
-    ctx.fillStyle = "rgba(188, 199, 216, 0.72)";
-    ctx.fillText(`${maxVoc.toFixed(1)}`, padL - 8, padT + 4);
-    ctx.fillText(`${(maxVoc / 2).toFixed(1)}`, padL - 8, padT + plotH * 0.5 + 4);
-    ctx.fillText("0", padL - 8, height - padB + 4);
-  }
+  ctx.fillText(`${maxVoc.toFixed(1)}`, padL - 8, padT + 4);
+  ctx.fillText(`${(maxVoc / 2).toFixed(1)}`, padL - 8, padT + plotH * 0.5 + 4);
+  ctx.fillText("0", padL - 8, height - padB + 4);
+  ctx.fillStyle = "rgba(73, 232, 255, 0.84)";
+  ctx.fillText("VOC ppm", padL - 8, padT - 2);
 
   ctx.textAlign = "left";
-  if (showClean) {
-    ctx.fillStyle = "rgba(112, 248, 193, 0.82)";
-    ctx.fillText("Clean %", width - padR + 8, padT - 2);
-    ctx.fillText("100", width - padR + 8, padT + 4);
-    ctx.fillText("50", width - padR + 8, padT + plotH * 0.5 + 4);
-    ctx.fillText("0", width - padR + 8, height - padB + 4);
-  }
-
-  if (showDvoc) {
-    ctx.fillStyle = "rgba(255, 208, 92, 0.82)";
-    ctx.fillText(`+${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY - plotH * 0.28 - 4);
-    ctx.fillText("0", padL + 6, centerY - 4);
-    ctx.fillText(`-${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY + plotH * 0.28 + 12);
-  }
+  ctx.fillStyle = "rgba(112, 248, 193, 0.82)";
+  ctx.fillText("100", width - padR + 8, padT + 4);
+  ctx.fillText("50", width - padR + 8, padT + plotH * 0.5 + 4);
+  ctx.fillText("0", width - padR + 8, height - padB + 4);
+  ctx.fillText("Clean %", width - padR + 8, padT - 2);
 
   ctx.textAlign = "left";
-  const legendLabels = [
-    showVoc   && { text: "VOC",   color: "rgba(73, 232, 255, 0.74)" },
-    showClean && { text: "CLEAN", color: "rgba(112, 248, 193, 0.74)" },
-    showDvoc  && { text: "dVOC",  color: "rgba(255, 208, 92, 0.78)" },
-  ].filter(Boolean);
-  ctx.font = "11px JetBrains Mono, monospace";
-  let legendX = padL + 6;
-  for (const lbl of legendLabels) {
-    ctx.fillStyle = lbl.color;
-    ctx.fillText(lbl.text, legendX, padT + 14);
-    legendX += ctx.measureText(lbl.text).width + 10;
-  }
+  ctx.fillStyle = "rgba(255, 208, 92, 0.82)";
+  ctx.fillText(`+${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY - plotH * 0.28 - 4);
+  ctx.fillText("0", padL + 6, centerY - 4);
+  ctx.fillText(`-${maxAbsDVoc.toFixed(1)}`, padL + 6, centerY + plotH * 0.28 + 12);
+
+  ctx.textAlign = "left";
+  ctx.fillText("VOC", padL + 6, padT + 14);
+  ctx.fillStyle = "rgba(112, 248, 193, 0.74)";
+  ctx.fillText("CLEAN", padL + 42, padT + 14);
+  ctx.fillStyle = "rgba(255, 208, 92, 0.78)";
+  ctx.fillText("dVOC", padL + 94, padT + 14);
 }
 
 function historySamplesForRhythm(history) {
@@ -4708,18 +4733,20 @@ function render(data) {
   renderHero(merged);
   drawHeroScope(merged, historyData);
   renderStatusStrip(merged);
+  renderIntelDrawer(merged);
+  renderCauseCard(merged);
   renderOfficeCard(merged);
-  renderOccupancyCard(merged);
   renderTelemetry(merged);
   renderDerivedMetrics(merged);
   renderFartCard(merged);
   renderBreathCard(merged);
   renderDadabase();
-  renderMissionHistory(merged);
+  renderApod(apodState.data);
   renderSpaceCard(merged);
   renderOdorCard(merged);
   renderWeatherIntel(merged);
   renderWeatherForecast(merged, weatherBriefingState.data);
+  renderConditionsSummary(merged, weatherBriefingState.data);
   renderParanormal(merged);
   renderLaunchDeck(merged);
   renderEventLog(merged);
@@ -4729,16 +4756,11 @@ function render(data) {
   $("bro-summary").textContent = buildBroSummary(merged);
   $("bro-report").innerHTML = renderStructuredReport(buildBroReport(merged));
 
-  setHeaderPill("launch-badge", (() => {
-    const ls = Array.isArray(merged.launches) ? merged.launches : [];
-    if (!ls.length) return "No launch data";
-    const capeCount = ls.filter((l) => l.isCape).length;
-    return capeCount ? `${capeCount} Cape · ${ls.length} total` : `${ls.length} upcoming`;
-  })(), Array.isArray(merged.launches) && merged.launches.length ? "good" : "neutral");
+  setHeaderPill("launch-badge", Array.isArray(merged.launches) && merged.launches.length ? `${merged.launches.length} Cape launches` : "No launch data", Array.isArray(merged.launches) && merged.launches.length ? "good" : "neutral");
   setHeaderPill("odor-badge", `${currentPrimary(merged)} · ${Math.round(num(merged.primaryConf))}%`, num(merged.primaryConf) >= 45 ? "warn" : num(merged.primaryConf) >= 20 ? "neutral" : "good");
   setHeaderPill(
     "weather-intel-badge",
-    hasLocationFix(merged) ? (merged.weatherCondition || "Map live") : "No map fix",
+    hasLocationFix(merged) ? (merged.weatherCondition || "Map live") : "Cape Canaveral, FL",
     outdoorSeverity(merged) >= 3 ? "danger" : outdoorSeverity(merged) >= 2 ? "warn" : hasLocationFix(merged) ? "good" : "neutral"
   );
   const broBadge = broBadgeInfo(merged);
@@ -4750,6 +4772,7 @@ function render(data) {
   ensureWeatherBriefing(merged);
   ensureLaunchData();
   ensureOccupancyBriefing();
+  ensureApod();
 
   if (historyData.length) {
     drawChart(historyData);
@@ -4776,17 +4799,30 @@ function applySniffEvent(event) {
 }
 
 async function fetchLatest() {
-  try {
-    const res = await fetch("/api/latest", { cache: "no-store" });
-    if (res.status === 204) return;
-    if (!res.ok) throw new Error(`latest ${res.status}`);
-    const data = await res.json();
-    render(data);
-  } catch (_) {
-    const age = lastData ? Date.now() - num(lastData.receivedAt, 0) : Infinity;
-    if (age >= STALE_MS) {
-      $("conn-dot").className = "dot offline";
-      $("conn-label").textContent = "Feed unavailable";
+    try {
+        const res = await fetch("/api/latest", {
+            cache: "no-store"
+        });
+        if (res.status === 204) return;
+        if (!res.ok) throw new Error(`latest ${res.status}`);
+
+        const data = await res.json();
+        lastData = data;
+        render(data);
+    } catch (err) {
+        console.error("fetchLatest failed:", err);
+        // Only go amber when the cached data itself is stale; keep green if it
+        // is still fresh so a single failed poll does not falsely alarm.
+        if (lastData?.receivedAt) {
+            const dataAge = Date.now() - lastData.receivedAt;
+            if (dataAge >= STALE_MS) {
+                $("conn-dot").className = "dot stale";
+            }
+            $("conn-label").textContent = `Feed unavailable · ${fmtAge(lastData.receivedAt)}`;
+        } else {
+            $("conn-dot").className = "dot offline";
+            $("conn-label").textContent = "Feed unavailable";
+        }
     }
 }
 
@@ -4813,8 +4849,6 @@ async function manualRefreshDashboard() {
       weatherBriefingState.fetchedAt = 0;
       weatherBriefingState.key = "";
       await ensureWeatherBriefing(lastData);
-      occupancyBriefingState.fetchedAt = 0;
-      await ensureOccupancyBriefing();
     }
   } finally {
     manualRefreshPending = false;
@@ -4977,6 +5011,28 @@ function tickAge() {
   }
 }
 
+let _subnav_observer = null;
+
+function activateSubnavObserver() {
+  if (_subnav_observer) _subnav_observer.disconnect();
+  const panel = $("view-subnav-panel");
+  if (!panel) return;
+  const targets = Array.from(panel.querySelectorAll("[data-scroll-target]"))
+    .map((btn) => ({ btn, el: document.getElementById(btn.dataset.scrollTarget || "") }))
+    .filter((e) => e.el);
+  if (!targets.length) return;
+  _subnav_observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        targets.forEach(({ btn, el }) => btn.classList.toggle("is-active", el === entry.target));
+      });
+    },
+    { rootMargin: "-20% 0px -60% 0px", threshold: 0 }
+  );
+  targets.forEach(({ el }) => _subnav_observer.observe(el));
+}
+
 function renderViewSubnav(view) {
   const shell = $("view-submenu-shell");
   const panel = $("view-subnav-panel");
@@ -5003,6 +5059,7 @@ function renderViewSubnav(view) {
   });
 
   closeViewSubmenu();
+  activateSubnavObserver();
 }
 
 function setDashboardView(view) {
@@ -5031,19 +5088,27 @@ function setDashboardView(view) {
   if ($("view-subtitle")) $("view-subtitle").textContent = meta.subtitle;
   renderViewSubnav(nextView);
 
-  window.requestAnimationFrame(() => {
-    if (nextView === "labs") {
-      ensureDadabase(false);
-    }
-    if (nextView === "environment" && weatherMap) {
-      weatherMap.invalidateSize();
-      if (lastData) syncWeatherMapPosition(lastData);
-    }
-    if (nextView === "history" && historyData.length) {
-      drawChart(historyData);
-      updateHistoryStats(historyData);
-    }
-  });
+    window.requestAnimationFrame(() => {
+        if (nextView === "labs") {
+            ensureDadabase(false);
+        }
+        if (nextView === "environment" || nextView === "analysis") {
+            const map = ensureWeatherMap();
+            if (map) {
+                map.invalidateSize();
+                syncWeatherMapPosition(lastData || {});
+                syncMapLayers();
+            }
+        }
+        if (nextView === "space") {
+            ensureLaunchData();
+            ensureApod();
+        }
+        if (nextView === "history" && historyData.length) {
+            drawChart(historyData);
+            updateHistoryStats(historyData);
+        }
+    });
 }
 
 const trajectoryArcade = (() => {
@@ -6956,33 +7021,6 @@ window.addEventListener("resize", () => {
   if (historyData.length) drawChart(historyData);
 });
 
-// ── Scope series toggles ────────────────────────────────────────────────────
-document.querySelectorAll(".scope-chip[data-series]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const key = btn.dataset.series;
-    if (!key || !(key in scopeSettings.series)) return;
-    // Prevent deselecting the last active series
-    const activeCount = Object.values(scopeSettings.series).filter(Boolean).length;
-    if (activeCount <= 1 && scopeSettings.series[key]) return;
-    scopeSettings.series[key] = !scopeSettings.series[key];
-    btn.classList.toggle("is-active", scopeSettings.series[key]);
-    if (lastData) drawHeroScope(lastData, historyData);
-  });
-});
-
-// ── Scope window size selector ──────────────────────────────────────────────
-document.querySelectorAll(".scope-window-btn[data-window]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const win = Number(btn.dataset.window);
-    if (!Number.isFinite(win) || win <= 0) return;
-    scopeSettings.window = win;
-    document.querySelectorAll(".scope-window-btn").forEach((b) => {
-      b.classList.toggle("is-active", b === btn);
-    });
-    if (lastData) drawHeroScope(lastData, historyData);
-  });
-});
-
 applyTheme(loadThemePref(), { skipUi: true });
 renderThemeUi(loadThemePref());
 setDashboardView(activeView);
@@ -6995,6 +7033,7 @@ fetchLatestSniff();
 fetchSniffHistory();
 renderDadabase();
 ensureDadabase(false);
+ensureApod();
 loadMelodyBank()
   .then(() => {
     renderMelodyLibrary(lastData);
@@ -7007,6 +7046,12 @@ setInterval(fetchSniffHistory, POLL_MS * 4);
 setInterval(tickAge, 1000);
 setInterval(() => ensureDadabase(false), DADABASE_TTL_MS);
 setInterval(() => renderDadabase(), 60000);
+// Hourly AI weather prediction refresh — force-expire cache so briefing
+// regenerates even when device data is not flowing.
+setInterval(() => {
+  weatherBriefingState.key = "";
+  if (lastData) ensureWeatherBriefing(lastData);
+}, WEATHER_BRIEFING_TTL_MS);
 
 $("melody-play-btn")?.addEventListener("click", () => {
   playMelodyFromSnapshot();
@@ -7091,21 +7136,6 @@ $("melody-library-play-device")?.addEventListener("click", async () => {
   renderMelodyLibrary(lastData);
 });
 
-document.querySelectorAll(".map-layer-chip").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const key = button.dataset.layer;
-    if (!key) return;
-    mapLayerPrefs[key] = !mapLayerPrefs[key];
-    if (key === "crime") {
-      renderMapLayerButtons();
-      setMapLayerStatus("Crime toggle acknowledged, but no free anonymous nationwide U.S. crime map feed is wired into this dashboard yet.");
-      return;
-    }
-    saveMapLayerPrefs();
-    renderMapLayerButtons();
-    await syncMapLayers();
-  });
-});
 
 (function initWeatherMapFullscreen() {
   const btn = $("map-fullscreen-btn");
@@ -7133,8 +7163,21 @@ document.querySelectorAll(".map-layer-chip").forEach((button) => {
   });
 })();
 
+function syncTopbarSpacing() {
+  const topbar = document.querySelector(".topbar");
+  if (!topbar) return;
+  const h = topbar.offsetHeight;
+  document.documentElement.style.setProperty("--sticky-rail-top", h + "px");
+  document.body.style.paddingTop = h + "px";
+}
+syncTopbarSpacing();
+document.fonts.ready.then(syncTopbarSpacing);
+
+let _topbarResizeTimer;
 window.addEventListener("resize", () => {
   if (historyData.length) drawChart(historyData);
+  clearTimeout(_topbarResizeTimer);
+  _topbarResizeTimer = setTimeout(syncTopbarSpacing, 60);
 });
 
 window.addEventListener("pagehide", () => {
