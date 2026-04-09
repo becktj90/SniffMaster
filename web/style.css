@@ -1679,10 +1679,13 @@ body[data-theme="retro90s"] .footer-bar {
   grid-column: span 12;
 }
 
-#card-odor,
-#card-bro {
+#card-odor {
   grid-column: span 6;
   min-height: 330px;
+}
+
+#card-bro {
+  grid-column: span 12;
 }
 
 #card-dadabase {
@@ -2390,7 +2393,7 @@ body[data-theme="retro90s"] .footer-bar {
 }
 
 .bro-summary {
-  font-size: 1rem;
+  font-size: 0.875rem;
   line-height: 1.6;
   color: #dffcff;
 }
@@ -2420,6 +2423,7 @@ body[data-theme="retro90s"] .footer-bar {
 
 .bro-report-shell {
   padding: 14px 16px 16px;
+  font-size: 0.875rem;
 }
 
 .melody-card {
