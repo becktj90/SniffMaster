@@ -3301,6 +3301,18 @@ function renderMissionHistory() {
 
 const MAX_APOD_EXPLANATION_LENGTH = 400;
 
+/**
+ * Called from inline onerror attributes on APOD img elements.
+ * Reads the fallback URL from data-apod-page on the containing .apod-image-wrap
+ * and replaces the wrap contents with a safe placeholder link.
+ */
+function apodImageFallback(el) {
+  const wrap = el.closest(".apod-image-wrap");
+  if (!wrap) return;
+  const pageUrl = wrap.dataset.apodPage || "https://apod.nasa.gov/apod/";
+  wrap.innerHTML = `<div class="apod-placeholder">Image unavailable — <a href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>`;
+}
+
 function renderApod(data) {
   const apodData = data || apodState.data;
   const dateEl = $("apod-date");
@@ -3327,16 +3339,27 @@ function renderApod(data) {
   }
 
   if (imageWrap) {
-    if (apodData.mediaType === "video" && apodData.videoUrl) {
-      const safeUrl = escapeHtml(apodData.videoUrl);
-      imageWrap.innerHTML = `<iframe src="${safeUrl}" title="${escapeHtml(apodData.title || "APOD Video")}" allowfullscreen loading="lazy"></iframe>`;
+    const rawPageUrl = apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
+    const apodPageUrl = escapeHtml(rawPageUrl);
+    const altText = escapeHtml(apodData.title || "Astronomy Picture of the Day");
+    // Store the APOD page URL on the wrap so apodImageFallback() can use it without string injection
+    imageWrap.dataset.apodPage = rawPageUrl;
+
+    if (apodData.mediaType === "video") {
+      // Prefer thumbnail over an embedded iframe to avoid blank iframes (autoplay / CSP issues)
+      const thumb = apodData.thumbnail || null;
+      const videoPageUrl = escapeHtml(apodData.videoUrl || rawPageUrl);
+      if (thumb) {
+        imageWrap.innerHTML = `<a class="apod-video-thumb" href="${videoPageUrl}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(thumb)}" alt="${altText}" loading="lazy" onerror="apodImageFallback(this)"><span class="apod-play-badge" aria-hidden="true">▶</span></a>`;
+      } else {
+        imageWrap.innerHTML = `<div class="apod-placeholder">Image unavailable — <a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>`;
+      }
     } else if (apodData.url) {
-      const imgSrc = apodData.url;
-      const hdSrc = apodData.hdurl || imgSrc;
-      const apodUrl = apodData.apodPageUrl || "https://apod.nasa.gov/apod/";
-      imageWrap.innerHTML = `<a href="${escapeHtml(apodUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(apodData.title || "Astronomy Picture of the Day")}" loading="lazy" onerror="this.onerror=null;this.src='${escapeHtml(hdSrc || imgSrc)}'"></a>`;
+      const imgSrc = escapeHtml(apodData.url);
+      const hdSrc = escapeHtml(apodData.hdurl || apodData.url);
+      imageWrap.innerHTML = `<a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer"><img src="${imgSrc}" alt="${altText}" loading="lazy" onerror="this.onerror=null;this.src='${hdSrc}';this.onerror=function(){apodImageFallback(this)}"></a>`;
     } else {
-      imageWrap.innerHTML = '<div class="apod-placeholder">Image unavailable — <a href="https://apod.nasa.gov/apod/" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>';
+      imageWrap.innerHTML = `<div class="apod-placeholder">Image unavailable — <a href="${apodPageUrl}" target="_blank" rel="noopener noreferrer">view on NASA APOD</a></div>`;
     }
   }
 
@@ -3662,12 +3685,36 @@ function renderStatusStrip(d) {
 }
 
 function renderTelemetry(d) {
-  $("v-temp").textContent = `${num(d.tempF).toFixed(1)}F`;
-  $("v-hum").textContent = `${num(d.humidity).toFixed(0)}%`;
+  const tempF = num(d.tempF);
+  const humidity = num(d.humidity);
+  const gasR = num(d.gasR);
+  const gasPct = num(d.gasPct);
+
+  const tempColor = (tempF >= 65 && tempF <= 78) ? "var(--cobalt)" : (tempF >= 55 && tempF < 90) ? "var(--amber)" : "var(--orange)";
+  const humColor = (humidity >= 40 && humidity <= 60) ? "var(--cobalt)" : (humidity >= 30 && humidity <= 70) ? "var(--amber)" : "var(--orange)";
+  const gasRColor = gasR > 50000 ? "var(--mint)" : gasR > 10000 ? "var(--cobalt)" : gasR > 3000 ? "var(--amber)" : "var(--orange)";
+  const gasPctColor = gasPct >= 80 ? "var(--mint)" : gasPct >= 50 ? "var(--cobalt)" : gasPct >= 25 ? "var(--amber)" : "var(--orange)";
+
+  const vTemp = $("v-temp");
+  vTemp.textContent = `${tempF.toFixed(1)}F`;
+  vTemp.style.color = tempColor;
+
+  const vHum = $("v-hum");
+  vHum.textContent = `${humidity.toFixed(0)}%`;
+  vHum.style.color = humColor;
+
   $("v-press").textContent = `${num(d.pressHpa).toFixed(1)} hPa`;
-  $("v-gasr-raw").textContent = `${fmtGasR(d.gasR)}Ω`;
+
+  const vGasR = $("v-gasr-raw");
+  vGasR.textContent = `${fmtGasR(d.gasR)}Ω`;
+  vGasR.style.color = gasRColor;
+
   $("v-compgas").textContent = `${fmtGasR(d.compGas)}Ω`;
-  $("v-gaspct").textContent = `${num(d.gasPct).toFixed(1)}%`;
+
+  const vGasPct = $("v-gaspct");
+  vGasPct.textContent = `${gasPct.toFixed(1)}%`;
+  vGasPct.style.color = gasPctColor;
+
   $("v-local-time-card").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
   $("v-uptime-card").textContent = fmtUptime(d.uptime).replace(/^Up /, "");
   $("header-network").textContent = headerNetworkText(d);
@@ -3682,12 +3729,40 @@ function renderTelemetry(d) {
 }
 
 function renderDerivedMetrics(d) {
-  $("derived-iaq").textContent = `${Math.round(num(d.iaq))}`;
-  $("derived-voc").textContent = `${num(d.voc).toFixed(2)} ppm`;
-  $("derived-co2").textContent = `${Math.round(num(d.co2))}`;
-  $("derived-room").textContent = `${Math.round(num(d.airScore))}/100`;
+  const iaq = num(d.iaq);
+  const voc = num(d.voc);
+  const co2 = num(d.co2);
+  const roomScore = num(d.airScore);
+  const aqi = num(d.outdoorAqi);
+
+  const iaqColor = iaq <= 50 ? "var(--mint)" : iaq <= 100 ? "var(--cobalt)" : iaq <= 150 ? "var(--amber)" : iaq <= 200 ? "var(--orange)" : "var(--red)";
+  const vocColor = voc < 0.5 ? "var(--mint)" : voc < 1.0 ? "var(--cobalt)" : voc < 2.0 ? "var(--amber)" : voc < 5.0 ? "var(--orange)" : "var(--red)";
+  const co2Color = co2 < 700 ? "var(--mint)" : co2 < 1000 ? "var(--cobalt)" : co2 < 1500 ? "var(--amber)" : "var(--red)";
+  const roomColor = roomScore >= 80 ? "var(--mint)" : roomScore >= 60 ? "var(--cobalt)" : roomScore >= 40 ? "var(--amber)" : roomScore >= 20 ? "var(--orange)" : "var(--red)";
+  const aqiColor = aqi <= 0 ? "var(--muted-strong)" : aqi <= 50 ? "var(--mint)" : aqi <= 100 ? "var(--cobalt)" : aqi <= 150 ? "var(--amber)" : "var(--orange)";
+
+  const elIaq = $("derived-iaq");
+  elIaq.textContent = `${Math.round(iaq)}`;
+  elIaq.style.color = iaqColor;
+
+  const elVoc = $("derived-voc");
+  elVoc.textContent = `${voc.toFixed(2)} ppm`;
+  elVoc.style.color = vocColor;
+
+  const elCo2 = $("derived-co2");
+  elCo2.textContent = `${Math.round(co2)}`;
+  elCo2.style.color = co2Color;
+
+  const elRoom = $("derived-room");
+  elRoom.textContent = `${Math.round(roomScore)}/100`;
+  elRoom.style.color = roomColor;
+
   $("derived-dvoc").textContent = fmtSigned(d.dVoc, 2);
-  $("derived-aqi").textContent = num(d.outdoorAqi) > 0 ? `${Math.round(num(d.outdoorAqi))}` : "--";
+
+  const elAqi = $("derived-aqi");
+  elAqi.textContent = aqi > 0 ? `${Math.round(aqi)}` : "--";
+  elAqi.style.color = aqiColor;
+
   $("derived-primary").textContent = currentPrimary(d, "No dominant odor");
   $("derived-confidence").textContent = `${Math.round(num(d.primaryConf))}%`;
   setHeaderPill("derived-badge", d.highAccuracyIaq ? "Inference ready" : "Warming up", d.highAccuracyIaq ? "good" : "warn");
@@ -4208,24 +4283,24 @@ function renderLaunchDeck(d) {
   const shell = $("launch-stack");
   if (!shell) return;
 
-  const launches = Array.isArray(d.launches) ? d.launches.slice(0, 3) : [];
+  const allLaunches = Array.isArray(d.launches) ? d.launches : [];
+  // Only show KSC / CCSFS launches in the deck
+  const launches = allLaunches.filter((l) => l.isCape).slice(0, 3);
   if (!launches.length) {
     // Only reset to placeholder if never populated with real launch data
     if (!shell.dataset.snmFilled) {
-      shell.innerHTML = '<div class="launch-empty">No Cape launches loaded yet — checking <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a>…</div>';
+      shell.innerHTML = '<div class="launch-empty">No upcoming KSC / CCSFS launches in the current snapshot.</div>';
     }
     return;
   }
 
   shell.innerHTML = launches.map((launch, index) => {
-    const isCape = launch.isCape;
-    const slot = isCape ? `Cape Slot ${index + 1}` : `Global Slot ${index + 1}`;
     const webcast = launch.webcastUrl
       ? ` · <a href="${escapeHtml(launch.webcastUrl)}" target="_blank" rel="noopener noreferrer">Webcast</a>`
       : "";
     return `
-    <article class="launch-card${isCape ? " is-cape" : ""}">
-      <div class="launch-kicker">${slot}${isCape ? " · KSC/CCSFS" : ""}</div>
+    <article class="launch-card is-cape">
+      <div class="launch-kicker">KSC/CCSFS · Slot ${index + 1}</div>
       <div class="launch-name">${escapeHtml(launch.name || "Unknown mission")}</div>
       <div class="launch-line"><strong>NET:</strong> ${escapeHtml(launch.time || "TBD")}</div>
       <div class="launch-line"><strong>Provider:</strong> ${escapeHtml(launch.provider || "Unknown")}${webcast}</div>
@@ -4729,7 +4804,11 @@ function updateHistoryStats(history) {
 
 function render(data) {
   if (!data) return;
-  const merged = mergeBriefingIntoSnapshot(mergeSnapshotWithSniff(data), weatherBriefingState.data);
+  let merged = mergeBriefingIntoSnapshot(mergeSnapshotWithSniff(data), weatherBriefingState.data);
+  // Keep independently-fetched Cape launch data in sync with the space card report
+  if (Array.isArray(launchState.data) && launchState.data.length && !(Array.isArray(merged.launches) && merged.launches.length)) {
+    merged = { ...merged, launches: launchState.data };
+  }
   lastData = merged;
 
   const age = Date.now() - num(merged.receivedAt, 0);

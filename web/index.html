@@ -291,7 +291,7 @@
       </details>
     </section>
 
-    <section class="card status-strip" id="card-status" data-view="dashboard environment system">
+    <section class="card status-strip" id="card-status" data-view="dashboard">
       <div class="card-header">
         <span>System</span>
         <span class="header-pill" id="status-badge">Awaiting telemetry</span>
@@ -335,7 +335,7 @@
       </details>
     </section>
 
-    <section class="card" id="card-intel" data-view="dashboard analysis">
+    <section class="card" id="card-intel" data-view="analysis">
       <div class="card-header">
         <span>Signal Intelligence</span>
         <span class="header-pill">Air interpretation</span>
@@ -369,7 +369,7 @@
       </div>
     </section>
 
-    <section class="card" id="card-cause" data-view="dashboard analysis">
+    <section class="card" id="card-cause" data-view="analysis">
       <div class="card-header">
         <span>Cause Engine</span>
         <span class="header-pill" id="cause-badge">Analyzing</span>
@@ -405,7 +405,7 @@
       </div>
     </section>
 
-    <section class="card office-card" id="card-office" data-view="dashboard analysis">
+    <section class="card office-card" id="card-office" data-view="analysis">
       <div class="card-header">
         <span>Vitality</span>
         <span class="header-pill" id="office-badge">Derived office metrics</span>
@@ -714,35 +714,35 @@
       </details>
       <div class="telemetry-grid">
         <div class="telemetry-item">
-          <span class="t-label">Temperature</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">🌡</span> Temperature</span>
           <span class="t-value" id="v-temp">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Humidity</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">💧</span> Humidity</span>
           <span class="t-value" id="v-hum">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Pressure</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">◈</span> Pressure</span>
           <span class="t-value" id="v-press">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Gas Resistance</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">🔬</span> Gas Resistance</span>
           <span class="t-value" id="v-gasr-raw">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Comp Gas</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">⚗</span> Comp Gas</span>
           <span class="t-value" id="v-compgas">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Gas %</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">📊</span> Gas %</span>
           <span class="t-value" id="v-gaspct">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Local Time</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">🕐</span> Local Time</span>
           <span class="t-value" id="v-local-time-card">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Uptime</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">⏱</span> Uptime</span>
           <span class="t-value" id="v-uptime-card">--</span>
         </div>
       </div>
@@ -760,35 +760,35 @@
       </details>
       <div class="telemetry-grid derived-grid">
         <div class="telemetry-item">
-          <span class="t-label">IAQ</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">🌬</span> IAQ</span>
           <span class="t-value" id="derived-iaq">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">VOC</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">🧪</span> VOC</span>
           <span class="t-value" id="derived-voc">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">CO2eq</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">💨</span> CO2eq</span>
           <span class="t-value" id="derived-co2">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Room Quality</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">✨</span> Room Quality</span>
           <span class="t-value" id="derived-room">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">dVOC</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">↕</span> dVOC</span>
           <span class="t-value" id="derived-dvoc">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Outdoor AQI</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">🏙</span> Outdoor AQI</span>
           <span class="t-value" id="derived-aqi">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Primary Class</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">🔍</span> Primary Class</span>
           <span class="t-value" id="derived-primary">--</span>
         </div>
         <div class="telemetry-item">
-          <span class="t-label">Confidence</span>
+          <span class="t-label"><span class="t-icon" aria-hidden="true">📈</span> Confidence</span>
           <span class="t-value" id="derived-confidence">--</span>
         </div>
       </div>
@@ -1042,7 +1042,7 @@
       <div class="source-caption">Source: relay snapshot history aggregated by weekday and hour</div>
     </section>
 
-    <section class="card" id="card-weather-intel" data-view="environment analysis">
+    <section class="card" id="card-weather-intel" data-view="environment">
       <div class="card-header">
         <span>Local Weather</span>
         <span class="header-pill" id="weather-intel-badge">Outdoor conditions</span>
