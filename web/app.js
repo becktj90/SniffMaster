@@ -6981,11 +6981,13 @@ function syncTopbarSpacing() {
   document.body.style.paddingTop = h + "px";
 }
 syncTopbarSpacing();
-window.addEventListener("load", syncTopbarSpacing);
+document.fonts.ready.then(syncTopbarSpacing);
 
+let _topbarResizeTimer;
 window.addEventListener("resize", () => {
   if (historyData.length) drawChart(historyData);
-  syncTopbarSpacing();
+  clearTimeout(_topbarResizeTimer);
+  _topbarResizeTimer = setTimeout(syncTopbarSpacing, 60);
 });
 
 window.addEventListener("pagehide", () => {
