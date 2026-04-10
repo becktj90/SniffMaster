@@ -5199,10 +5199,11 @@ body[data-theme="retro90s"] .footer-bar {
   color: #fff;
   font-size: 28px;
   line-height: 1;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   cursor: pointer;
+  touch-action: manipulation;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5351,7 +5352,7 @@ body[data-theme="retro90s"] .footer-bar {
 
 .arcade-mobile-controls {
   display: none;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -5363,6 +5364,7 @@ body[data-theme="retro90s"] .footer-bar {
   color: var(--text);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  touch-action: manipulation;
 }
 
 .arcade-touch-btn.thrust {
@@ -5413,15 +5415,26 @@ body[data-theme="retro90s"] .arcade-scanlines {
   }
 
   .arcade-sidecar {
-    grid-template-columns: 1fr;
+    display: none;
   }
 
   .arcade-mobile-controls {
     display: grid;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 75;
+    padding: 10px 14px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    background: rgba(4, 6, 12, 0.97);
+    border-top: 1px solid rgba(73, 232, 255, 0.18);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
   }
 
   #trajectory-canvas {
-    height: min(58vh, 520px);
+    height: min(60vh, 480px);
   }
 }
 
