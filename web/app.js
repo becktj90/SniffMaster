@@ -2613,6 +2613,7 @@ function renderOccupancyCard(payload) {
   if (!payload) return;
   const index = num(payload.occupancyIndex, NaN);
   const deviceCount = num(payload.deviceCount, NaN);
+  const isCo2Source = payload.source === "co2";
 
   setHeaderPill("occupancy-badge", payload.densityLabel || "Space density", "neutral");
 
@@ -2623,7 +2624,7 @@ function renderOccupancyCard(payload) {
   if (labelEl) labelEl.textContent = payload.densityLabel || "Waiting";
 
   const noteEl = $("occupancy-density-note");
-  if (noteEl) noteEl.textContent = payload.densityNote || "Space density will appear once scan data arrives.";
+  if (noteEl) noteEl.textContent = payload.densityNote || "Space density will appear once sensor data arrives.";
 
   const fillEl = $("occupancy-index-fill");
   if (fillEl && Number.isFinite(index)) {
@@ -2634,17 +2635,48 @@ function renderOccupancyCard(payload) {
       : "var(--red)";
   }
 
+  // Right panel kicker: relabel based on source
+  const kickerEl = $("occupancy-signal-kicker");
+  if (kickerEl) kickerEl.textContent = isCo2Source ? "CO₂ Reading" : "Signal Quality";
+
   const rssiEl = $("occupancy-rssi-badge");
   if (rssiEl) {
-    const rssi = num(payload.avgRssi, NaN);
-    rssiEl.textContent = Number.isFinite(rssi) ? `${Math.round(rssi)} dBm` : "--";
+    if (isCo2Source && payload.co2Reading) {
+      rssiEl.textContent = `${payload.co2Reading} ppm CO₂`;
+    } else {
+      const rssi = num(payload.avgRssi, NaN);
+      if (Number.isFinite(rssi)) {
+        const quality = rssi > -60 ? "Excellent" : rssi > -70 ? "Good" : rssi > -80 ? "Fair" : "Weak";
+        rssiEl.textContent = `${Math.round(rssi)} dBm — ${quality}`;
+      } else {
+        rssiEl.textContent = "--";
+      }
+    }
   }
 
   const countEl = $("occupancy-device-count");
   if (countEl) {
-    countEl.textContent = Number.isFinite(deviceCount)
-      ? `${deviceCount} device${deviceCount !== 1 ? "s" : ""} detected`
-      : "Waiting for first scan.";
+    if (isCo2Source) {
+      const co2 = payload.co2Reading || 0;
+      if (co2 > 0) {
+        const estAbove = Math.max(0, co2 - 400);
+        // ~50 ppm noise floor to avoid showing "1 person" from minor fluctuation;
+        // ~80 ppm rise per person is a rough occupancy-physiology rule of thumb.
+        const estPeople = estAbove < 50 ? 0 : Math.round(estAbove / 80);
+        countEl.textContent = estPeople === 0
+          ? "CO₂ near ambient — space likely empty or very well-ventilated."
+          : `~${estPeople} ${estPeople === 1 ? "person" : "people"} estimated from CO₂ rise above ambient`;
+      } else {
+        countEl.textContent = "Waiting for CO₂ reading.";
+      }
+    } else if (Number.isFinite(deviceCount)) {
+      const estPeople = Math.max(1, Math.round(deviceCount / 1.5));
+      countEl.textContent = deviceCount === 0
+        ? "No devices detected — space appears empty."
+        : `${deviceCount} device${deviceCount !== 1 ? "s" : ""} detected · ~${estPeople} ${estPeople === 1 ? "person" : "people"} estimated`;
+    } else {
+      countEl.textContent = "Waiting for first reading.";
+    }
   }
 
   const trendEl = $("occupancy-trend-note");
@@ -2662,17 +2694,25 @@ function renderOccupancyCard(payload) {
   const sourceEl = $("occupancy-source");
   if (sourceEl) {
     const modeNote = payload.mode === "openai" ? "OpenAI occupancy insight" : "deterministic occupancy logic";
-    sourceEl.textContent = `Source: device passive scan · MAC deduplication · 30-second rolling window · ${modeNote}`;
+    const sensorNote = isCo2Source
+      ? "CO₂ proxy · index = (co2 − 400) / 12, saturates at 1 600 ppm"
+      : "device passive scan · MAC deduplication · 30-second rolling window";
+    sourceEl.textContent = `Source: ${sensorNote} · ${modeNote}`;
   }
 
   const chartEl = $("occupancy-bar-chart");
   if (chartEl && Array.isArray(payload.history) && payload.history.length > 0) {
     const history = payload.history.slice(0, 24).reverse();
     const maxIdx = Math.max(...history.map((h) => num(h.occupancyIndex, 0)), 1);
+    const barTitle = isCo2Source
+      ? (h) => `${h.co2 ? `CO₂ ${Math.round(h.co2)} ppm · ` : ""}index ${Math.round(num(h.occupancyIndex, 0))}`
+      : (h) => `index ${Math.round(num(h.occupancyIndex, 0))}`;
+    const densityText = (idx) => idx >= 80 ? "Packed" : idx >= 55 ? "Busy" : idx >= 25 ? "Moderate" : idx >= 5 ? "Low" : "Empty";
     chartEl.innerHTML = `<div class="occupancy-bar-grid">${history.map((h) => {
-      const pct = clamp((num(h.occupancyIndex, 0) / maxIdx) * 100, 2, 100);
-      const color = pct > 80 ? "var(--red)" : pct > 55 ? "var(--amber)" : pct > 25 ? "var(--lime)" : "var(--mint)";
-      return `<div class="occupancy-bar-col" title="Index ${Math.round(num(h.occupancyIndex, 0))}">
+      const idx = num(h.occupancyIndex, 0);
+      const pct = clamp((idx / maxIdx) * 100, 2, 100);
+      const color = idx >= 80 ? "var(--red)" : idx >= 55 ? "var(--amber)" : idx >= 25 ? "var(--lime)" : "var(--mint)";
+      return `<div class="occupancy-bar-col" title="${densityText(idx)} (${barTitle(h)})">
         <div class="occupancy-bar-fill" style="height:${pct}%;background:${color}"></div>
       </div>`;
     }).join("")}</div>`;
@@ -5360,7 +5400,7 @@ const trajectoryArcade = (() => {
   const BOOST_DUR = 0.4;             // seconds of boost
   const BOOST_CD = 1.8;              // boost cooldown seconds
   const BOOST_MULT = 2.0;            // scroll speed multiplier during boost
-  const GATOR_EVERY = 6;             // gator appears every N rows (increased from 4)
+  const GATOR_EVERY = 3;             // gator appears every N rows (increased from 4)
   const LASER_SPEED = 700;           // laser bolt travel speed px/sec (upward)
   const LASER_CD = 0.5;              // seconds between laser shots
   const LASER_W = 4;                 // laser bolt width px
@@ -5455,14 +5495,19 @@ const trajectoryArcade = (() => {
     const gators = [];
     if (hasGator) {
       runtime.rowsSinceGator = 0;
-      const dir = Math.random() < 0.5 ? 1 : -1;
-      const startX = dir > 0 ? gapX + 10 : gapX + gapW - 10;
-      gators.push({
-        x: startX,
-        vx: dir * (55 + Math.random() * 55),
-        bounceL: gapX + 10,
-        bounceR: gapX + gapW - 10,
-      });
+      // Late-game rows can have two gators
+      const gatorCount = runtime.rowsCleared >= 20 && Math.random() < 0.4 ? 2 : 1;
+      for (let gi = 0; gi < gatorCount; gi++) {
+        const dir = (gi === 0 ? (Math.random() < 0.5 ? 1 : -1) : -1);
+        const spread = gi * (gapW * 0.35);
+        const startX = dir > 0 ? gapX + 10 + spread : gapX + gapW - 10 - spread;
+        gators.push({
+          x: Math.max(gapX + 10, Math.min(gapX + gapW - 10, startX)),
+          vx: dir * (55 + Math.random() * 55 + runtime.rowsCleared * 0.5),
+          bounceL: gapX + 10,
+          bounceR: gapX + gapW - 10,
+        });
+      }
     }
     runtime.obstacles.push({ y, gapX, gapW, gators, cleared: false });
     // Reset spawn timer
@@ -5648,6 +5693,7 @@ const trajectoryArcade = (() => {
             // Remove the laser that hit
             l.y = -9999;
             runtime.gatorsBlasted++;
+            runtime.score += 2; // bonus points per gator blasted
             return false;
           }
         }
@@ -6227,20 +6273,20 @@ const trajectoryArcade = (() => {
     const scoreLabels = ["ALTITUDE", "ALTITUDE", "HELIO DIST", "HELIOPAUSE", "PARSECS"];
     const scoreLabel = scoreLabels[Math.min(4, phase)];
 
-    // Score block (top left)
+    // Score block (top left) — shows combined score (altitude rows + gator bonus)
     ctx.fillStyle = "rgba(10, 14, 20, 0.72)";
-    ctx.fillRect(14, 12, 180, 52);
+    ctx.fillRect(14, 12, 206, 52);
     ctx.strokeStyle = FTL.panelBorder;
     ctx.lineWidth = 1;
-    ctx.strokeRect(14, 12, 180, 52);
+    ctx.strokeRect(14, 12, 206, 52);
 
     ctx.fillStyle = FTL.textBright;
     ctx.font = "bold 22px monospace";
     ctx.textAlign = "left";
     ctx.fillText(`${scoreLabel}  ${runtime.score}`, 24, 36);
-    ctx.fillStyle = FTL.textDim;
+    ctx.fillStyle = FTL.green;
     ctx.font = "13px monospace";
-    ctx.fillText(`APOAPSIS REC  ${runtime.highScore}`, 24, 54);
+    ctx.fillText(`GATORS BLASTED  ${runtime.gatorsBlasted}  (+${runtime.gatorsBlasted * 2})`, 24, 54);
 
     // Boost bar (top right)
     const bx = W - 170;
@@ -6292,17 +6338,17 @@ const trajectoryArcade = (() => {
     const lx2 = 14;
     const ly2 = 72;
     ctx.fillStyle = "rgba(10, 14, 20, 0.72)";
-    ctx.fillRect(lx2, ly2, 180, 32);
+    ctx.fillRect(lx2, ly2, 206, 32);
     ctx.strokeStyle = FTL.panelBorder;
     ctx.lineWidth = 1;
-    ctx.strokeRect(lx2, ly2, 180, 32);
+    ctx.strokeRect(lx2, ly2, 206, 32);
     ctx.fillStyle = laserReady ? FTL.green : FTL.textDim;
     ctx.font = "bold 12px monospace";
     ctx.textAlign = "left";
     ctx.fillText(laserReady ? "LASER  READY" : `LASER  ${runtime.laserCooldown.toFixed(1)}s`, lx2 + 10, ly2 + 14);
     ctx.fillStyle = FTL.textDim;
     ctx.font = "11px monospace";
-    ctx.fillText(`GATORS BLASTED  ${runtime.gatorsBlasted}`, lx2 + 10, ly2 + 26);
+    ctx.fillText(`BEST  ${runtime.highScore}`, lx2 + 10, ly2 + 26);
 
     ctx.textAlign = "left";
   }
@@ -6329,11 +6375,13 @@ const trajectoryArcade = (() => {
 
     ctx.fillStyle = FTL.text;
     ctx.font = "17px monospace";
-    ctx.fillText("← →  lateral Δv     ↑ / SPACE  ignite burn", W / 2, H / 2 + 28);
-    ctx.fillText("Z / X  laser cannon · Blast the space gators!", W / 2, H / 2 + 54);
+    ctx.fillText("← →  steer    ↑ / SPACE  boost    Z / X  fire laser", W / 2, H / 2 + 28);
+    ctx.fillStyle = FTL.green;
+    ctx.font = "bold 16px monospace";
+    ctx.fillText("★  BLAST GATORS FOR +2 BONUS POINTS EACH  ★", W / 2, H / 2 + 54);
     ctx.fillStyle = FTL.textDim;
     ctx.font = "14px monospace";
-    ctx.fillText("Navigate Kessler fields · Evade or eliminate xenobio entities!", W / 2, H / 2 + 76);
+    ctx.fillText("Navigate cosmic asteroid fields · Eliminate alien gators to rack up score!", W / 2, H / 2 + 76);
 
     const blink = Math.floor(Date.now() / 500) % 2;
     if (blink) {
@@ -6370,33 +6418,41 @@ const trajectoryArcade = (() => {
     ctx.fillStyle = titleColor;
     ctx.font = "bold 52px monospace";
     ctx.textAlign = "center";
-    ctx.fillText("MISSION ABORT", W / 2, H / 2 - 74);
+    ctx.fillText("MISSION ABORT", W / 2, H / 2 - 84);
 
     if (runtime.endReason) {
       ctx.fillStyle = FTL.textDim;
       ctx.font = "13px monospace";
-      ctx.fillText(runtime.endReason, W / 2, H / 2 - 44);
+      ctx.fillText(runtime.endReason, W / 2, H / 2 - 56);
     }
 
     ctx.fillStyle = FTL.textBright;
-    ctx.font = "bold 32px monospace";
-    ctx.fillText(`ALTITUDE  ${runtime.score}`, W / 2, H / 2 - 4);
+    ctx.font = "bold 28px monospace";
+    ctx.fillText(`SCORE  ${runtime.score}`, W / 2, H / 2 - 18);
+
+    // Gator kill breakdown
+    ctx.fillStyle = FTL.green;
+    ctx.font = "15px monospace";
+    ctx.fillText(
+      `ROWS ${runtime.rowsCleared}  +  GATORS BLASTED ${runtime.gatorsBlasted} × 2  =  ${runtime.score}`,
+      W / 2, H / 2 + 12
+    );
 
     if (runtime.score > 0 && runtime.score >= runtime.highScore) {
       ctx.fillStyle = FTL.yellow;
       ctx.font = "bold 20px monospace";
-      ctx.fillText("✦ APOAPSIS RECORD ✦", W / 2, H / 2 + 34);
+      ctx.fillText("✦ NEW RECORD ✦", W / 2, H / 2 + 46);
     } else {
       ctx.fillStyle = FTL.textDim;
       ctx.font = "18px monospace";
-      ctx.fillText(`BEST  ${runtime.highScore}`, W / 2, H / 2 + 34);
+      ctx.fillText(`BEST  ${runtime.highScore}`, W / 2, H / 2 + 46);
     }
 
     const blink = Math.floor(Date.now() / 500) % 2;
     if (blink) {
       ctx.fillStyle = FTL.green;
       ctx.font = "bold 20px monospace";
-      ctx.fillText("PRESS ↑ OR THRUST TO RELAUNCH", W / 2, H / 2 + 82);
+      ctx.fillText("PRESS ↑ OR THRUST TO RELAUNCH", W / 2, H / 2 + 88);
     }
 
     ctx.textAlign = "left";
