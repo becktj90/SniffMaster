@@ -5482,9 +5482,13 @@ function setDashboardView(view) {
         if (nextView === "environment" || nextView === "analysis") {
             const map = ensureWeatherMap();
             if (map) {
-                map.invalidateSize();
-                syncWeatherMapPosition(lastData || {});
-                syncMapLayers();
+                // Defer so the browser finishes painting the newly-visible card
+                // before Leaflet measures the container dimensions.
+                setTimeout(() => {
+                    map.invalidateSize();
+                    syncWeatherMapPosition(lastData || {});
+                    syncMapLayers();
+                }, 50);
             }
         }
         if (nextView === "space") {
