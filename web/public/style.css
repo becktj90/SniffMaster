@@ -3689,6 +3689,15 @@ body[data-theme="retro90s"] .footer-bar {
   opacity: 0.5;
 }
 
+.map-radar-ts {
+  font-size: 0.70rem;
+  color: rgba(0, 242, 255, 0.75);
+  font-family: 'JetBrains Mono', monospace;
+  padding: 4px 6px;
+  min-width: 46px;
+  text-align: center;
+}
+
 .map-fallback {
   position: absolute;
   inset: 0;
