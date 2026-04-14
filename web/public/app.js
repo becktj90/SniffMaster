@@ -2195,7 +2195,7 @@ async function ensureSatelliteLayer() {
   mapLayers.satellite = window.L.tileLayer(tileUrl, {
     opacity: 0.55,
     attribution: "Satellite © RainViewer",
-    maxNativeZoom: 6,
+    maxNativeZoom: 4,
     maxZoom: 18,
   });
   return mapLayers.satellite;
