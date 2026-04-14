@@ -96,10 +96,11 @@
     <nav class="section-nav" aria-label="Dashboard sections">
       <button class="section-btn is-active" type="button" data-view-target="dashboard">Overview</button>
       <button class="section-btn" type="button" data-view-target="environment">Local Area</button>
-      <button class="section-btn" type="button" data-view-target="analysis">Air & Signal</button>
+      <button class="section-btn" type="button" data-view-target="analysis">Air &amp; Signal</button>
       <button class="section-btn" type="button" data-view-target="history">Trends</button>
       <button class="section-btn" type="button" data-view-target="space">Space</button>
       <button class="section-btn" type="button" data-view-target="labs">Labs</button>
+      <button class="section-btn" type="button" data-view-target="system">System</button>
     </nav>
   </div>
   <div class="view-meta-row">
@@ -1085,6 +1086,8 @@
           <button class="map-layer-chip is-active" id="map-layer-rain" type="button" title="Rain radar">🌧 Rain</button>
           <button class="map-layer-chip" id="map-layer-satellite" type="button" title="Infrared satellite / storm clouds">🌩 Storms</button>
           <button class="map-layer-chip" id="map-layer-wind" type="button" title="Wind info">💨 Wind</button>
+          <button class="map-layer-chip" id="map-layer-animate" type="button" title="Animate radar loop">▶ Loop</button>
+          <span class="map-radar-ts" id="map-radar-ts"></span>
         </div>
         <div class="map-overlay">
           <div class="map-title" id="map-city">Location pending</div>
