@@ -1006,6 +1006,18 @@
       <div class="source-caption">Source: experimental synthesis of live gas, room, and device telemetry</div>
     </section>
 
+    <section class="card" id="card-trend-series" data-view="history">
+      <div class="card-header">
+        <span>24-Hour Trend</span>
+        <span class="header-pill" id="trend-series-badge">Rolling window</span>
+      </div>
+      <p class="card-summary">VOC concentration (cyan) and air cleanliness score (green) over the past 24 hours.</p>
+      <div class="trend-series-shell">
+        <canvas id="trend-series-canvas" width="960" height="180" aria-label="24-hour VOC and cleanliness trend chart"></canvas>
+      </div>
+      <div class="source-caption">Source: device sensor snapshots · 10-minute relay intervals · last 24 hours</div>
+    </section>
+
     <section class="card" id="card-chart" data-view="history">
       <div class="card-header">
         <span>Daily Rhythm</span>

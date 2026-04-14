@@ -1389,6 +1389,20 @@ body[data-theme="retro90s"] .footer-bar {
   display: block;
 }
 
+.trend-series-shell {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(3, 8, 12, 0.92);
+  margin-bottom: 12px;
+}
+
+#trend-series-canvas {
+  width: 100%;
+  height: 180px;
+  display: block;
+}
+
 .scope-scanline {
   position: absolute;
   inset: 0;
