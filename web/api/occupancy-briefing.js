@@ -21,7 +21,7 @@
  * }
  */
 
-import { getLatest, getLatestBleOccupancy, getBleOccupancyHistory } from "../lib/store.js";
+import { getLatest, getLatestBleOccupancy, getBleOccupancyHistory, getHistory } from "../lib/store.js";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 
@@ -44,12 +44,13 @@ function densityLabel(index) {
 }
 
 /** Contextual note explaining the density label. */
-function densityNote(index) {
-  if (index <= 5)  return "No BLE devices detected. The space appears unoccupied or all devices are out of range.";
-  if (index <= 25) return "A small number of devices are present. The space is likely lightly occupied.";
-  if (index <= 55) return "Several devices detected. Moderate occupancy — typical for a normal work session.";
-  if (index <= 80) return "High device density. The space is busy and shared-air buildup will accelerate.";
-  return "Very high device density. The space is at or near capacity.";
+function densityNote(index, source) {
+  const co2ctx = source === "co2" ? " (derived from CO₂ reading)" : "";
+  if (index <= 5)  return `No elevated CO₂ detected. The space appears unoccupied or very well-ventilated${co2ctx}.`;
+  if (index <= 25) return `CO₂ is only slightly above ambient. Light occupancy or excellent ventilation${co2ctx}.`;
+  if (index <= 55) return `CO₂ at a moderate level consistent with normal occupancy — typical for an active work session${co2ctx}.`;
+  if (index <= 80) return `Elevated CO₂ indicates meaningful occupancy. Shared-air buildup is accelerating${co2ctx}.`;
+  return `High CO₂ suggests the space is at or near capacity. Ventilate promptly${co2ctx}.`;
 }
 
 /** Derive a simple trend from the two most recent history entries. */
@@ -64,8 +65,37 @@ function deriveTrend(history) {
   return { direction, delta };
 }
 
+/**
+ * Compute a CO₂-based occupancy index (0–100).
+ * Baseline outdoor CO₂ is ~400 ppm; index saturates at ~1600 ppm (400 + 12×100).
+ * Each index point ≈ 12 ppm above ambient, which loosely tracks one person's
+ * CO₂ contribution in a typical small-to-medium room.
+ */
+const CO2_BASELINE_PPM   = 400; // outdoor ambient
+const CO2_PPM_PER_INDEX  = 12;  // ~12 ppm per index point → 100 at 1 600 ppm
+
+function co2ToOccupancyIndex(co2) {
+  if (!co2 || co2 < 350) return 0;
+  return clamp(Math.round((co2 - CO2_BASELINE_PPM) / CO2_PPM_PER_INDEX), 0, 100);
+}
+
+/**
+ * Build a synthetic occupancy history from raw sensor snapshots.
+ * Each entry becomes {occupancyIndex, co2, receivedAt}.
+ */
+function buildCo2History(sensorHistory) {
+  if (!Array.isArray(sensorHistory)) return [];
+  return sensorHistory
+    .filter((h) => num(h.co2) > 0)
+    .map((h) => ({
+      occupancyIndex: co2ToOccupancyIndex(num(h.co2)),
+      co2: num(h.co2),
+      receivedAt: h.receivedAt || null,
+    }));
+}
+
 /** Deterministic fallback briefing when OpenAI is unavailable. */
-function fallbackBriefing(index, deviceCount, trend, snapshot) {
+function fallbackBriefing(index, deviceCount, trend, snapshot, source) {
   const label = densityLabel(index);
   const trendStr = trend.direction === "rising"
     ? "and occupancy is climbing"
@@ -73,6 +103,9 @@ function fallbackBriefing(index, deviceCount, trend, snapshot) {
       ? "and occupancy is declining"
       : "with stable occupancy";
   const co2 = num(snapshot?.co2);
+  if (source === "co2" && co2 > 0) {
+    return `${label} occupancy (index ${index}) estimated from CO₂ at ${Math.round(co2)} ppm ${trendStr}. CO₂ is a reliable proxy for room occupancy — elevated readings indicate more people or reduced ventilation.`;
+  }
   const co2Line = co2 > 900
     ? ` CO2 is elevated at ${Math.round(co2)} ppm — consistent with the detected occupancy load.`
     : co2 > 0
@@ -96,28 +129,31 @@ function extractOutputText(responseJson) {
   return parts.join("\n").trim();
 }
 
-async function generateOpenAiBriefing(bleEntry, snapshot, trend, fallback) {
+async function generateOpenAiBriefing(occupancyData, snapshot, trend, fallback, source) {
   const apiKey = `${process.env.OPENAI_API_KEY || ""}`.trim();
   if (!apiKey) return null;
 
   const model = `${process.env.OPENAI_OCCUPANCY_MODEL || process.env.OPENAI_WEATHER_MODEL || "gpt-5.4-nano"}`.trim();
-  const index      = num(bleEntry?.occupancyIndex);
-  const devices    = num(bleEntry?.deviceCount);
-  const avgRssi    = num(bleEntry?.avgRssi, NaN);
-  const co2        = num(snapshot?.co2);
-  const iaq        = num(snapshot?.iaq);
-  const tempF      = num(snapshot?.tempF);
-  const humidity   = num(snapshot?.humidity);
-  const trendStr   = trend.direction;
+  const index    = num(occupancyData?.occupancyIndex);
+  const devices  = num(occupancyData?.deviceCount);
+  const avgRssi  = num(occupancyData?.avgRssi, NaN);
+  const co2      = num(snapshot?.co2);
+  const iaq      = num(snapshot?.iaq);
+  const tempF    = num(snapshot?.tempF);
+  const humidity = num(snapshot?.humidity);
+  const trendStr = trend.direction;
+
+  const sourceNote = source === "co2"
+    ? `Occupancy is estimated from CO₂ (${Math.round(co2)} ppm). CO₂ above ~400 ppm ambient indicates people are present.`
+    : `${devices} BLE device(s) detected.${Number.isFinite(avgRssi) ? ` Average signal: ${Math.round(avgRssi)} dBm.` : ""}`;
 
   const prompt = [
     "Write a concise occupancy insight for a professional indoor air quality and space management dashboard.",
     "Keep it to 2 or 3 sentences, under 80 words.",
     "Focus on occupancy level, any air quality implications, and actionable ventilation or density guidance.",
-    "Do not mention Bluetooth, BLE, or device counting directly — frame it as space occupancy or room density.",
     "Do not be chatty or mention AI.",
-    `Current occupancy index: ${index}/100 (${densityLabel(index)}), ${devices} device(s) detected, trend: ${trendStr}.`,
-    Number.isFinite(avgRssi) ? `Average signal strength: ${Math.round(avgRssi)} dBm.` : "",
+    `Current occupancy index: ${index}/100 (${densityLabel(index)}), trend: ${trendStr}.`,
+    sourceNote,
     co2 > 0 ? `Indoor CO2: ${Math.round(co2)} ppm, IAQ: ${Math.round(iaq)}, Temp: ${Math.round(tempF)}F, Humidity: ${Math.round(humidity)}%.` : "",
     `Fallback: ${fallback}`,
   ].filter(Boolean).join("\n");
@@ -153,38 +189,64 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [bleEntry, snapshot, history] = await Promise.all([
+    const [bleEntry, snapshot, bleHistory, sensorHistory] = await Promise.all([
       getLatestBleOccupancy(),
       getLatest(),
       getBleOccupancyHistory(48),
+      getHistory(48),
     ]);
 
-    // Return 204 if no BLE data has ever been posted
+    // Return 204 if no data at all
     if (!bleEntry && !snapshot) return res.status(204).end();
 
-    // Merge: prefer dedicated BLE entry; fall back to fields in the latest snapshot
-    const entry = bleEntry || {
-      deviceCount:     num(snapshot?.bleDeviceCount),
-      occupancyIndex:  num(snapshot?.bleOccupancyIndex),
-      avgRssi:         num(snapshot?.bleAvgRssi, NaN),
-      strongestRssi:   num(snapshot?.bleStrongestRssi, NaN),
-      seenRecently:    Boolean(snapshot?.bleSeenRecently),
-      enabled:         Boolean(snapshot?.blePresenceEnabled),
-      receivedAt:      snapshot?.receivedAt || null,
-    };
+    // Determine source: prefer BLE if available, otherwise fall back to CO₂
+    const co2 = num(snapshot?.co2);
+    const hasBle = Boolean(bleEntry || num(snapshot?.bleDeviceCount));
+    const source = hasBle ? "ble" : co2 > 0 ? "co2" : "none";
 
-    const index     = clamp(num(entry.occupancyIndex), 0, 100);
-    const devices   = Math.max(0, num(entry.deviceCount));
-    const avgRssi   = num(entry.avgRssi, NaN);
-    const strongest = num(entry.strongestRssi, NaN);
-    const trend     = deriveTrend(history);
-    const fallback  = fallbackBriefing(index, devices, trend, snapshot);
+    let index, devices, avgRssi, strongest, history;
+
+    if (source === "ble") {
+      // Merge: prefer dedicated BLE entry; fall back to fields in the latest snapshot
+      const entry = bleEntry || {
+        deviceCount:     num(snapshot?.bleDeviceCount),
+        occupancyIndex:  num(snapshot?.bleOccupancyIndex),
+        avgRssi:         num(snapshot?.bleAvgRssi, NaN),
+        strongestRssi:   num(snapshot?.bleStrongestRssi, NaN),
+        seenRecently:    Boolean(snapshot?.bleSeenRecently),
+        enabled:         Boolean(snapshot?.blePresenceEnabled),
+        receivedAt:      snapshot?.receivedAt || null,
+      };
+      index    = clamp(num(entry.occupancyIndex), 0, 100);
+      devices  = Math.max(0, num(entry.deviceCount));
+      avgRssi  = num(entry.avgRssi, NaN);
+      strongest = num(entry.strongestRssi, NaN);
+      history  = bleHistory.slice(0, 48).map((h) => ({
+        occupancyIndex: num(h.occupancyIndex),
+        deviceCount:    num(h.deviceCount),
+        co2:            null,
+        receivedAt:     h.receivedAt || null,
+      }));
+    } else if (source === "co2") {
+      // CO₂-based occupancy: index saturates at ~1600 ppm
+      index    = co2ToOccupancyIndex(co2);
+      devices  = 0;
+      avgRssi  = NaN;
+      strongest = NaN;
+      history  = buildCo2History(sensorHistory).slice(0, 48);
+    } else {
+      return res.status(204).end();
+    }
+
+    const trend   = deriveTrend(history.length >= 2 ? history : []);
+    const fallback = fallbackBriefing(index, devices, trend, snapshot, source);
 
     let briefing = fallback;
     let mode = "deterministic";
 
     try {
-      const aiBriefing = await generateOpenAiBriefing(entry, snapshot, trend, fallback);
+      const occupancyData = { occupancyIndex: index, deviceCount: devices, avgRssi };
+      const aiBriefing = await generateOpenAiBriefing(occupancyData, snapshot, trend, fallback, source);
       if (aiBriefing) {
         briefing = aiBriefing;
         mode = "openai";
@@ -198,19 +260,22 @@ export default async function handler(req, res) {
       deviceCount:     devices,
       avgRssi:         Number.isFinite(avgRssi)   ? Math.round(avgRssi)   : null,
       strongestRssi:   Number.isFinite(strongest) ? Math.round(strongest) : null,
-      seenRecently:    Boolean(entry.seenRecently),
-      enabled:         Boolean(entry.enabled),
+      seenRecently:    source === "ble" ? Boolean(snapshot?.bleSeenRecently) : true,
+      enabled:         true,
       densityLabel:    densityLabel(index),
-      densityNote:     densityNote(index),
+      densityNote:     densityNote(index, source),
+      source,
+      co2Reading:      co2 > 0 ? Math.round(co2) : null,
       trend,
       history:         history.slice(0, 48).map((h) => ({
         occupancyIndex: num(h.occupancyIndex),
         deviceCount:    num(h.deviceCount),
+        co2:            h.co2 || null,
         receivedAt:     h.receivedAt || null,
       })),
       briefing,
       mode,
-      receivedAt:      entry.receivedAt || null,
+      receivedAt:      snapshot?.receivedAt || null,
       generatedAt:     Date.now(),
     });
   } catch (err) {
