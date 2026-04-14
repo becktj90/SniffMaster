@@ -2158,20 +2158,33 @@ function setMapLayerStatus(_text) {
   // no-op: layer status element removed from UI
 }
 
+let satViewerState = { fetchedAt: 0, tileUrl: "" };
+
 async function fetchRainViewerSatelliteTileUrl() {
+  const now = Date.now();
+  if (satViewerState.tileUrl && now - satViewerState.fetchedAt < 5 * 60 * 1000) {
+    return satViewerState.tileUrl;
+  }
   try {
     const res = await fetch("https://api.rainviewer.com/public/weather-maps.json", { cache: "no-store" });
-    if (!res.ok) return "";
+    if (!res.ok) throw new Error(`sat ${res.status}`);
     const data = await res.json();
     const frames = data?.satellite?.infrared;
-    if (!Array.isArray(frames) || !frames.length) return "";
-    const frame = frames[frames.length - 1];
     const host = data?.host;
-    if (!frame?.path || !host) return "";
-    return `${host}${frame.path}/256/{z}/{x}/{y}/0/0.png`;
+    if (!Array.isArray(frames) || !frames.length || !host) throw new Error("missing sat frame");
+    const frame = frames[frames.length - 1];
+    if (!frame?.path) throw new Error("missing sat path");
+    const newUrl = `${host}${frame.path}/256/{z}/{x}/{y}/0/0.png`;
+    const prevUrl = satViewerState.tileUrl;
+    satViewerState = { fetchedAt: now, tileUrl: newUrl };
+    // Live-update the existing satellite layer when the URL changes
+    if (newUrl !== prevUrl && mapLayers.satellite) {
+      mapLayers.satellite.setUrl(newUrl);
+    }
   } catch (_) {
-    return "";
+    if (!satViewerState.tileUrl) satViewerState = { fetchedAt: now, tileUrl: "" };
   }
+  return satViewerState.tileUrl;
 }
 
 async function ensureSatelliteLayer() {
@@ -2182,7 +2195,7 @@ async function ensureSatelliteLayer() {
   mapLayers.satellite = window.L.tileLayer(tileUrl, {
     opacity: 0.55,
     attribution: "Satellite © RainViewer",
-    maxNativeZoom: 4,
+    maxNativeZoom: 6,
     maxZoom: 18,
   });
   return mapLayers.satellite;
@@ -2241,8 +2254,9 @@ function renderMapLayerButtons() {
 
 async function fetchRainViewerTileUrl() {
   const now = Date.now();
-  if (rainViewerState.tileUrl && now - rainViewerState.fetchedAt < 5 * 60 * 1000) {
-    return rainViewerState.tileUrl;
+  const prevUrl = rainViewerState.tileUrl;
+  if (prevUrl && now - rainViewerState.fetchedAt < 5 * 60 * 1000) {
+    return prevUrl;
   }
 
   try {
@@ -2257,10 +2271,12 @@ async function fetchRainViewerTileUrl() {
     radarAnimState.host = host;
     radarAnimState.frameIndex = radarAnimState.frames.length - 1; // start at latest
     const frame = pastFrames[pastFrames.length - 1];
-    rainViewerState = {
-      fetchedAt: now,
-      tileUrl: `${host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`,
-    };
+    const newUrl = `${host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+    rainViewerState = { fetchedAt: now, tileUrl: newUrl };
+    // Live-update the existing radar layer when the URL changes (keeps radar current)
+    if (newUrl !== prevUrl && mapLayers.radar && !radarAnimState.playing) {
+      mapLayers.radar.setUrl(newUrl);
+    }
   } catch (_) {
     if (!rainViewerState.tileUrl) {
       rainViewerState = { fetchedAt: now, tileUrl: "" };
@@ -2277,9 +2293,9 @@ async function ensureRadarLayer() {
   if (!tileUrl) return null;
 
   mapLayers.radar = window.L.tileLayer(tileUrl, {
-    opacity: 0.58,
+    opacity: 0.65,
     attribution: "Radar © RainViewer",
-    maxNativeZoom: 7,
+    maxNativeZoom: 12,
     maxZoom: 18,
   });
   return mapLayers.radar;
@@ -2358,11 +2374,19 @@ function ensureWeatherMap() {
   }).addTo(weatherMap);
   weatherMap.setView([CAPE_MAP_LAT, CAPE_MAP_LON], 10);
   renderMapLayerButtons();
+  syncMapLayers(); // start loading rain radar layer immediately (async, fire-and-forget)
   return weatherMap;
 }
 
 async function syncMapLayers() {
   if (!weatherMap) return;
+
+  // Always call fetch functions (they are cache-backed at 5 min) so the tile
+  // URL is refreshed and the existing layer is updated when new radar/sat
+  // frames arrive from RainViewer — this keeps the map live.
+  await fetchRainViewerTileUrl();
+  await fetchRainViewerSatelliteTileUrl();
+
   const radarLayer = await ensureRadarLayer();
   if (radarLayer) {
     if (mapLayerActive.rain && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
@@ -4890,7 +4914,151 @@ function buildDailyRhythm(history) {
   };
 }
 
+function drawTrendSeries(history) {
+  const canvas = $("trend-series-canvas");
+  if (!canvas) return;
+
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 960;
+  const height = canvas.clientHeight || 180;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const nowSec = Date.now() / 1000;
+  const windowSec = 24 * 3600;
+
+  const raw = Array.isArray(history) ? history : [];
+  const pts = raw
+    .filter(h => h.receivedAt && nowSec - h.receivedAt < windowSec)
+    .map(h => ({
+      t: h.receivedAt,
+      voc: Math.max(0, num(h.voc)),
+      clean: clamp(100 - num(h.airScore, 100), 0, 100),
+    }))
+    .sort((a, b) => a.t - b.t);
+
+  const padL = 46, padR = 52, padT = 20, padB = 30;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  ctx.fillStyle = "rgba(3, 8, 12, 0.92)";
+  ctx.fillRect(0, 0, width, height);
+
+  if (!pts.length) {
+    ctx.fillStyle = "rgba(120, 140, 160, 0.6)";
+    ctx.font = `13px monospace`;
+    ctx.textAlign = "center";
+    ctx.fillText("Waiting for sensor history — data will appear here once readings arrive.", width / 2, height / 2 + 5);
+    return;
+  }
+
+  const tEnd = nowSec;
+  const tStart = tEnd - windowSec;
+  const maxVoc = Math.max(2.0, ...pts.map(p => p.voc)) * 1.08;
+
+  function xOf(t) { return padL + ((t - tStart) / windowSec) * plotW; }
+  function yVoc(v) { return padT + (1 - v / maxVoc) * plotH; }
+  function yClean(c) { return padT + (1 - c / 100) * plotH; }
+
+  // Hour grid lines + labels
+  for (let h = 0; h <= 24; h += 2) {
+    const x = padL + (h / 24) * plotW;
+    ctx.strokeStyle = "rgba(52, 91, 110, 0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+    const tsec = tStart + h * 3600;
+    const d = new Date(tsec * 1000);
+    const label = h === 24 ? "now" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    ctx.fillStyle = "rgba(120, 140, 160, 0.55)";
+    ctx.font = "10px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(label, x, padT + plotH + 14);
+  }
+
+  // Horizontal guide lines + y-axis labels
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + (i / 4) * plotH;
+    ctx.strokeStyle = "rgba(52, 91, 110, 0.15)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+
+    const vocVal = maxVoc * (1 - i / 4);
+    ctx.fillStyle = "rgba(0, 242, 255, 0.45)";
+    ctx.font = "9px monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(vocVal.toFixed(1), padL - 4, y + 4);
+
+    const cleanVal = 100 * (1 - i / 4);
+    ctx.fillStyle = "rgba(100, 220, 120, 0.45)";
+    ctx.textAlign = "left";
+    ctx.fillText(`${Math.round(cleanVal)}%`, padL + plotW + 4, y + 4);
+  }
+
+  // "now" vertical marker
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.moveTo(padL + plotW, padT); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Clean % line (dashed green)
+  ctx.strokeStyle = "rgba(100, 220, 120, 0.60)";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    i === 0 ? ctx.moveTo(xOf(p.t), yClean(p.clean)) : ctx.lineTo(xOf(p.t), yClean(p.clean));
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // VOC fill under curve (only meaningful with 2+ points)
+  if (pts.length >= 2) {
+    ctx.fillStyle = "rgba(0, 242, 255, 0.07)";
+    ctx.beginPath();
+    ctx.moveTo(xOf(pts[0].t), padT + plotH);
+    pts.forEach(p => ctx.lineTo(xOf(p.t), yVoc(p.voc)));
+    ctx.lineTo(xOf(pts[pts.length - 1].t), padT + plotH);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // VOC line (solid cyan)
+  ctx.strokeStyle = "rgba(0, 242, 255, 0.85)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    i === 0 ? ctx.moveTo(xOf(p.t), yVoc(p.voc)) : ctx.lineTo(xOf(p.t), yVoc(p.voc));
+  });
+  ctx.stroke();
+
+  // Dots when sparse
+  if (pts.length <= 24) {
+    pts.forEach(p => {
+      ctx.fillStyle = "rgba(0, 242, 255, 0.9)";
+      ctx.beginPath();
+      ctx.arc(xOf(p.t), yVoc(p.voc), 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  // Legend
+  ctx.font = "10px monospace";
+  ctx.fillStyle = "rgba(0, 242, 255, 0.75)";
+  ctx.textAlign = "left";
+  ctx.fillText("── VOC (ppm)", padL, padT - 6);
+  ctx.fillStyle = "rgba(100, 220, 120, 0.75)";
+  ctx.fillText("╌╌ Clean (%)", padL + 95, padT - 6);
+  ctx.fillStyle = "rgba(120, 140, 160, 0.55)";
+  ctx.textAlign = "right";
+  ctx.fillText(`${pts.length} samples · last 24 h`, padL + plotW, padT - 6);
+}
+
 function drawChart(history) {
+  drawTrendSeries(history);
   const shell = $("history-chart");
   const detail = $("heatmap-detail");
   if (!shell) return;
