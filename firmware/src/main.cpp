@@ -5,7 +5,7 @@
 /***********************************************************
   SniffMaster Pro v4.0 - BSEC2 + WiFi + SmellNet + Web Portal
   Hardware:
-    - Seeed XIAO ESP32-C3/S3 on Expansion Board
+    - Seeed XIAO ESP32-C3/S3/C2 on Expansion Board
     - BME688 on Grove I2C (addr 0x76)
     - Built-in SSD1306 128x64 OLED (addr 0x3C)
     - Passive buzzer on D3
@@ -2565,16 +2565,30 @@ bool fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return false;
   quietBleForCloud();
   HTTPClient http;
+
+  // Use GPS coordinates when available for accurate local weather;
+  // fall back to wttr.in IP-based geolocation when no fix yet.
   // %25t → server receives %t, etc. (wttr.in format codes, &u = imperial)
-  http.begin("http://wttr.in/?format=%25t|%25f|%25C|%25h|%25w&u");
-  http.setTimeout(8000);
+  String url;
+  if (deviceLat != 0.0f || deviceLon != 0.0f) {
+    char coordBuf[48];
+    snprintf(coordBuf, sizeof(coordBuf), "%.4f,%.4f", deviceLat, deviceLon);
+    url = String("http://wttr.in/") + coordBuf + "?format=%25t|%25f|%25C|%25h|%25w&u";
+  } else {
+    url = "http://wttr.in/?format=%25t|%25f|%25C|%25h|%25w&u";
+  }
+  http.begin(url);
+  http.setTimeout(12000);
   int code = http.GET();
   if (code != 200) { http.end(); return false; }
   String body = http.getString();
   http.end();
   body.trim();
 
-  // Expected: "+72F|+68F|Partly cloudy|65%|8 mph"
+  // Reject HTML error pages (wttr.in sometimes returns a full HTML page)
+  if (body.length() == 0 || body.startsWith("<") || body.indexOf('|') < 0) return false;
+
+  // Expected: "+72°F|+68°F|Partly cloudy|65%|↑ 8 mph"
   int p1 = body.indexOf('|');
   if (p1 < 0) return false;
   int p2 = body.indexOf('|', p1 + 1);
@@ -2616,12 +2630,13 @@ bool fetchWeatherFacts() {
   HTTPClient http;
   // Get Death Valley temperature (iconic world heat benchmark, no API key needed)
   http.begin("http://wttr.in/Death+Valley,CA?format=%25t&u");
-  http.setTimeout(8000);
+  http.setTimeout(12000);
   int code = http.GET();
   if (code != 200) { http.end(); return false; }
   String body = http.getString();
   http.end();
   body.trim();
+  if (body.length() == 0 || body.startsWith("<")) return false;
   facts.dvTempF = (int)body.toFloat();
 
   // Moon phase from local calendar time (set via NTP in setup)
@@ -5790,7 +5805,13 @@ void onSensorData(const bme68xData data, const bsecOutputs outputs, const Bsec2 
 void setup() {
   Serial.begin(115200);
   delay(500);
+  // ESP32-C2 default Wire pins differ from C3; specify GPIO6/GPIO7 explicitly
+  // so the OLED and sensors initialise correctly on both chips.
+#if defined(CONFIG_IDF_TARGET_ESP32C2) || defined(ARDUINO_XIAO_ESP32C2)
+  Wire.begin(6, 7);   // SDA=GPIO6, SCL=GPIO7 for XIAO ESP32-C2
+#else
   Wire.begin();
+#endif
   Wire.setTimeOut(60000);
   Wire.setClock(100000);
   pinMode(BUZZER_PIN, OUTPUT);
@@ -5809,7 +5830,11 @@ void setup() {
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
     Serial.println(F("OLED init failed — retrying..."));
     delay(500);
+#if defined(CONFIG_IDF_TARGET_ESP32C2) || defined(ARDUINO_XIAO_ESP32C2)
+    Wire.begin(6, 7);
+#else
     Wire.begin();
+#endif
     Wire.setClock(100000);
     if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
       Serial.println(F("OLED init failed after retry — continuing without display"));
@@ -5876,7 +5901,11 @@ void setup() {
     Serial.println(F("BSEC2 init failed — retrying with I2C reset..."));
     Wire.end();
     delay(200);
+#if defined(CONFIG_IDF_TARGET_ESP32C2) || defined(ARDUINO_XIAO_ESP32C2)
+    Wire.begin(6, 7);
+#else
     Wire.begin();
+#endif
     Wire.setTimeOut(60000);
     Wire.setClock(100000);
     delay(100);

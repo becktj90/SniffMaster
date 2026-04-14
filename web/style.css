@@ -5381,6 +5381,12 @@ body[data-theme="retro90s"] .footer-bar {
   box-shadow: inset 0 0 20px rgba(73, 232, 255, 0.08);
 }
 
+.arcade-touch-btn.fire {
+  border-color: rgba(112, 248, 193, 0.42);
+  box-shadow: inset 0 0 18px rgba(112, 248, 193, 0.1);
+  color: #70f8c1;
+}
+
 .arcade-touch-btn.detach {
   border-color: rgba(255, 208, 92, 0.4);
   box-shadow: inset 0 0 18px rgba(255, 208, 92, 0.08);
