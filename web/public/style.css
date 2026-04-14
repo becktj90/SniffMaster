@@ -1699,7 +1699,8 @@ body[data-theme="retro90s"] .footer-bar {
 #card-weather-intel,
 #card-space,
 #card-history,
-#card-controls {
+#card-controls,
+#card-trend-series {
   grid-column: span 12;
 }
 
@@ -4845,7 +4846,8 @@ body[data-theme="retro90s"] .footer-bar {
   #card-events,
   #card-cause,
   #card-occupancy,
-  #card-theme {
+  #card-theme,
+  #card-trend-series {
     grid-column: span 12;
   }
 
@@ -4996,7 +4998,8 @@ body[data-theme="retro90s"] .footer-bar {
   #card-events,
   #card-cause,
   #card-occupancy,
-  #card-theme {
+  #card-theme,
+  #card-trend-series {
     grid-column: span 12;
   }
 
