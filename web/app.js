@@ -2319,7 +2319,10 @@ function startRadarAnim() {
 
 function stopRadarAnim() {
   radarAnimState.playing = false;
-  if (radarAnimState.rafId) { cancelAnimationFrame(radarAnimState.rafId); radarAnimState.rafId = 0; }
+  if (radarAnimState.rafId) {
+    cancelAnimationFrame(radarAnimState.rafId);
+    radarAnimState.rafId = 0;
+  }
   // Restore to latest frame
   if (radarAnimState.frames.length && radarAnimState.host && mapLayers.radar) {
     radarAnimState.frameIndex = radarAnimState.frames.length - 1;
