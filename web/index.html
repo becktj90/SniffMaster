@@ -557,7 +557,7 @@
         </div>
         <div class="melody-selected-tags" id="melody-library-selected-tags"></div>
         <div class="melody-browser-status" id="melody-library-status">Melody bank is loading from the portal.</div>
-        <div class="melody-device-note" id="melody-library-device-note">Unlock remote controls on the System page to queue a tune on the device.</div>
+        <div class="melody-device-note" id="melody-library-device-note">Choose a track to send it to the hardware jukebox.</div>
         <div class="melody-library-list" id="melody-library-list">
           <div class="melody-empty">Melody catalog loading...</div>
         </div>
@@ -1393,34 +1393,22 @@ loop():
       <div class="card-header">
         <span>Control Guide</span>
       </div>
-      <p class="card-summary">Hardware shortcuts plus secure remote actions from this portal.</p>
+      <p class="card-summary">Hardware shortcuts plus remote actions from this portal.</p>
       <div class="remote-controls-shell">
         <div class="remote-controls-head">
           <div>
             <div class="remote-controls-title">Remote Device Actions</div>
-            <div class="remote-controls-note">Unlock this tab with the owner key, then queue a live device action without touching the hardware.</div>
+            <div class="remote-controls-note">Queue a live device action without touching the hardware.</div>
           </div>
-          <span class="header-pill" id="remote-controls-pill" data-tone="neutral">Locked</span>
-        </div>
-        <div class="remote-auth-row">
-          <input
-            class="remote-key-input"
-            id="remote-owner-key"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Owner key for this browser tab"
-          >
-          <button class="chrome-btn" id="remote-owner-save-btn" type="button">Unlock</button>
-          <button class="chrome-btn" id="remote-owner-clear-btn" type="button">Clear</button>
+          <span class="header-pill" id="remote-controls-pill" data-tone="good">Ready</span>
         </div>
         <div class="remote-controls-status" id="remote-controls-status">
-          Locked. View access is public, but remote device actions require the owner key for this tab.
+          Remote actions ready. Queue a live device action without touching the hardware.
         </div>
         <div class="remote-actions-grid">
-          <button class="chrome-btn remote-action-btn" data-remote-action="refresh" type="button" disabled>Sync Device Now</button>
-          <button class="chrome-btn remote-action-btn" data-remote-action="breath_check" type="button" disabled>Run Breath Check</button>
-          <button class="chrome-btn remote-action-btn" data-remote-action="ghost_scan" type="button" disabled>Run Ghost Scan</button>
+          <button class="chrome-btn remote-action-btn" data-remote-action="refresh" type="button">Sync Device Now</button>
+          <button class="chrome-btn remote-action-btn" data-remote-action="breath_check" type="button">Run Breath Check</button>
+          <button class="chrome-btn remote-action-btn" data-remote-action="ghost_scan" type="button">Run Ghost Scan</button>
         </div>
       </div>
       <div style="overflow-x:auto">
@@ -1528,6 +1516,7 @@ loop():
     <div class="arcade-mobile-controls" id="trajectory-mobile-controls">
       <button class="arcade-touch-btn" type="button" data-trajectory-action="left">← Left</button>
       <button class="arcade-touch-btn thrust" type="button" data-trajectory-action="boost">Boost</button>
+      <button class="arcade-touch-btn fire" type="button" data-trajectory-action="fire">🔫 Fire</button>
       <button class="arcade-touch-btn" type="button" data-trajectory-action="right">Right →</button>
     </div>
   </div>

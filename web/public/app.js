@@ -188,7 +188,7 @@ const VIEW_META = {
   },
   system: {
     title: "System",
-    subtitle: "Owner login, remote device control, hardware specs, and architecture documentation.",
+    subtitle: "Remote device control, hardware specs, and architecture documentation.",
   },
 };
 
@@ -1677,10 +1677,8 @@ function renderMelodyLibrary(d) {
       deviceNote.textContent = "Choose a track to send it to the hardware jukebox.";
     } else if (remoteCommandPending) {
       deviceNote.textContent = `Queueing ${selectedItem.title} on the device now.`;
-    } else if (loadOwnerKey()) {
-      deviceNote.textContent = `Send ${selectedItem.title} to the live device without touching the button panel.`;
     } else {
-      deviceNote.textContent = "Unlock remote controls on the System page to queue a tune on the device.";
+      deviceNote.textContent = `Send ${selectedItem.title} to the live device without touching the button panel.`;
     }
   }
 
@@ -3282,7 +3280,6 @@ function renderDadabase() {
   const payload = dadabaseState.data || dadabaseFallbackPayload();
   const currentEntry = payload.current || dadabaseFallbackPayload().current;
   const entries = buildGroanArchive(payload);
-  const hasOwnerKey = Boolean(loadOwnerKey());
 
   current.textContent = currentEntry.joke || "A fresh daily dad joke will appear here.";
   if (dadabaseState.refreshing) {
@@ -3299,7 +3296,6 @@ function renderDadabase() {
   meta.textContent = [
     dadabaseModeLabel(currentEntry.mode),
     Number.isFinite(generatedAt) ? fmtStamp(generatedAt) : (currentEntry.dateLabel || dailyJokeDateLabel(new Date())),
-    hasOwnerKey ? "Refresh enabled in this tab" : "Unlock System page to force a new one",
   ].join(" · ");
 
   source.textContent = payload.sourceCaption || "Source: local Dadabase classics baked into the portal shell";
@@ -3339,12 +3335,6 @@ function renderDadabase() {
 }
 
 async function ensureDadabase(forceRefresh = false) {
-  if (forceRefresh && !loadOwnerKey()) {
-    dadabaseState.notice = "Unlock remote actions on the System page to refresh the daily joke.";
-    renderDadabase();
-    return dadabaseState.data || dadabaseFallbackPayload();
-  }
-
   if (!forceRefresh && dadabaseState.data && Date.now() - dadabaseState.fetchedAt < DADABASE_TTL_MS) {
     return dadabaseState.data;
   }
@@ -3357,23 +3347,12 @@ async function ensureDadabase(forceRefresh = false) {
 
   dadabaseState.pending = (async () => {
     try {
-      const ownerKey = loadOwnerKey();
       const res = await fetch("/api/dad-joke", {
         method: forceRefresh ? "POST" : "GET",
         cache: "no-store",
-        headers: forceRefresh ? {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${ownerKey}`,
-        } : undefined,
+        headers: forceRefresh ? { "Content-Type": "application/json" } : undefined,
         body: forceRefresh ? "{}" : undefined,
       });
-
-      if (res.status === 401) {
-        clearOwnerKey();
-        syncRemoteControlsUi();
-        dadabaseState.notice = "Owner key rejected. Unlock System again to refresh the joke.";
-        return dadabaseState.data || dadabaseFallbackPayload();
-      }
 
       if (!res.ok) throw new Error(`dadabase ${res.status}`);
 
@@ -4741,25 +4720,25 @@ function drawHeroScope(current, history) {
   ctx.textAlign = "center";
   const xAxisY = height - padB + 13;
   if (usingHistory && liveHistory.length >= 2) {
-    // Use real timestamps from history
+    // Show real HH:MM clock times across the x-axis
     const newestTs = num(liveHistory[liveHistory.length - 1]?.receivedAt, 0);
     const oldestTs = num(liveHistory[0]?.receivedAt, newestTs);
-    const totalSpanSec = Math.max(1, newestTs - oldestTs);
-    // Place labels at 0%, 25%, 50%, 75%, 100% of the x-axis
+    const totalSpanMs = Math.max(1, newestTs - oldestTs);
     [0, 0.25, 0.5, 0.75, 1].forEach((frac) => {
       const x = padL + frac * plotW;
-      const ageSec = Math.round(totalSpanSec * (1 - frac));
-      const label = ageSec === 0 ? "now" : `–${ageSec}s`;
+      const ts = oldestTs + frac * totalSpanMs;
+      const label = frac >= 1 ? "now" : new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
       ctx.fillText(label, x, xAxisY);
     });
   } else {
-    // Synthetic: estimate ~3s per sample interval
+    // Synthetic: estimate ~3s per sample interval, show relative offsets
     const synthCount = 32;
     const secPerSample = 3;
+    const totalSec = synthCount * secPerSample;
     [0, 0.25, 0.5, 0.75, 1].forEach((frac) => {
       const x = padL + frac * plotW;
-      const ageSec = Math.round(synthCount * secPerSample * (1 - frac));
-      const label = ageSec === 0 ? "now" : `–${ageSec}s`;
+      const ageSec = Math.round(totalSec * (1 - frac));
+      const label = ageSec === 0 ? "now" : ageSec < 60 ? `–${ageSec}s` : `–${Math.round(ageSec / 60)}m`;
       ctx.fillText(label, x, xAxisY);
     });
   }
@@ -5090,37 +5069,20 @@ function setRemoteControlsState(message, tone = "neutral") {
 
 function syncRemoteControlsUi(options = {}) {
   const preserveStatus = Boolean(options.preserveStatus);
-  const unlocked = Boolean(loadOwnerKey());
-  const input = $("remote-owner-key");
-  if (input) input.value = "";
   document.querySelectorAll(".remote-action-btn").forEach((button) => {
-    button.disabled = !unlocked || remoteCommandPending;
+    button.disabled = remoteCommandPending;
   });
   if (preserveStatus) return;
-  if (unlocked) {
-    setRemoteControlsState(
-      remoteCommandPending
-        ? "Remote control unlocked. Waiting for the current action to finish queuing."
-        : "Remote control unlocked for this tab. Actions are queued securely through the relay.",
-      remoteCommandPending ? "warn" : "good"
-    );
-  } else {
-    setRemoteControlsState(
-      "Locked. View access is public, but remote device actions require the owner key for this tab.",
-      "neutral"
-    );
-  }
+  setRemoteControlsState(
+    remoteCommandPending
+      ? "Waiting for the current action to finish queuing."
+      : "Remote actions ready. Queue a live device action without touching the hardware.",
+    remoteCommandPending ? "warn" : "good"
+  );
   renderMelodyLibrary(lastData);
 }
 
 async function queueRemoteAction(action, extra = {}) {
-  const ownerKey = loadOwnerKey();
-  if (!ownerKey) {
-    setRemoteControlsState("Enter the owner key first, then queue a device action from here.", "neutral");
-    syncRemoteControlsUi();
-    return;
-  }
-
   remoteCommandPending = true;
   syncRemoteControlsUi();
   setRemoteControlsState("Queueing remote device action...", "warn");
@@ -5128,19 +5090,9 @@ async function queueRemoteAction(action, extra = {}) {
   try {
     const res = await fetch("/api/command", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${ownerKey}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, ...extra }),
     });
-
-    if (res.status === 401) {
-      clearOwnerKey();
-      setRemoteControlsState("Owner key rejected. Unlock again with the correct key for this tab.", "neutral");
-      syncRemoteControlsUi({ preserveStatus: true });
-      return;
-    }
 
     if (!res.ok) {
       throw new Error(`command ${res.status}`);
@@ -5367,7 +5319,7 @@ const trajectoryArcade = (() => {
   const H = 640;
 
   // Input state
-  const input = { left: false, right: false, boost: false };
+  const input = { left: false, right: false, boost: false, fire: false };
   const touchPointers = new Map();
 
   // ── 8-bit color palette ──
@@ -5408,6 +5360,10 @@ const trajectoryArcade = (() => {
   const BOOST_CD = 1.8;              // boost cooldown seconds
   const BOOST_MULT = 2.0;            // scroll speed multiplier during boost
   const GATOR_EVERY = 6;             // gator appears every N rows (increased from 4)
+  const LASER_SPEED = 700;           // laser bolt travel speed px/sec (upward)
+  const LASER_CD = 0.5;              // seconds between laser shots
+  const LASER_W = 4;                 // laser bolt width px
+  const LASER_H = 18;                // laser bolt height px
 
   // ── Altitude phase helpers ──
   // Returns 0.0–5.0 raw phase for smooth interpolation
@@ -5448,6 +5404,9 @@ const trajectoryArcade = (() => {
     rowsSinceGator: 0,
     launchTimer: 0,
     endReason: "",
+    lasers: [],
+    laserCooldown: 0,
+    gatorsBlasted: 0,
   };
 
   // ── Stars ──
@@ -5477,6 +5436,9 @@ const trajectoryArcade = (() => {
     runtime.rowsSinceGator = 0;
     runtime.launchTimer = 0;
     runtime.endReason = "";
+    runtime.lasers = [];
+    runtime.laserCooldown = 0;
+    runtime.gatorsBlasted = 0;
     if (missionStatus) missionStatus.textContent = "T-MINUS NOMINAL · LAUNCH VEHICLE READY · GODSPEED.";
     // Pre-place first obstacle a bit below the top so player has a moment to react
     spawnRow(H * 0.35);
@@ -5654,6 +5616,47 @@ const trajectoryArcade = (() => {
     }
 
     const isBoosting = runtime.boostTimer > 0;
+
+    // Laser cannon cooldown
+    if (runtime.laserCooldown > 0) runtime.laserCooldown = Math.max(0, runtime.laserCooldown - dt);
+
+    // Fire laser on keypress (single-fire per press handled by input.fire flag)
+    if (input.fire && runtime.laserCooldown <= 0) {
+      runtime.lasers.push({ x: runtime.rocketX, y: ROCKET_Y - ROCKET_H / 2 });
+      runtime.laserCooldown = LASER_CD;
+      input.fire = false;
+    } else {
+      input.fire = false;
+    }
+
+    // Move lasers upward
+    runtime.lasers = runtime.lasers.filter(l => {
+      l.y -= LASER_SPEED * dt;
+      return l.y + LASER_H > 0;
+    });
+
+    // Laser vs gator collision
+    for (const obs of runtime.obstacles) {
+      const obsTop = obs.y - OBSTACLE_H / 2;
+      const obsBot = obs.y + OBSTACLE_H / 2;
+      obs.gators = obs.gators.filter(g => {
+        for (const l of runtime.lasers) {
+          const hit = Math.abs(l.x - g.x) < 22 && l.y < obsBot && l.y + LASER_H > obsTop;
+          if (hit) {
+            // Blast the gator
+            spawnBurst(g.x, obs.y, FTL.green, 18);
+            spawnBurst(g.x, obs.y, FTL.amber, 10);
+            // Remove the laser that hit
+            l.y = -9999;
+            runtime.gatorsBlasted++;
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+    // Remove spent lasers
+    runtime.lasers = runtime.lasers.filter(l => l.y > -9999);
 
     // Steer
     if (input.left) runtime.rocketVX = -STEER_SPEED;
@@ -6144,6 +6147,28 @@ const trajectoryArcade = (() => {
     ctx.globalAlpha = 1;
   }
 
+  function drawLasers() {
+    const phase = getAltitudePhase(runtime.rowsCleared);
+    const laserColors = ["#49e8ff", "#49e8ff", "#70f8c1", "#cc44ff", "#ffffff"];
+    const glowColors  = ["rgba(73,232,255,0.35)", "rgba(73,232,255,0.35)",
+                         "rgba(112,248,193,0.35)", "rgba(204,68,255,0.35)", "rgba(255,255,255,0.4)"];
+    const col = laserColors[Math.min(4, phase)];
+    const glow = glowColors[Math.min(4, phase)];
+    for (const l of runtime.lasers) {
+      const lx = Math.round(l.x);
+      const ly = Math.round(l.y);
+      // Glow halo
+      ctx.fillStyle = glow;
+      ctx.fillRect(lx - LASER_W - 2, ly, LASER_W * 2 + 4, LASER_H);
+      // Bright core bolt
+      ctx.fillStyle = col;
+      ctx.fillRect(lx - LASER_W / 2, ly, LASER_W, LASER_H);
+      // Bright tip
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(lx - 1, ly, 2, 4);
+    }
+  }
+
   function drawObstacles() {
     const phase = getAltitudePhase(runtime.rowsCleared);
     for (const obs of runtime.obstacles) {
@@ -6258,10 +6283,27 @@ const trajectoryArcade = (() => {
     ctx.lineWidth = 1;
     ctx.strokeRect(barX, barY, barW, barH);
 
-    // Speed indicator
+    // Speed indicator + gators blasted
     ctx.fillStyle = FTL.textDim;
     ctx.font = "11px monospace";
     ctx.fillText(`ΔV ${Math.round(runtime.scrollSpeed)} m/s`, bx + 10, by + 48);
+
+    // Laser cannon status (bottom left, below score panel)
+    const laserReady = runtime.laserCooldown <= 0;
+    const lx2 = 14;
+    const ly2 = 72;
+    ctx.fillStyle = "rgba(10, 14, 20, 0.72)";
+    ctx.fillRect(lx2, ly2, 180, 32);
+    ctx.strokeStyle = FTL.panelBorder;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(lx2, ly2, 180, 32);
+    ctx.fillStyle = laserReady ? FTL.green : FTL.textDim;
+    ctx.font = "bold 12px monospace";
+    ctx.textAlign = "left";
+    ctx.fillText(laserReady ? "LASER  READY" : `LASER  ${runtime.laserCooldown.toFixed(1)}s`, lx2 + 10, ly2 + 14);
+    ctx.fillStyle = FTL.textDim;
+    ctx.font = "11px monospace";
+    ctx.fillText(`GATORS BLASTED  ${runtime.gatorsBlasted}`, lx2 + 10, ly2 + 26);
 
     ctx.textAlign = "left";
   }
@@ -6289,7 +6331,10 @@ const trajectoryArcade = (() => {
     ctx.fillStyle = FTL.text;
     ctx.font = "17px monospace";
     ctx.fillText("← →  lateral Δv     ↑ / SPACE  ignite burn", W / 2, H / 2 + 28);
-    ctx.fillText("Navigate Kessler fields · Evade xenobio entities!", W / 2, H / 2 + 56);
+    ctx.fillText("Z / X  laser cannon · Blast the space gators!", W / 2, H / 2 + 54);
+    ctx.fillStyle = FTL.textDim;
+    ctx.font = "14px monospace";
+    ctx.fillText("Navigate Kessler fields · Evade or eliminate xenobio entities!", W / 2, H / 2 + 76);
 
     const blink = Math.floor(Date.now() / 500) % 2;
     if (blink) {
@@ -6572,6 +6617,7 @@ const trajectoryArcade = (() => {
     drawPhaseBackground();
 
     drawObstacles();
+    drawLasers();
     drawRocket(runtime.boostTimer > 0);
     drawParticles();
     drawHud();
@@ -6633,6 +6679,10 @@ const trajectoryArcade = (() => {
         input.boost = true;
       }
     }
+    if ((key === "z" || key === "x") && runtime.mode === STATE.PLAYING) {
+      event.preventDefault();
+      input.fire = true;
+    }
     if (key === "enter" && runtime.mode === STATE.GAME_OVER) startPlaying();
   }
 
@@ -6653,6 +6703,9 @@ const trajectoryArcade = (() => {
         if (action === "up" || action === "boost") {
           input.boost = pressed;
           if (pressed && runtime.mode !== STATE.PLAYING && runtime.mode !== STATE.LAUNCHING) startPlaying();
+        }
+        if (action === "fire" && pressed && runtime.mode === STATE.PLAYING) {
+          input.fire = true;
         }
       };
       const releasePointer = (pointerId) => {
@@ -6906,22 +6959,6 @@ document.querySelectorAll("[data-theme-choice]").forEach((button) => {
     if (!choice) return;
     applyTheme(choice === "retro-90s" ? "retro90s" : choice);
   });
-});
-
-$("remote-owner-save-btn")?.addEventListener("click", () => {
-  const field = $("remote-owner-key");
-  const key = `${field?.value || ""}`.trim();
-  if (!key) {
-    setRemoteControlsState("Enter the owner key, then unlock this tab for remote actions.", "neutral");
-    return;
-  }
-  saveOwnerKey(key);
-  syncRemoteControlsUi();
-});
-
-$("remote-owner-clear-btn")?.addEventListener("click", () => {
-  clearOwnerKey();
-  syncRemoteControlsUi();
 });
 
 $("theme-retro-toggle")?.addEventListener("change", (event) => {

@@ -2,12 +2,9 @@
  * /api/dad-joke
  *
  * GET  — return the current daily dad joke and recent generated history
- * POST — owner-trigger a fresh joke generation
- *
- * Public reads stay easy; forced refresh is owner-gated to avoid abuse.
+ * POST — trigger a fresh joke generation
  */
 
-import { requireOwnerAuth } from "../lib/auth.js";
 import { getDadJokeHistory, getLatestDadJoke, putDadJoke } from "../lib/store.js";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -168,7 +165,6 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST") {
-      if (!requireOwnerAuth(req, res)) return;
       const payload = await ensureDailyJoke(true);
       return res.status(200).json({
         ok: true,
