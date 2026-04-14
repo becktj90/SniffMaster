@@ -186,6 +186,10 @@ const VIEW_META = {
     title: "Labs",
     subtitle: "Experimental and playful features.",
   },
+  system: {
+    title: "System",
+    subtitle: "Owner login, remote device control, hardware specs, and architecture documentation.",
+  },
 };
 
 const VIEW_SECTIONS = {
@@ -225,6 +229,17 @@ const VIEW_SECTIONS = {
     { id: "card-dadabase", label: "Dadabase" },
     { id: "card-melody", label: "Melodies" },
     { id: "card-paranormal", label: "Paranormal" },
+  ],
+  system: [
+    { id: "card-controls", label: "Control Guide" },
+    { id: "card-theme", label: "Theme Studio" },
+    { id: "card-device", label: "Hardware Stack" },
+    { id: "card-specs", label: "Specifications" },
+    { id: "card-method", label: "Detection Pipeline" },
+    { id: "card-pseudocode", label: "Pseudocode" },
+    { id: "card-confidence", label: "Signal Confidence" },
+    { id: "card-architecture", label: "Architecture" },
+    { id: "card-usecases", label: "Applications" },
   ],
 };
 
@@ -288,6 +303,15 @@ let mapLayerActive = {
 let rainViewerState = {
   fetchedAt: 0,
   tileUrl: "",
+};
+let radarAnimState = {
+  frames: [],        // [{path, time}]
+  frameIndex: 0,
+  host: "",
+  playing: false,
+  rafId: 0,
+  lastFrameTs: 0,
+  FRAME_INTERVAL_MS: 700,
 };
 let manualRefreshPending = false;
 let remoteCommandPending = false;
@@ -2173,6 +2197,7 @@ function renderMapLayerButtons() {
     rainBtn.classList.toggle("is-active", mapLayerActive.rain);
     rainBtn.onclick = () => {
       mapLayerActive.rain = !mapLayerActive.rain;
+      if (!mapLayerActive.rain) stopRadarAnim();
       syncMapLayers();
       renderMapLayerButtons();
     };
@@ -2194,6 +2219,26 @@ function renderMapLayerButtons() {
       windBtn.classList.toggle("is-active");
     };
   }
+  // Animate button cycles through radar past frames
+  const animBtn = $("map-layer-animate");
+  if (animBtn) {
+    animBtn.classList.toggle("is-active", radarAnimState.playing);
+    animBtn.onclick = async () => {
+      if (radarAnimState.playing) {
+        stopRadarAnim();
+      } else {
+        // Ensure radar is on and frames loaded
+        if (!mapLayerActive.rain) {
+          mapLayerActive.rain = true;
+          await syncMapLayers();
+          renderMapLayerButtons();
+        }
+        if (!radarAnimState.frames.length) await fetchRainViewerTileUrl();
+        startRadarAnim();
+        renderMapLayerButtons();
+      }
+    };
+  }
 }
 
 async function fetchRainViewerTileUrl() {
@@ -2206,9 +2251,14 @@ async function fetchRainViewerTileUrl() {
     const res = await fetch("https://api.rainviewer.com/public/weather-maps.json", { cache: "no-store" });
     if (!res.ok) throw new Error(`radar ${res.status}`);
     const data = await res.json();
-    const frame = data?.radar?.past?.[data.radar.past.length - 1];
+    const pastFrames = data?.radar?.past;
     const host = data?.host;
-    if (!frame?.path || !host) throw new Error("missing radar frame");
+    if (!Array.isArray(pastFrames) || !pastFrames.length || !host) throw new Error("missing radar frame");
+    // Store all frames for animation
+    radarAnimState.frames = pastFrames.map(f => ({ path: f.path, time: f.time }));
+    radarAnimState.host = host;
+    radarAnimState.frameIndex = radarAnimState.frames.length - 1; // start at latest
+    const frame = pastFrames[pastFrames.length - 1];
     rainViewerState = {
       fetchedAt: now,
       tileUrl: `${host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`,
@@ -2235,6 +2285,51 @@ async function ensureRadarLayer() {
     maxZoom: 18,
   });
   return mapLayers.radar;
+}
+
+function radarAnimTick(nowMs) {
+  if (!radarAnimState.playing || !weatherMap || !mapLayers.radar) return;
+  if (nowMs - radarAnimState.lastFrameTs >= radarAnimState.FRAME_INTERVAL_MS) {
+    radarAnimState.lastFrameTs = nowMs;
+    radarAnimState.frameIndex = (radarAnimState.frameIndex + 1) % radarAnimState.frames.length;
+    const frame = radarAnimState.frames[radarAnimState.frameIndex];
+    if (frame && radarAnimState.host) {
+      const newUrl = `${radarAnimState.host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+      mapLayers.radar.setUrl(newUrl);
+      // Update timestamp label
+      const tsEl = $("map-radar-ts");
+      if (tsEl && frame.time) {
+        const d = new Date(frame.time * 1000);
+        tsEl.textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+    }
+  }
+  radarAnimState.rafId = requestAnimationFrame(radarAnimTick);
+}
+
+function startRadarAnim() {
+  if (radarAnimState.playing) return;
+  if (!radarAnimState.frames.length) return;
+  radarAnimState.playing = true;
+  radarAnimState.lastFrameTs = 0;
+  radarAnimState.rafId = requestAnimationFrame(radarAnimTick);
+  const btn = $("map-layer-animate");
+  if (btn) btn.classList.add("is-active");
+}
+
+function stopRadarAnim() {
+  radarAnimState.playing = false;
+  if (radarAnimState.rafId) { cancelAnimationFrame(radarAnimState.rafId); radarAnimState.rafId = 0; }
+  // Restore to latest frame
+  if (radarAnimState.frames.length && radarAnimState.host && mapLayers.radar) {
+    radarAnimState.frameIndex = radarAnimState.frames.length - 1;
+    const frame = radarAnimState.frames[radarAnimState.frameIndex];
+    mapLayers.radar.setUrl(`${radarAnimState.host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`);
+    const tsEl = $("map-radar-ts");
+    if (tsEl) tsEl.textContent = "";
+  }
+  const btn = $("map-layer-animate");
+  if (btn) btn.classList.remove("is-active");
 }
 
 function ensureWeatherMap() {
@@ -2346,11 +2441,16 @@ function weatherInsightText(d) {
   return `${d.city || "This location"} is reading ${temp.toFixed(0)}F with ${humidity.toFixed(0)}% humidity, so the room-side comfort read is ${dewComfort(dew)}. ${feelLine} ${outdoorLine} ${windowCall(d)}. ${pressureRead(num(d.pressHpa))}. ${heatLine}`.trim();
 }
 
-function weatherBriefingKey() {
-  // The weather API always uses the Cape Canaveral default — device GPS is not
-  // used server-side, so the key must not include lat/lon to avoid unnecessary
-  // re-fetches (and AI briefing loss) when the device GPS reading fluctuates.
+function weatherBriefingKey(d) {
+  // Now that the weather API uses device GPS when available, include a coarse
+  // location bucket in the key so a new briefing is fetched when location changes
+  // significantly (rounds to ~0.5° ~ 35 miles to avoid excessive re-fetches).
   const bucket = Math.floor(Date.now() / WEATHER_BRIEFING_TTL_MS);
+  if (d && hasLocationFix(d)) {
+    const latBucket = Math.round(num(d.lat) * 2);
+    const lonBucket = Math.round(num(d.lon) * 2);
+    return `loc|${latBucket}|${lonBucket}|${bucket}`;
+  }
   return `cape-canaveral|${bucket}`;
 }
 
@@ -2471,7 +2571,7 @@ function renderWeatherForecast(d, briefing) {
 async function ensureWeatherBriefing(d) {
   if (!d) return;
 
-  const key = weatherBriefingKey();
+  const key = weatherBriefingKey(d);
   const cached = weatherBriefingState.data
     && weatherBriefingState.key === key
     && Date.now() - weatherBriefingState.fetchedAt < WEATHER_BRIEFING_TTL_MS;
@@ -4631,6 +4731,35 @@ function drawHeroScope(current, history) {
   ctx.fillText("CLEAN", padL + 42, padT + 14);
   ctx.fillStyle = "rgba(255, 208, 92, 0.78)";
   ctx.fillText("dVOC", padL + 94, padT + 14);
+
+  // ── X-axis time labels ──
+  ctx.fillStyle = "rgba(188, 199, 216, 0.50)";
+  ctx.font = "10px JetBrains Mono, monospace";
+  ctx.textAlign = "center";
+  const xAxisY = height - padB + 13;
+  if (usingHistory && liveHistory.length >= 2) {
+    // Use real timestamps from history
+    const newestTs = num(liveHistory[liveHistory.length - 1]?.receivedAt, 0);
+    const oldestTs = num(liveHistory[0]?.receivedAt, newestTs);
+    const totalSpanSec = Math.max(1, newestTs - oldestTs);
+    // Place labels at 0%, 25%, 50%, 75%, 100% of the x-axis
+    [0, 0.25, 0.5, 0.75, 1].forEach((frac) => {
+      const x = padL + frac * plotW;
+      const ageSec = Math.round(totalSpanSec * (1 - frac));
+      const label = ageSec === 0 ? "now" : `–${ageSec}s`;
+      ctx.fillText(label, x, xAxisY);
+    });
+  } else {
+    // Synthetic: estimate ~3s per sample interval
+    const synthCount = 32;
+    const secPerSample = 3;
+    [0, 0.25, 0.5, 0.75, 1].forEach((frac) => {
+      const x = padL + frac * plotW;
+      const ageSec = Math.round(synthCount * secPerSample * (1 - frac));
+      const label = ageSec === 0 ? "now" : `–${ageSec}s`;
+      ctx.fillText(label, x, xAxisY);
+    });
+  }
 }
 
 function historySamplesForRhythm(history) {
@@ -5263,19 +5392,19 @@ const trajectoryArcade = (() => {
   const ROCKET_W = 24;               // full collision width (half = 12px each side)
   const ROCKET_H = 38;               // full collision height (half = 19px each side)
   const STEER_SPEED = 350;           // px/sec lateral
-  const SCROLL_BASE = 150;           // starting scroll speed px/sec
-  const SCROLL_MAX = 420;
-  const SCROLL_RAMP = 10;            // px/sec faster per row cleared
-  const GAP_START = 210;             // initial gap width
-  const GAP_MIN = 105;               // minimum gap width
-  const GAP_NARROW = 1.8;            // px narrower per row cleared
+  const SCROLL_BASE = 120;           // starting scroll speed px/sec (reduced for easier start)
+  const SCROLL_MAX = 340;            // max scroll speed (reduced from 420)
+  const SCROLL_RAMP = 6;             // px/sec faster per row cleared (reduced from 10)
+  const GAP_START = 270;             // initial gap width (increased from 210)
+  const GAP_MIN = 150;               // minimum gap width (increased from 105)
+  const GAP_NARROW = 1.4;            // px narrower per row cleared (reduced from 1.8)
   const OBSTACLE_H = 44;             // height of asteroid block
-  const ROW_SPACING = 230;           // vertical px between obstacle rows
+  const ROW_SPACING = 250;           // vertical px between obstacle rows (increased for more breathing room)
   const SPAWN_DIST = -OBSTACLE_H - 10; // y coord to spawn obstacles (just off top)
   const BOOST_DUR = 0.4;             // seconds of boost
   const BOOST_CD = 1.8;              // boost cooldown seconds
   const BOOST_MULT = 2.0;            // scroll speed multiplier during boost
-  const GATOR_EVERY = 4;             // gator appears every N rows
+  const GATOR_EVERY = 6;             // gator appears every N rows (increased from 4)
 
   // ── Altitude phase helpers ──
   // Returns 0.0–5.0 raw phase for smooth interpolation
