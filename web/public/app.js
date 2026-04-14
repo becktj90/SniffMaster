@@ -5624,10 +5624,8 @@ const trajectoryArcade = (() => {
     if (input.fire && runtime.laserCooldown <= 0) {
       runtime.lasers.push({ x: runtime.rocketX, y: ROCKET_Y - ROCKET_H / 2 });
       runtime.laserCooldown = LASER_CD;
-      input.fire = false;
-    } else {
-      input.fire = false;
     }
+    input.fire = false;
 
     // Move lasers upward
     runtime.lasers = runtime.lasers.filter(l => {
