@@ -5,10 +5,10 @@
  * POST — owner queues a new command from the portal
  *
  * GET auth:    SNIFFMASTER_API_KEY
- * POST auth:   SNIFFMASTER_OWNER_KEY
+ * POST auth:   none (portal is private to the device owner)
  */
 
-import { requireDeviceAuth, requireOwnerAuth } from "../lib/auth.js";
+import { requireDeviceAuth } from "../lib/auth.js";
 import { getLatestCommand, putCommand } from "../lib/store.js";
 
 const COMMAND_TTL_MS = 10 * 60 * 1000;
@@ -47,8 +47,6 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "GET/POST only" });
   }
-
-  if (!requireOwnerAuth(req, res)) return;
 
   const action = String(req.body?.action || "").trim().toLowerCase();
   if (!ALLOWED_ACTIONS.has(action)) {
