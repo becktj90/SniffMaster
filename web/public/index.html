@@ -628,10 +628,10 @@
         <span>Occupancy</span>
         <span class="header-pill" id="occupancy-badge">Space density</span>
       </div>
-      <p class="card-summary">Device-scan counts to estimate how many devices — and by proxy, people — are present in the space.</p>
+      <p class="card-summary">CO₂-based index estimating how many people are likely present. People exhale CO₂, so indoor levels above the ~400 ppm outdoor baseline indicate occupancy.</p>
       <details class="microcopy">
         <summary>Learn more</summary>
-        <p>The sensor performs short passive device scans and counts unique addresses within a rolling window. Each device likely represents a phone, laptop, or wearable. The occupancy index (0–100) saturates at approximately 10 devices.</p>
+        <p>The sensor measures indoor CO₂ continuously. Because people exhale CO₂, elevated readings above the ~400 ppm outdoor ambient baseline are a reliable proxy for room occupancy. The occupancy index (0–100) saturates at ~1 600 ppm. When passive BLE device scanning is available, device counts are used instead and provide a more direct headcount estimate.</p>
       </details>
       <div class="office-grid">
         <div class="office-focus-panel">
@@ -640,7 +640,7 @@
             <div class="office-focus-value" id="occupancy-index-value">--</div>
             <div class="office-focus-copy">
               <div class="office-focus-band" id="occupancy-density-label">Waiting</div>
-              <div class="office-focus-note" id="occupancy-density-note">Space density will appear once scan data arrives.</div>
+              <div class="office-focus-note" id="occupancy-density-note">Space density will appear once sensor data arrives.</div>
             </div>
           </div>
           <div class="office-focus-bar">
@@ -648,9 +648,9 @@
           </div>
         </div>
         <div class="office-risk-panel">
-          <div class="office-kicker">Signal Quality</div>
+          <div class="office-kicker" id="occupancy-signal-kicker">CO₂ Reading</div>
           <div class="office-risk-badge" id="occupancy-rssi-badge">--</div>
-          <div class="office-risk-status" id="occupancy-device-count">Waiting for first scan.</div>
+          <div class="office-risk-status" id="occupancy-device-count">Waiting for first reading.</div>
           <div class="office-risk-note" id="occupancy-trend-note">Trend will appear after two or more readings.</div>
         </div>
       </div>
