@@ -24,11 +24,20 @@ function num(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function getEffectiveLocation() {
-  // Always use the manually configured location for weather data.
-  // Device coordinates derived from WiFi geolocation are unreliable, so
-  // weather API calls are pinned to the hardcoded Cape Canaveral position.
-  // To change the location, update DEFAULT_LAT / DEFAULT_LON / DEFAULT_CITY above.
+function getEffectiveLocation(snapshot) {
+  // Use the device's GPS coordinates when they are a genuine fix (not 0,0).
+  // Fall back to the hardcoded Cape Canaveral position when no GPS fix is available.
+  const lat = Number(snapshot?.lat);
+  const lon = Number(snapshot?.lon);
+  const city = snapshot?.city;
+  if (Number.isFinite(lat) && Number.isFinite(lon) && (Math.abs(lat) > 0.001 || Math.abs(lon) > 0.001)) {
+    return {
+      lat,
+      lon,
+      city: city || "Device location",
+      usingDefault: false,
+    };
+  }
   return {
     lat: DEFAULT_LAT,
     lon: DEFAULT_LON,
@@ -243,7 +252,7 @@ export default async function handler(req, res) {
     const snapshot = await getLatest();
     if (!snapshot) return res.status(204).end();
 
-    const loc = getEffectiveLocation();
+    const loc = getEffectiveLocation(snapshot);
 
     let forecast = [];
     let currentConditions = null;
