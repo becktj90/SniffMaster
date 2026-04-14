@@ -5015,14 +5015,16 @@ function drawTrendSeries(history) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // VOC fill under curve
-  ctx.fillStyle = "rgba(0, 242, 255, 0.07)";
-  ctx.beginPath();
-  ctx.moveTo(xOf(pts[0].t), padT + plotH);
-  pts.forEach(p => ctx.lineTo(xOf(p.t), yVoc(p.voc)));
-  ctx.lineTo(xOf(pts[pts.length - 1].t), padT + plotH);
-  ctx.closePath();
-  ctx.fill();
+  // VOC fill under curve (only meaningful with 2+ points)
+  if (pts.length >= 2) {
+    ctx.fillStyle = "rgba(0, 242, 255, 0.07)";
+    ctx.beginPath();
+    ctx.moveTo(xOf(pts[0].t), padT + plotH);
+    pts.forEach(p => ctx.lineTo(xOf(p.t), yVoc(p.voc)));
+    ctx.lineTo(xOf(pts[pts.length - 1].t), padT + plotH);
+    ctx.closePath();
+    ctx.fill();
+  }
 
   // VOC line (solid cyan)
   ctx.strokeStyle = "rgba(0, 242, 255, 0.85)";
