@@ -2637,14 +2637,25 @@ function renderOccupancyCard(payload) {
   const rssiEl = $("occupancy-rssi-badge");
   if (rssiEl) {
     const rssi = num(payload.avgRssi, NaN);
-    rssiEl.textContent = Number.isFinite(rssi) ? `${Math.round(rssi)} dBm` : "--";
+    if (Number.isFinite(rssi)) {
+      const quality = rssi > -60 ? "Excellent" : rssi > -70 ? "Good" : rssi > -80 ? "Fair" : "Weak";
+      rssiEl.textContent = `${Math.round(rssi)} dBm — ${quality}`;
+    } else {
+      rssiEl.textContent = "--";
+    }
   }
 
   const countEl = $("occupancy-device-count");
   if (countEl) {
-    countEl.textContent = Number.isFinite(deviceCount)
-      ? `${deviceCount} device${deviceCount !== 1 ? "s" : ""} detected`
-      : "Waiting for first scan.";
+    if (Number.isFinite(deviceCount)) {
+      const estPeople = Math.max(1, Math.round(deviceCount / 1.5));
+      const peopleStr = deviceCount === 0
+        ? "No devices detected — space appears empty."
+        : `${deviceCount} device${deviceCount !== 1 ? "s" : ""} detected · ~${estPeople} ${estPeople === 1 ? "person" : "people"} estimated`;
+      countEl.textContent = peopleStr;
+    } else {
+      countEl.textContent = "Waiting for first scan.";
+    }
   }
 
   const trendEl = $("occupancy-trend-note");
@@ -2670,9 +2681,11 @@ function renderOccupancyCard(payload) {
     const history = payload.history.slice(0, 24).reverse();
     const maxIdx = Math.max(...history.map((h) => num(h.occupancyIndex, 0)), 1);
     chartEl.innerHTML = `<div class="occupancy-bar-grid">${history.map((h) => {
-      const pct = clamp((num(h.occupancyIndex, 0) / maxIdx) * 100, 2, 100);
-      const color = pct > 80 ? "var(--red)" : pct > 55 ? "var(--amber)" : pct > 25 ? "var(--lime)" : "var(--mint)";
-      return `<div class="occupancy-bar-col" title="Index ${Math.round(num(h.occupancyIndex, 0))}">
+      const idx = num(h.occupancyIndex, 0);
+      const pct = clamp((idx / maxIdx) * 100, 2, 100);
+      const color = idx >= 80 ? "var(--red)" : idx >= 55 ? "var(--amber)" : idx >= 25 ? "var(--lime)" : "var(--mint)";
+      const label = idx >= 80 ? "Packed" : idx >= 55 ? "Busy" : idx >= 25 ? "Moderate" : idx >= 5 ? "Low" : "Empty";
+      return `<div class="occupancy-bar-col" title="${label} (index ${Math.round(idx)})">
         <div class="occupancy-bar-fill" style="height:${pct}%;background:${color}"></div>
       </div>`;
     }).join("")}</div>`;
@@ -5360,7 +5373,7 @@ const trajectoryArcade = (() => {
   const BOOST_DUR = 0.4;             // seconds of boost
   const BOOST_CD = 1.8;              // boost cooldown seconds
   const BOOST_MULT = 2.0;            // scroll speed multiplier during boost
-  const GATOR_EVERY = 6;             // gator appears every N rows (increased from 4)
+  const GATOR_EVERY = 3;             // gator appears every N rows (increased from 4)
   const LASER_SPEED = 700;           // laser bolt travel speed px/sec (upward)
   const LASER_CD = 0.5;              // seconds between laser shots
   const LASER_W = 4;                 // laser bolt width px
@@ -5455,14 +5468,19 @@ const trajectoryArcade = (() => {
     const gators = [];
     if (hasGator) {
       runtime.rowsSinceGator = 0;
-      const dir = Math.random() < 0.5 ? 1 : -1;
-      const startX = dir > 0 ? gapX + 10 : gapX + gapW - 10;
-      gators.push({
-        x: startX,
-        vx: dir * (55 + Math.random() * 55),
-        bounceL: gapX + 10,
-        bounceR: gapX + gapW - 10,
-      });
+      // Late-game rows can have two gators
+      const gatorCount = runtime.rowsCleared >= 20 && Math.random() < 0.4 ? 2 : 1;
+      for (let gi = 0; gi < gatorCount; gi++) {
+        const dir = (gi === 0 ? (Math.random() < 0.5 ? 1 : -1) : -1);
+        const spread = gi * (gapW * 0.35);
+        const startX = dir > 0 ? gapX + 10 + spread : gapX + gapW - 10 - spread;
+        gators.push({
+          x: Math.max(gapX + 10, Math.min(gapX + gapW - 10, startX)),
+          vx: dir * (55 + Math.random() * 55 + runtime.rowsCleared * 0.5),
+          bounceL: gapX + 10,
+          bounceR: gapX + gapW - 10,
+        });
+      }
     }
     runtime.obstacles.push({ y, gapX, gapW, gators, cleared: false });
     // Reset spawn timer
@@ -5648,6 +5666,7 @@ const trajectoryArcade = (() => {
             // Remove the laser that hit
             l.y = -9999;
             runtime.gatorsBlasted++;
+            runtime.score += 2; // bonus points per gator blasted
             return false;
           }
         }
@@ -6227,20 +6246,20 @@ const trajectoryArcade = (() => {
     const scoreLabels = ["ALTITUDE", "ALTITUDE", "HELIO DIST", "HELIOPAUSE", "PARSECS"];
     const scoreLabel = scoreLabels[Math.min(4, phase)];
 
-    // Score block (top left)
+    // Score block (top left) — shows combined score (altitude rows + gator bonus)
     ctx.fillStyle = "rgba(10, 14, 20, 0.72)";
-    ctx.fillRect(14, 12, 180, 52);
+    ctx.fillRect(14, 12, 206, 52);
     ctx.strokeStyle = FTL.panelBorder;
     ctx.lineWidth = 1;
-    ctx.strokeRect(14, 12, 180, 52);
+    ctx.strokeRect(14, 12, 206, 52);
 
     ctx.fillStyle = FTL.textBright;
     ctx.font = "bold 22px monospace";
     ctx.textAlign = "left";
     ctx.fillText(`${scoreLabel}  ${runtime.score}`, 24, 36);
-    ctx.fillStyle = FTL.textDim;
+    ctx.fillStyle = FTL.green;
     ctx.font = "13px monospace";
-    ctx.fillText(`APOAPSIS REC  ${runtime.highScore}`, 24, 54);
+    ctx.fillText(`GATORS BLASTED  ${runtime.gatorsBlasted}  (+${runtime.gatorsBlasted * 2})`, 24, 54);
 
     // Boost bar (top right)
     const bx = W - 170;
