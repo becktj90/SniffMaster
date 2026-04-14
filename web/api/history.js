@@ -2,7 +2,7 @@
  * GET /api/history?count=48 — returns recent sensor snapshots (newest first)
  *
  * Query params:
- *   count — number of entries (default 48, max 288)
+ *   count — number of entries (default 48, max 1008)
  */
 
 import { getHistory } from "../lib/store.js";
@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "GET only" });
   }
 
-  const count = Math.min(parseInt(req.query.count) || 48, 288);
+  const count = Math.min(parseInt(req.query.count) || 48, 1008);
 
   try {
     const data = await getHistory(count);
