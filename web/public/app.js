@@ -295,10 +295,12 @@ let activeView = loadViewPref();
 let mapLayers = {
   radar: null,
   satellite: null,
+  hazards: null,
 };
 let mapLayerActive = {
   rain: true,
   satellite: false,
+  hazards: false,
 };
 let rainViewerState = {
   fetchedAt: 0,
@@ -2158,47 +2160,41 @@ function setMapLayerStatus(_text) {
   // no-op: layer status element removed from UI
 }
 
-let satViewerState = { fetchedAt: 0, tileUrl: "" };
+// NOAA GOES-East infrared satellite tiles via nowCOAST ArcGIS REST tile cache.
+// ArcGIS tile path order is {z}/{row}/{col} which maps to Leaflet's {z}/{y}/{x}.
+// The time-aware service always serves the most recently cached frame (~5-min updates).
+const NOAA_SAT_TILE_URL =
+  "https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/sat_meteo_imagery_goes-east_time/MapServer/tile/{z}/{y}/{x}";
 
-async function fetchRainViewerSatelliteTileUrl() {
-  const now = Date.now();
-  if (satViewerState.tileUrl && now - satViewerState.fetchedAt < 5 * 60 * 1000) {
-    return satViewerState.tileUrl;
-  }
-  try {
-    const res = await fetch("https://api.rainviewer.com/public/weather-maps.json", { cache: "no-store" });
-    if (!res.ok) throw new Error(`sat ${res.status}`);
-    const data = await res.json();
-    const frames = data?.satellite?.infrared;
-    const host = data?.host;
-    if (!Array.isArray(frames) || !frames.length || !host) throw new Error("missing sat frame");
-    const frame = frames[frames.length - 1];
-    if (!frame?.path) throw new Error("missing sat path");
-    const newUrl = `${host}${frame.path}/256/{z}/{x}/{y}/0/0.png`;
-    const prevUrl = satViewerState.tileUrl;
-    satViewerState = { fetchedAt: now, tileUrl: newUrl };
-    // Live-update the existing satellite layer when the URL changes
-    if (newUrl !== prevUrl && mapLayers.satellite) {
-      mapLayers.satellite.setUrl(newUrl);
-    }
-  } catch (_) {
-    if (!satViewerState.tileUrl) satViewerState = { fetchedAt: now, tileUrl: "" };
-  }
-  return satViewerState.tileUrl;
-}
-
-async function ensureSatelliteLayer() {
+function ensureSatelliteLayer() {
   if (mapLayers.satellite) return mapLayers.satellite;
   if (!window.L) return null;
-  const tileUrl = await fetchRainViewerSatelliteTileUrl();
-  if (!tileUrl) return null;
-  mapLayers.satellite = window.L.tileLayer(tileUrl, {
+  mapLayers.satellite = window.L.tileLayer(NOAA_SAT_TILE_URL, {
     opacity: 0.55,
-    attribution: "Satellite © RainViewer",
-    maxNativeZoom: 4,
+    attribution: "GOES-East &copy; NOAA/NESDIS",
+    maxNativeZoom: 8,
     maxZoom: 18,
+    minZoom: 2,
   });
   return mapLayers.satellite;
+}
+
+// NWS active watch/warning/advisory hazard tiles — highly relevant for
+// Cape Canaveral (thunderstorm warnings, tornado watches, hurricane warnings).
+const NWS_HAZARDS_TILE_URL =
+  "https://mapservices.weather.noaa.gov/eventdriven/services/hazards/MapHazards/MapServer/tile/{z}/{y}/{x}";
+
+function ensureHazardsLayer() {
+  if (mapLayers.hazards) return mapLayers.hazards;
+  if (!window.L) return null;
+  mapLayers.hazards = window.L.tileLayer(NWS_HAZARDS_TILE_URL, {
+    opacity: 0.5,
+    attribution: "Weather Hazards &copy; NWS/NOAA",
+    maxNativeZoom: 12,
+    maxZoom: 18,
+    minZoom: 0,
+  });
+  return mapLayers.hazards;
 }
 
 function renderMapLayerButtons() {
@@ -2217,6 +2213,16 @@ function renderMapLayerButtons() {
     satBtn.classList.toggle("is-active", mapLayerActive.satellite);
     satBtn.onclick = async () => {
       mapLayerActive.satellite = !mapLayerActive.satellite;
+      await syncMapLayers();
+      renderMapLayerButtons();
+    };
+  }
+  // Hazards button toggles NWS watch/warning/advisory tile layer
+  const hazardsBtn = $("map-layer-hazards");
+  if (hazardsBtn) {
+    hazardsBtn.classList.toggle("is-active", mapLayerActive.hazards);
+    hazardsBtn.onclick = async () => {
+      mapLayerActive.hazards = !mapLayerActive.hazards;
       await syncMapLayers();
       renderMapLayerButtons();
     };
@@ -2381,21 +2387,23 @@ function ensureWeatherMap() {
 async function syncMapLayers() {
   if (!weatherMap) return;
 
-  // Always call fetch functions (they are cache-backed at 5 min) so the tile
-  // URL is refreshed and the existing layer is updated when new radar/sat
-  // frames arrive from RainViewer — this keeps the map live.
+  // Refresh radar URL from RainViewer (cache-backed at 5 min).
   await fetchRainViewerTileUrl();
-  await fetchRainViewerSatelliteTileUrl();
 
   const radarLayer = await ensureRadarLayer();
   if (radarLayer) {
     if (mapLayerActive.rain && !weatherMap.hasLayer(radarLayer)) radarLayer.addTo(weatherMap);
     else if (!mapLayerActive.rain && weatherMap.hasLayer(radarLayer)) weatherMap.removeLayer(radarLayer);
   }
-  const satLayer = await ensureSatelliteLayer();
+  const satLayer = ensureSatelliteLayer();
   if (satLayer) {
     if (mapLayerActive.satellite && !weatherMap.hasLayer(satLayer)) satLayer.addTo(weatherMap);
     else if (!mapLayerActive.satellite && weatherMap.hasLayer(satLayer)) weatherMap.removeLayer(satLayer);
+  }
+  const hazardsLayer = ensureHazardsLayer();
+  if (hazardsLayer) {
+    if (mapLayerActive.hazards && !weatherMap.hasLayer(hazardsLayer)) hazardsLayer.addTo(weatherMap);
+    else if (!mapLayerActive.hazards && weatherMap.hasLayer(hazardsLayer)) weatherMap.removeLayer(hazardsLayer);
   }
 }
 
@@ -2485,7 +2493,7 @@ function defaultWeatherBriefing(d) {
     summary: "Local forecast guidance pending",
     briefing: `${windowCall(d)}. Current outdoor context is ${d.weatherCondition || "still syncing"}, and the dashboard will upgrade this note once a forecast model is available.`,
     forecast: [],
-    sourceCaption: "Source: device weather snapshot · local ventilation heuristics · OpenStreetMap map · RainViewer radar",
+    sourceCaption: "Source: device weather snapshot · local ventilation heuristics · OpenStreetMap map · RainViewer radar · NOAA GOES-East satellite · NWS hazards",
   };
 }
 
@@ -2550,7 +2558,7 @@ function renderWeatherForecast(d, briefing) {
   }
   if (summaryEl) summaryEl.textContent = payload.summary || "Forecast guidance pending";
   if (sourceEl) {
-    sourceEl.textContent = payload.sourceCaption || "Source: device weather snapshot · Open-Meteo forecast · OpenStreetMap map · RainViewer radar";
+    sourceEl.textContent = payload.sourceCaption || "Source: device weather snapshot · Open-Meteo forecast · OpenStreetMap map · RainViewer radar · NOAA GOES-East satellite · NWS hazards";
   }
 
   if (!gridEl) return;
@@ -4124,7 +4132,7 @@ function renderWeatherIntel(d) {
     syncWeatherMapPosition(d);
     syncMapLayers();
     const srcWx = $("source-weather");
-    if (srcWx) srcWx.textContent = "Source: Open-Meteo forecast (Cape Canaveral, FL) · OpenStreetMap · RainViewer radar · OpenAI weather brief when available";
+    if (srcWx) srcWx.textContent = "Source: Open-Meteo forecast (Cape Canaveral, FL) · OpenStreetMap · RainViewer radar · NOAA GOES-East satellite · NWS hazards · OpenAI weather brief when available";
 }
 
 function gasPhaseAxis(d) {
