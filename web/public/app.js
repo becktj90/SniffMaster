@@ -1586,7 +1586,7 @@ function renderMelodyLibrary(d) {
     }
     if (filterRow) filterRow.innerHTML = "";
     if (empty) empty.hidden = true;
-    if (deviceNote) deviceNote.textContent = "Unlock remote controls on the System page to queue a tune on the device.";
+    if (deviceNote) deviceNote.textContent = "Use Remote Device Actions on the System page to queue a tune on the device.";
     return;
   }
 
@@ -2580,7 +2580,7 @@ async function ensureWeatherBriefing(d) {
   // render() already applied mergeBriefingIntoSnapshot, so no extra work on cache hit.
   if (cached) return;
 
-  if (weatherBriefingState.pending && weatherBriefingState.key === key) return;
+  if (weatherBriefingState.pending) return;
 
   weatherBriefingState.pending = (async () => {
     try {
@@ -4720,13 +4720,14 @@ function drawHeroScope(current, history) {
   ctx.textAlign = "center";
   const xAxisY = height - padB + 13;
   if (usingHistory && liveHistory.length >= 2) {
-    // Show real HH:MM clock times across the x-axis
-    const newestTs = num(liveHistory[liveHistory.length - 1]?.receivedAt, 0);
-    const oldestTs = num(liveHistory[0]?.receivedAt, newestTs);
-    const totalSpanMs = Math.max(1, newestTs - oldestTs);
+    // Show real HH:MM clock times at positions that match the drawn trace (index-based).
+    // Using index fractions rather than time fractions keeps labels aligned with the
+    // actual data points on screen even when samples are unevenly spaced.
+    const n = liveHistory.length;
     [0, 0.25, 0.5, 0.75, 1].forEach((frac) => {
-      const x = padL + frac * plotW;
-      const ts = oldestTs + frac * totalSpanMs;
+      const idx = Math.round(frac * (n - 1));
+      const x = padL + (idx / Math.max(n - 1, 1)) * plotW;
+      const ts = num(liveHistory[idx]?.receivedAt, 0);
       const label = frac >= 1 ? "now" : new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
       ctx.fillText(label, x, xAxisY);
     });
@@ -5062,7 +5063,7 @@ function setRemoteControlsState(message, tone = "neutral") {
   const pill = $("remote-controls-pill");
   if (status) status.textContent = message;
   if (pill) {
-    pill.textContent = tone === "good" ? "Unlocked" : tone === "warn" ? "Busy" : "Locked";
+    pill.textContent = tone === "good" ? "Unlocked" : tone === "warn" ? "Busy" : "Offline";
     pill.dataset.tone = tone;
   }
 }
