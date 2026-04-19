@@ -2343,7 +2343,7 @@ async function ensureRadarLayer() {
   mapLayers.radar = window.L.tileLayer(tileUrl, {
     opacity: 0.65,
     attribution: "Radar © RainViewer",
-    maxNativeZoom: 12,
+    maxNativeZoom: 8,
     maxZoom: 18,
   });
   return mapLayers.radar;
@@ -2464,12 +2464,13 @@ async function syncMapLayers() {
   }
 }
 
-// Default map location: Cape Canaveral Space Force Station, SLC-40 area, FL
-const CAPE_MAP_LAT = 28.5622;
-const CAPE_MAP_LON = -80.5774;
+// Default map location: LC-36, Cape Canaveral Space Force Station, FL
+const CAPE_MAP_LAT = 28.4861;
+const CAPE_MAP_LON = -80.5450;
 
 // CCSFS and KSC active launch complex markers
 const CCSFS_PADS = [
+  { name: "LC-36 — Cape Canaveral", lat: 28.4861, lon: -80.5450 },
   { name: "SLC-40 — SpaceX Falcon 9", lat: 28.5619, lon: -80.5774 },
   { name: "SLC-41 — ULA Vulcan Centaur", lat: 28.5832, lon: -80.5830 },
   { name: "LC-39A — SpaceX Falcon Heavy / Crew Dragon", lat: 28.6083, lon: -80.6041 },
@@ -2493,7 +2494,7 @@ function syncWeatherMapPosition(d) {
     const lon = hasLocationFix(d) ? num(d.lon) : CAPE_MAP_LON;
     const label = hasLocationFix(d)
         ? (d.city || "SniffMaster location")
-        : "Cape Canaveral, FL (default)";
+        : "LC-36, Cape Canaveral, FL (default)";
     const target = [lat, lon];
     if (weatherMarker) {
         weatherMarker.setLatLng(target);
