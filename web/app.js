@@ -290,7 +290,6 @@ let dadabaseState = {
   refreshing: false,
   notice: "",
 };
-let mapLayerPrefs = loadMapLayerPrefs();
 let activeView = loadViewPref();
 let mapLayers = {
   radar: null,
@@ -352,14 +351,6 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function loadMapLayerPrefs() {
-  return { radar: true };
-}
-
-function saveMapLayerPrefs() {
-  // radar is always-on; no user preferences to persist
 }
 
 function loadViewPref() {
@@ -2160,40 +2151,91 @@ function setMapLayerStatus(_text) {
   // no-op: layer status element removed from UI
 }
 
-// NOAA GOES-East infrared satellite tiles via nowCOAST ArcGIS REST tile cache.
-// ArcGIS tile path order is {z}/{row}/{col} which maps to Leaflet's {z}/{y}/{x}.
-// The time-aware service always serves the most recently cached frame (~5-min updates).
-const NOAA_SAT_TILE_URL =
-  "https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/sat_meteo_imagery_goes-east_time/MapServer/tile/{z}/{y}/{x}";
+// RainViewer infrared satellite tiles — CORS-enabled, updates ~every 10 minutes.
+// Same tile infrastructure as the radar layer, so no new vendor dependency.
+const RAINVIEWER_SAT_TILE_URL =
+  "https://tilecache.rainviewer.com/v2/satellite/{z}/{x}/{y}/2/1_1.png";
 
 function ensureSatelliteLayer() {
   if (mapLayers.satellite) return mapLayers.satellite;
   if (!window.L) return null;
-  mapLayers.satellite = window.L.tileLayer(NOAA_SAT_TILE_URL, {
-    opacity: 0.55,
-    attribution: "GOES-East &copy; NOAA/NESDIS",
-    maxNativeZoom: 8,
+  mapLayers.satellite = window.L.tileLayer(RAINVIEWER_SAT_TILE_URL, {
+    opacity: 0.5,
+    attribution: "Satellite &copy; RainViewer",
+    maxNativeZoom: 6,
     maxZoom: 18,
     minZoom: 2,
+    crossOrigin: true,
   });
   return mapLayers.satellite;
 }
 
-// NWS active watch/warning/advisory hazard tiles — highly relevant for
-// Cape Canaveral (thunderstorm warnings, tornado watches, hurricane warnings).
-const NWS_HAZARDS_TILE_URL =
-  "https://mapservices.weather.noaa.gov/eventdriven/services/hazards/MapHazards/MapServer/tile/{z}/{y}/{x}";
+// NWS active weather alerts (watches/warnings/advisories) via the CORS-enabled
+// NWS public API — the ArcGIS tile service does not send CORS headers and is
+// blocked by browsers. The REST API returns GeoJSON and supports CORS.
+let nwsAlertsState = { fetchedAt: 0, data: null };
+// Tracks the data object currently rendered into mapLayers.hazards so we can
+// avoid a redundant clearLayers/addData when the cached reference is unchanged.
+let nwsAlertsLastRendered = null;
+const NWS_ALERTS_TTL_MS = 5 * 60 * 1000;
+const NWS_ALERTS_URL = "https://api.weather.gov/alerts/active?area=FL";
 
-function ensureHazardsLayer() {
-  if (mapLayers.hazards) return mapLayers.hazards;
+function nwsAlertColor(feature) {
+  const event = (feature?.properties?.event || "").toLowerCase();
+  if (event.includes("warning")) return "#ff3b30";
+  if (event.includes("watch")) return "#ff9500";
+  return "#ffcc00";
+}
+
+async function fetchNWSAlerts() {
+  const now = Date.now();
+  if (nwsAlertsState.data && now - nwsAlertsState.fetchedAt < NWS_ALERTS_TTL_MS) {
+    return nwsAlertsState.data;
+  }
+  try {
+    const res = await fetch(NWS_ALERTS_URL, {
+      headers: { Accept: "application/geo+json" },
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`nws alerts ${res.status}`);
+    const data = await res.json();
+    nwsAlertsState = { fetchedAt: now, data };
+  } catch (_) {
+    if (!nwsAlertsState.data) nwsAlertsState = { fetchedAt: now, data: null };
+  }
+  return nwsAlertsState.data;
+}
+
+async function ensureHazardsLayer() {
   if (!window.L) return null;
-  mapLayers.hazards = window.L.tileLayer(NWS_HAZARDS_TILE_URL, {
-    opacity: 0.5,
-    attribution: "Weather Hazards &copy; NWS/NOAA",
-    maxNativeZoom: 12,
-    maxZoom: 18,
-    minZoom: 0,
-  });
+  const data = await fetchNWSAlerts();
+  if (!data) return null;
+  if (!mapLayers.hazards) {
+    mapLayers.hazards = window.L.geoJSON(data, {
+      style: (feature) => ({
+        color: nwsAlertColor(feature),
+        weight: 2,
+        fillColor: nwsAlertColor(feature),
+        fillOpacity: 0.18,
+        opacity: 0.85,
+      }),
+      onEachFeature: (feature, layer) => {
+        const p = feature.properties || {};
+        const headline = p.headline || p.event || "Weather Alert";
+        const expires = p.expires ? new Date(p.expires).toLocaleString() : "";
+        layer.bindPopup(
+          `<strong>${escapeHtml(headline)}</strong>${expires ? `<br><small>Expires: ${escapeHtml(expires)}</small>` : ""}`
+        );
+      },
+    });
+    nwsAlertsLastRendered = data;
+  } else if (nwsAlertsLastRendered !== data) {
+    // fetchNWSAlerts preserves the same object reference while data is cached,
+    // so this only runs when the TTL expires and a fresh fetch returns new data.
+    mapLayers.hazards.clearLayers();
+    mapLayers.hazards.addData(data);
+    nwsAlertsLastRendered = data;
+  }
   return mapLayers.hazards;
 }
 
@@ -2358,7 +2400,9 @@ function stopRadarAnim() {
 function ensureWeatherMap() {
   if (weatherMap || !window.L) return weatherMap;
   const el = $("weather-map");
-  if (!el) return null;
+  // Guard: skip initialization when the container is hidden (zero-size).
+  // setDashboardView retries in its RAF callback once the card is visible.
+  if (!el || el.offsetWidth === 0) return null;
 
   weatherMap = window.L.map(el, {
     zoomControl: false,
@@ -2378,7 +2422,19 @@ function ensureWeatherMap() {
     fillColor: "#00f2ff",
     fillOpacity: 0.95,
   }).addTo(weatherMap);
-  weatherMap.setView([CAPE_MAP_LAT, CAPE_MAP_LON], 10);
+
+  // Add named launch pad markers for CCSFS/KSC context
+  CCSFS_PADS.forEach((pad) => {
+    window.L.circleMarker([pad.lat, pad.lon], {
+      radius: 6,
+      color: "rgba(9, 12, 16, 0.92)",
+      weight: 2,
+      fillColor: "#ff9500",
+      fillOpacity: 0.90,
+    }).bindTooltip(pad.name, { permanent: false, direction: "top" }).addTo(weatherMap);
+  });
+
+  weatherMap.setView([CAPE_MAP_LAT, CAPE_MAP_LON], 12);
   renderMapLayerButtons();
   syncMapLayers(); // start loading rain radar layer immediately (async, fire-and-forget)
   return weatherMap;
@@ -2400,16 +2456,25 @@ async function syncMapLayers() {
     if (mapLayerActive.satellite && !weatherMap.hasLayer(satLayer)) satLayer.addTo(weatherMap);
     else if (!mapLayerActive.satellite && weatherMap.hasLayer(satLayer)) weatherMap.removeLayer(satLayer);
   }
-  const hazardsLayer = ensureHazardsLayer();
-  if (hazardsLayer) {
-    if (mapLayerActive.hazards && !weatherMap.hasLayer(hazardsLayer)) hazardsLayer.addTo(weatherMap);
-    else if (!mapLayerActive.hazards && weatherMap.hasLayer(hazardsLayer)) weatherMap.removeLayer(hazardsLayer);
+  if (mapLayerActive.hazards) {
+    const hazardsLayer = await ensureHazardsLayer();
+    if (hazardsLayer && !weatherMap.hasLayer(hazardsLayer)) hazardsLayer.addTo(weatherMap);
+  } else if (mapLayers.hazards && weatherMap.hasLayer(mapLayers.hazards)) {
+    weatherMap.removeLayer(mapLayers.hazards);
   }
 }
 
-// Default map location: Cape Canaveral Space Force Station, FL
-const CAPE_MAP_LAT = 28.2062;
-const CAPE_MAP_LON = -80.6874;
+// Default map location: Cape Canaveral Space Force Station, SLC-40 area, FL
+const CAPE_MAP_LAT = 28.5622;
+const CAPE_MAP_LON = -80.5774;
+
+// CCSFS and KSC active launch complex markers
+const CCSFS_PADS = [
+  { name: "SLC-40 — SpaceX Falcon 9", lat: 28.5619, lon: -80.5774 },
+  { name: "SLC-41 — ULA Vulcan Centaur", lat: 28.5832, lon: -80.5830 },
+  { name: "LC-39A — SpaceX Falcon Heavy / Crew Dragon", lat: 28.6083, lon: -80.6041 },
+  { name: "LC-39B — NASA Artemis / SLS", lat: 28.6272, lon: -80.6208 },
+];
 
 function syncWeatherMapPosition(d) {
     const map = ensureWeatherMap();
@@ -2438,7 +2503,7 @@ function syncWeatherMapPosition(d) {
     const center = weatherMap.getCenter();
     const drift = Math.abs(center.lat - lat) + Math.abs(center.lng - lon);
     if (drift > 0.04) {
-        weatherMap.setView(target, 11);
+        weatherMap.setView(target, 12);
     }
 
     // Update wind badge on map overlay
@@ -4132,7 +4197,7 @@ function renderWeatherIntel(d) {
     syncWeatherMapPosition(d);
     syncMapLayers();
     const srcWx = $("source-weather");
-    if (srcWx) srcWx.textContent = "Source: Open-Meteo forecast (Cape Canaveral, FL) · OpenStreetMap · RainViewer radar · NOAA GOES-East satellite · NWS hazards · OpenAI weather brief when available";
+    if (srcWx) srcWx.textContent = "Source: Open-Meteo forecast (Cape Canaveral, FL) · OpenStreetMap · RainViewer radar & infrared satellite · NWS active alerts API · OpenAI weather brief when available";
 }
 
 function gasPhaseAxis(d) {
