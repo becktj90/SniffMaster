@@ -2410,8 +2410,9 @@ function ensureWeatherMap() {
     preferCanvas: true,
   });
   window.L.control.zoom({ position: "topright" }).addTo(weatherMap);
-  weatherBaseLayer = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "&copy; OpenStreetMap contributors",
+  weatherBaseLayer = window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    attribution: "&copy; <a href='https://carto.com/'>CARTO</a> &copy; OpenStreetMap contributors",
+    subdomains: ["a", "b", "c", "d"],
     maxZoom: 19,
   }).addTo(weatherMap);
 
