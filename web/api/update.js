@@ -18,7 +18,89 @@
  */
 
 import { requireDeviceAuth, sanitizePostedBody } from "../lib/auth.js";
-import { putSnapshot, putBleOccupancyEntry } from "../lib/store.js";
+import {
+  putSnapshot,
+  putBleOccupancyEntry,
+  getHistory,
+  getAlertState,
+  setAlertState,
+} from "../lib/store.js";
+import { normalizeReading, baselineGasR, evaluateBreaches } from "../lib/thresholds.js";
+import { sendSms } from "../lib/notify.js";
+
+// Per-breach cooldown: re-remind an ongoing breach at most this often (ms).
+const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+function etTimeLabel(ts) {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(ts)) + " ET";
+  } catch {
+    return new Date(ts).toISOString();
+  }
+}
+
+/**
+ * Evaluate thresholds for the just-stored snapshot and text the owner when a
+ * breach newly appears (or an ongoing breach passes its cooldown). Never throws
+ * — a notification failure must not break device ingestion.
+ */
+async function maybeSendAlerts(stored) {
+  const reading = normalizeReading(stored);
+
+  // History returns newest-first and already includes the just-stored entry;
+  // drop it so the baseline reflects the recent past, not the current reading.
+  let priorHistory = [];
+  try {
+    const recent = await getHistory(25);
+    priorHistory = Array.isArray(recent) ? recent.slice(1) : [];
+  } catch (err) {
+    console.error("alerts: history fetch failed:", err);
+  }
+
+  const base = baselineGasR(priorHistory);
+  const breaches = evaluateBreaches(reading, base);
+
+  const state = await getAlertState();
+  const prevActive = new Set(state.activeKeys);
+  const sentAt = { ...state.sentAt };
+  const now = Date.now();
+
+  const toNotify = breaches.filter((b) => {
+    const isNew = !prevActive.has(b.key);
+    const cooledDown = !sentAt[b.key] || now - sentAt[b.key] > ALERT_COOLDOWN_MS;
+    return isNew || cooledDown;
+  });
+
+  if (toNotify.length > 0) {
+    const lines = toNotify.map((b) => `⚠️ ${b.message}`);
+    const message = `SniffMaster alert (${etTimeLabel(reading.receivedAt)})\n${lines.join("\n")}`;
+    try {
+      const result = await sendSms(message);
+      if (result.configured && result.sent > 0) {
+        for (const b of toNotify) sentAt[b.key] = now;
+      }
+    } catch (err) {
+      console.error("alerts: sendSms failed:", err);
+    }
+  }
+
+  // Persist the current breach set (and gas reading) for next-run comparison.
+  const activeKeys = breaches.map((b) => b.key);
+  // Prune cooldown timestamps for breaches that have cleared.
+  const prunedSentAt = {};
+  for (const key of activeKeys) {
+    if (sentAt[key]) prunedSentAt[key] = sentAt[key];
+  }
+  await setAlertState({
+    activeKeys,
+    sentAt: prunedSentAt,
+    lastGasR: Number.isFinite(reading.gasR) ? reading.gasR : state.lastGasR,
+  });
+}
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -49,6 +131,12 @@ export default async function handler(req, res) {
       } catch (bleErr) {
         console.error("putBleOccupancyEntry error:", bleErr);
       }
+    }
+    // Threshold alerting — best-effort, must never block the device response.
+    try {
+      await maybeSendAlerts(stored);
+    } catch (alertErr) {
+      console.error("maybeSendAlerts error:", alertErr);
     }
     return res.status(200).json({ ok: true, receivedAt: stored.receivedAt });
   } catch (err) {

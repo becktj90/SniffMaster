@@ -4,6 +4,9 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
+  "crons": [
+    { "path": "/api/daily-summary", "schedule": "0 10 * * *" }
+  ],
   "headers": [
     {
       "source": "/(.*)",
