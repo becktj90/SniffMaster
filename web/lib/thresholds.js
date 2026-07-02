@@ -86,6 +86,12 @@ export function baselineGasR(history) {
 
 /**
  * Evaluate active threshold breaches for a normalized reading.
+ *
+ * `message` strings are sent verbatim over SMS, so they intentionally stick to
+ * the GSM-7 character set (no degree signs, ohm symbols, or smart dashes) —
+ * non-GSM characters force UCS-2 encoding, cutting segments from 160 to 70
+ * chars and tripling per-text cost, and some carriers mangle them.
+ *
  * @param {ReturnType<normalizeReading>} reading
  * @param {number} [baseGasR] — baseline gas resistance for the sudden-drop test
  * @returns {Array<{key:string, level:"warn"|"crit", label:string, message:string}>}
@@ -99,7 +105,7 @@ export function evaluateBreaches(reading, baseGasR) {
       key: "humidity",
       level: "crit",
       label: "High humidity",
-      message: `Humidity ${r.humidity.toFixed(0)}% (>${THRESHOLDS.HUMIDITY_HIGH}%) — condensation risk on switchgear buswork.`,
+      message: `Humidity ${r.humidity.toFixed(0)}% (limit ${THRESHOLDS.HUMIDITY_HIGH}%) - condensation risk on switchgear buswork.`,
     });
   }
 
@@ -108,7 +114,7 @@ export function evaluateBreaches(reading, baseGasR) {
       key: "temp",
       level: "crit",
       label: "High temperature",
-      message: `Temp ${r.tempC.toFixed(1)}°C (>${THRESHOLDS.TEMP_HIGH_C}°C) — check environmental controls / overheating.`,
+      message: `Temp ${r.tempC.toFixed(1)}C (limit ${THRESHOLDS.TEMP_HIGH_C}C) - check environmental controls / overheating.`,
     });
   }
 
@@ -124,7 +130,7 @@ export function evaluateBreaches(reading, baseGasR) {
       key: "gas",
       level: "crit",
       label: "Air-quality spike",
-      message: `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)}Ω vs ${Math.round(base)}Ω baseline) — possible smoke/fumes/contamination.`,
+      message: `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)} vs ${Math.round(base)} ohm baseline) - possible smoke/fumes/contamination.`,
     });
   }
 
@@ -133,7 +139,7 @@ export function evaluateBreaches(reading, baseGasR) {
       key: "iaq",
       level: "warn",
       label: "Poor air quality",
-      message: `IAQ ${r.iaq.toFixed(0)} (>=${THRESHOLDS.IAQ_POOR}) — degraded air quality in the enclosure.`,
+      message: `IAQ ${r.iaq.toFixed(0)} (limit ${THRESHOLDS.IAQ_POOR}) - degraded air quality in the enclosure.`,
     });
   }
 

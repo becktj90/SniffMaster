@@ -76,8 +76,9 @@ async function maybeSendAlerts(stored) {
   });
 
   if (toNotify.length > 0) {
-    const lines = toNotify.map((b) => `⚠️ ${b.message}`);
-    const message = `SniffMaster alert (${etTimeLabel(reading.receivedAt)})\n${lines.join("\n")}`;
+    // SMS body stays GSM-7-safe (plain ASCII) — see lib/thresholds.js note.
+    const lines = toNotify.map((b) => `- ${b.message}`);
+    const message = `SniffMaster ALERT (${etTimeLabel(reading.receivedAt)})\n${lines.join("\n")}`;
     try {
       const result = await sendSms(message);
       if (result.configured && result.sent > 0) {
@@ -88,18 +89,20 @@ async function maybeSendAlerts(stored) {
     }
   }
 
-  // Persist the current breach set (and gas reading) for next-run comparison.
-  const activeKeys = breaches.map((b) => b.key);
-  // Prune cooldown timestamps for breaches that have cleared.
+  // Persist the current breach set for next-run comparison. Prune cooldown
+  // timestamps for cleared breaches, and skip the Redis write entirely when
+  // nothing changed — the common all-clear -> all-clear path costs no quota.
+  const activeKeys = breaches.map((b) => b.key).sort();
   const prunedSentAt = {};
   for (const key of activeKeys) {
     if (sentAt[key]) prunedSentAt[key] = sentAt[key];
   }
-  await setAlertState({
-    activeKeys,
-    sentAt: prunedSentAt,
-    lastGasR: Number.isFinite(reading.gasR) ? reading.gasR : state.lastGasR,
-  });
+  const changed =
+    JSON.stringify(activeKeys) !== JSON.stringify([...prevActive].sort()) ||
+    JSON.stringify(prunedSentAt) !== JSON.stringify(state.sentAt);
+  if (changed) {
+    await setAlertState({ activeKeys, sentAt: prunedSentAt });
+  }
 }
 
 export default async function handler(req, res) {
