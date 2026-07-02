@@ -16,6 +16,10 @@
  */
 
 const TWILIO_BASE = "https://api.twilio.com/2010-04-01";
+// Hard cap per Twilio request. Recipients are sent in parallel, so this also
+// bounds total send time — the ESP32 is waiting on /api/update's response, and
+// Vercel Hobby functions have a ~10s budget. A hung Twilio call must not eat it.
+const SEND_TIMEOUT_MS = 5000;
 
 function env(name) {
   const value = process.env[name];
@@ -67,31 +71,36 @@ export async function sendSms(body) {
   let sent = 0;
   const failures = [];
 
-  for (const to of recipients) {
-    try {
-      const params = new URLSearchParams({ To: to, From: from, Body: text });
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${auth}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: params.toString(),
-      });
+  // Parallel sends: total wall time stays bounded by SEND_TIMEOUT_MS no matter
+  // how many recipients are configured.
+  await Promise.all(
+    recipients.map(async (to) => {
+      try {
+        const params = new URLSearchParams({ To: to, From: from, Body: text });
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${auth}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: params.toString(),
+          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+        });
 
-      if (resp.ok) {
-        sent += 1;
-      } else {
-        const detail = await resp.text().catch(() => "");
-        failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim() });
-        console.error(`notify: Twilio send to ${to} failed — HTTP ${resp.status} ${detail}`);
+        if (resp.ok) {
+          sent += 1;
+        } else {
+          const detail = await resp.text().catch(() => "");
+          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 300) });
+          console.error(`notify: Twilio send to ${to} failed — HTTP ${resp.status} ${detail}`);
+        }
+      } catch (err) {
+        const message = err?.name === "TimeoutError" ? `timeout after ${SEND_TIMEOUT_MS}ms` : err?.message || String(err);
+        failures.push({ to, error: message });
+        console.error(`notify: Twilio send to ${to} threw — ${message}`);
       }
-    } catch (err) {
-      const message = err?.message || String(err);
-      failures.push({ to, error: message });
-      console.error(`notify: Twilio send to ${to} threw — ${message}`);
-    }
-  }
+    })
+  );
 
   return { configured: true, sent, failures };
 }

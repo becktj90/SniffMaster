@@ -333,19 +333,18 @@ export async function getBleOccupancyHistory(count = 48) {
 
 /**
  * Alert de-dupe state for threshold SMS alerts.
- * Shape: { activeKeys: string[], sentAt: { [key]: epochMs }, lastGasR: number }
+ * Shape: { activeKeys: string[], sentAt: { [key]: epochMs } }
  * Lets /api/update fire an SMS only when a breach newly appears (state
  * transition) and re-fire the same breach only after a per-key cooldown.
  */
 export async function getAlertState() {
   const redis = getRedis();
   const raw = await redis.get(KEY_ALERT_STATE);
-  if (!raw) return { activeKeys: [], sentAt: {}, lastGasR: null };
+  if (!raw) return { activeKeys: [], sentAt: {} };
   const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
   return {
     activeKeys: Array.isArray(parsed.activeKeys) ? parsed.activeKeys : [],
     sentAt: parsed.sentAt && typeof parsed.sentAt === "object" ? parsed.sentAt : {},
-    lastGasR: Number.isFinite(parsed.lastGasR) ? parsed.lastGasR : null,
   };
 }
 
@@ -354,11 +353,28 @@ export async function setAlertState(state) {
   const entry = {
     activeKeys: Array.isArray(state?.activeKeys) ? state.activeKeys : [],
     sentAt: state?.sentAt && typeof state.sentAt === "object" ? state.sentAt : {},
-    lastGasR: Number.isFinite(state?.lastGasR) ? state.lastGasR : null,
     updatedAt: Date.now(),
   };
   await redis.set(KEY_ALERT_STATE, JSON.stringify(entry));
   return entry;
+}
+
+/**
+ * Atomically claim the right to generate+send today's daily summary.
+ * Uses SET NX EX so a double cron fire (or a manual trigger racing the cron)
+ * can never double-text: exactly one caller wins the lock per window.
+ * @param {number} ttlSeconds — how long the claim blocks re-sends
+ * @returns {Promise<boolean>} true if this caller won the lock
+ */
+export async function acquireDailySummaryLock(ttlSeconds) {
+  const redis = getRedis();
+  const result = await redis.set(
+    "sniffmaster:daily_summary_lock",
+    String(Date.now()),
+    { nx: true, ex: Math.max(60, Math.floor(ttlSeconds)) }
+  );
+  // Upstash returns "OK" when the key was set, null when it already existed.
+  return result === "OK";
 }
 
 /**

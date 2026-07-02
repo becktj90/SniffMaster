@@ -11,7 +11,14 @@
  * Scheduled via vercel.json crons at 10:00 UTC (06:00 US Eastern during EDT).
  */
 
-import { getHistory, getDailySummary, putDailySummary, getDailySummaryHistory } from "../lib/store.js";
+import crypto from "node:crypto";
+import {
+  getHistory,
+  getDailySummary,
+  putDailySummary,
+  getDailySummaryHistory,
+  acquireDailySummaryLock,
+} from "../lib/store.js";
 import { normalizeReading, THRESHOLDS } from "../lib/thresholds.js";
 import { sendSms } from "../lib/notify.js";
 
@@ -19,13 +26,30 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
 const RESEND_GUARD_MS = 6 * 60 * 60 * 1000;
 
+function timingSafeMatch(supplied, expected) {
+  const a = Buffer.from(String(supplied));
+  const b = Buffer.from(String(expected));
+  if (!a.length || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Cron/manual-trigger auth.
+ * When CRON_SECRET is set (recommended), Vercel automatically sends
+ * `Authorization: Bearer $CRON_SECRET` on cron invocations, and the same
+ * header works for manual curl triggers — so the secret is the sole check.
+ * Without a secret we fall back to Vercel's cron markers; those are spoofable,
+ * which at worst triggers a generate+send, and the NX lock plus resend guard
+ * cap that at one text per 6h window.
+ */
 function isAuthorized(req) {
-  if (req.headers?.["x-vercel-cron"]) return true;
   const secret = (process.env.CRON_SECRET || "").trim();
-  if (!secret) return false;
-  const auth = req.headers?.authorization || "";
-  const match = /^Bearer\s+(.+)$/i.exec(Array.isArray(auth) ? auth[0] : auth);
-  return Boolean(match && match[1].trim() === secret);
+  const rawAuth = req.headers?.authorization || "";
+  const auth = Array.isArray(rawAuth) ? rawAuth[0] : rawAuth;
+  const bearer = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim() || "";
+  if (secret) return timingSafeMatch(bearer, secret);
+  const ua = String(req.headers?.["user-agent"] || "");
+  return Boolean(req.headers?.["x-vercel-cron"]) || ua.startsWith("vercel-cron/");
 }
 
 function stats(values) {
@@ -56,11 +80,13 @@ function fmt(n, digits = 0) {
   return Number.isFinite(n) ? n.toFixed(digits) : "—";
 }
 
+// ASCII ohm labels: this string ships over SMS, where non-GSM-7 characters
+// (like the ohm symbol) force UCS-2 encoding and shrink segments 160 -> 70.
 function gasLabel(ohms) {
-  if (!Number.isFinite(ohms)) return "—";
-  if (ohms >= 1e6) return `${(ohms / 1e6).toFixed(2)}MΩ`;
-  if (ohms >= 1e3) return `${(ohms / 1e3).toFixed(0)}kΩ`;
-  return `${Math.round(ohms)}Ω`;
+  if (!Number.isFinite(ohms)) return "-";
+  if (ohms >= 1e6) return `${(ohms / 1e6).toFixed(2)} MOhm`;
+  if (ohms >= 1e3) return `${(ohms / 1e3).toFixed(0)} kOhm`;
+  return `${Math.round(ohms)} ohm`;
 }
 
 function buildSummary(history) {
@@ -87,20 +113,22 @@ function buildSummary(history) {
   const humidityFalling = humidityDelta === null || humidityDelta <= 1; // ≤ +1% drift
   const controlsStabilizing = Boolean(humidityInBand && tempInBand && humidityFalling);
 
+  // Note text is shared by the SMS and the dashboard panel — keep it ASCII
+  // (GSM-7-safe) so the text message stays cheap and carrier-proof.
   let controlsNote;
   if (controlsStabilizing) {
     const trend =
       Number.isFinite(humidityDelta) && humidityDelta < -0.5
-        ? ` (humidity ↓${Math.abs(humidityDelta).toFixed(0)}% over the window)`
+        ? ` (humidity down ${Math.abs(humidityDelta).toFixed(0)}% over the window)`
         : "";
     controlsNote = `AC + dehumidifiers stabilizing the space${trend}.`;
   } else {
     const reasons = [];
-    if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% > ${THRESHOLDS.HUMIDITY_HIGH}%`);
-    if (!tempInBand) reasons.push(`temp avg ${fmt(temp.avg, 1)}°C > ${THRESHOLDS.TEMP_HIGH_C}°C`);
+    if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% above the ${THRESHOLDS.HUMIDITY_HIGH}% limit`);
+    if (!tempInBand) reasons.push(`temp avg ${fmt(temp.avg, 1)}C above the ${THRESHOLDS.TEMP_HIGH_C}C limit`);
     if (humidityInBand && tempInBand && !humidityFalling)
       reasons.push(`humidity rising (+${fmt(humidityDelta, 1)}%)`);
-    controlsNote = `Environmental controls not keeping up — ${reasons.join("; ")}.`;
+    controlsNote = `Environmental controls not keeping up: ${reasons.join("; ")}.`;
   }
 
   return {
@@ -127,17 +155,20 @@ function summaryToSms(s) {
   }).format(new Date(s.generatedAt));
 
   if (!s.sampleCount) {
-    return `SniffMaster AM report (${dateLabel})\nNo telemetry received in the last 24h — check the device power/Wi-Fi.`;
+    return `SniffMaster AM report (${dateLabel})\nNo telemetry received in the last 24h - check the device power/Wi-Fi.`;
   }
 
-  const lines = [
-    `SniffMaster AM report (${dateLabel})`,
-    `Temp: avg ${fmt(s.temp?.avg, 1)}°C (${fmt(s.temp?.min, 1)}–${fmt(s.temp?.max, 1)})`,
-    `Humidity: avg ${fmt(s.humidity?.avg)}% (${fmt(s.humidity?.min)}–${fmt(s.humidity?.max)})`,
-    `Pressure: avg ${fmt(s.pressure?.avg)} hPa`,
-    `Air: gasR ${gasLabel(s.gas?.avg)}, IAQ ${fmt(s.iaq?.avg)}`,
-    `${s.controlsStabilizing ? "✅" : "❌"} ${s.controlsNote}`,
-  ];
+  // ASCII only (GSM-7): no degree signs, ohm symbols, dashes, or emoji.
+  // Metrics the device never reported are skipped rather than shown as "-".
+  const lines = [`SniffMaster AM report (${dateLabel})`];
+  if (s.temp) lines.push(`Temp: avg ${fmt(s.temp.avg, 1)}C (${fmt(s.temp.min, 1)} to ${fmt(s.temp.max, 1)})`);
+  if (s.humidity) lines.push(`Humidity: avg ${fmt(s.humidity.avg)}% (${fmt(s.humidity.min)} to ${fmt(s.humidity.max)})`);
+  if (s.pressure) lines.push(`Pressure: avg ${fmt(s.pressure.avg)} hPa`);
+  const air = [];
+  if (s.gas) air.push(`gas ${gasLabel(s.gas.avg)}`);
+  if (s.iaq) air.push(`IAQ ${fmt(s.iaq.avg)}`);
+  if (air.length) lines.push(`Air: ${air.join(", ")}`);
+  lines.push(`${s.controlsStabilizing ? "OK:" : "PROBLEM:"} ${s.controlsNote}`);
   return lines.join("\n");
 }
 
@@ -169,10 +200,15 @@ export default async function handler(req, res) {
 
   // Authorized (cron / secret): compute, text, store.
   try {
-    // Idempotency guard against a double cron fire within the same window.
+    // Idempotency, two layers: a fast read check, then an atomic SET NX lock
+    // so even two simultaneous triggers can't both send.
     const existing = await getDailySummary();
     if (existing && Date.now() - Number(existing.generatedAt || 0) < RESEND_GUARD_MS) {
       return res.status(200).json({ ...existing, skipped: "recently generated" });
+    }
+    const wonLock = await acquireDailySummaryLock(RESEND_GUARD_MS / 1000);
+    if (!wonLock) {
+      return res.status(200).json({ ...(existing || {}), skipped: "another run holds the lock" });
     }
 
     const history = await getHistory(288); // up to ~48h @ 10min, we filter to 24h
