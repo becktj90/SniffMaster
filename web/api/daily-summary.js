@@ -21,7 +21,7 @@ import {
 } from "../lib/store.js";
 import { normalizeReading, THRESHOLDS } from "../lib/thresholds.js";
 import { sendSms } from "../lib/notify.js";
-import { getCapeLaunches } from "./launches.js";
+import { getCapeLaunches } from "../lib/launches.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
