@@ -20,6 +20,9 @@
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --sticky-rail-top: calc(var(--safe-top) + 66px);
+  /* Topbar + tab row combined height. JS (syncTopbarSpacing) overwrites this
+     with a measured value; this is only the pre-JS / no-JS fallback. */
+  --alert-rail-top: calc(var(--sticky-rail-top) + 62px);
   --body-bg:
     radial-gradient(circle at top left, rgba(0, 242, 255, 0.09), transparent 26%),
     radial-gradient(circle at top right, rgba(0, 242, 255, 0.06), transparent 20%),
@@ -1700,7 +1703,8 @@ body[data-theme="retro90s"] .footer-bar {
 #card-space,
 #card-history,
 #card-controls,
-#card-trend-series {
+#card-trend-series,
+#card-restoration {
   grid-column: span 12;
 }
 
@@ -5718,11 +5722,12 @@ body *::after {
 /* ── Restoration Safety Monitor ──────────────────────────────────────────── */
 
 /* Always-visible alert strip for stale telemetry / threshold breaches.
-   Anchored just below the fixed topbar (--sticky-rail-top) so it never covers
-   the nav, and pointer-events:none so it can't block taps on content under it. */
+   Anchored below BOTH the fixed topbar and the sticky tab row (--alert-rail-top,
+   kept in sync by syncTopbarSpacing()) so it never covers either, and
+   pointer-events:none so it can't block taps on content under it. */
 .restoration-alert-strip {
   position: fixed;
-  top: var(--sticky-rail-top);
+  top: var(--alert-rail-top);
   left: 0;
   right: 0;
   z-index: 999;

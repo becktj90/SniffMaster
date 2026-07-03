@@ -194,20 +194,16 @@ const VIEW_META = {
 
 const VIEW_SECTIONS = {
   dashboard: [
+    { id: "card-restoration", label: "Restoration Safety Monitor" },
     { id: "card-hero", label: "Room Status" },
     { id: "card-status", label: "System" },
-    { id: "card-intel", label: "Air Intelligence" },
-    { id: "card-cause", label: "Cause Engine" },
-    { id: "card-office", label: "Vitality" },
   ],
   environment: [
-    { id: "card-status", label: "System" },
     { id: "card-telemetry", label: "Raw Sensors" },
     { id: "card-derived", label: "Air Metrics" },
     { id: "card-weather-intel", label: "Weather & Map" },
   ],
   analysis: [
-    { id: "card-weather-intel", label: "Smart Summary & Map" },
     { id: "card-bro", label: "Room Intel" },
     { id: "card-intel", label: "Air Intel" },
     { id: "card-cause", label: "Cause Engine" },
@@ -218,6 +214,7 @@ const VIEW_SECTIONS = {
     { id: "card-fart", label: "Intensity" },
   ],
   history: [
+    { id: "card-trend-series", label: "24-Hour Trend" },
     { id: "card-chart", label: "Daily Rhythm" },
     { id: "card-events", label: "Event Log" },
   ],
@@ -7565,6 +7562,22 @@ function syncTopbarSpacing() {
   const h = topbar.offsetHeight;
   document.documentElement.style.setProperty("--sticky-rail-top", h + "px");
   document.body.style.paddingTop = h + "px";
+
+  // The tab row (.section-shell) sits sticky right under the topbar. Fixed
+  // overlays like the restoration alert strip need to clear BOTH bars, not
+  // just the topbar, so publish a second offset that accounts for its full
+  // extent too. Measured via getBoundingClientRect (not just offsetHeight)
+  // because .section-shell carries its own top margin — a gap that offsetHeight
+  // alone doesn't capture — before scrolling triggers its sticky clamp.
+  const sectionShell = document.querySelector(".section-shell");
+  let alertRailTop = h;
+  if (sectionShell) {
+    const topbarRect = topbar.getBoundingClientRect();
+    const shellRect = sectionShell.getBoundingClientRect();
+    const gapBeforeShell = Math.max(0, shellRect.top - topbarRect.bottom);
+    alertRailTop = h + gapBeforeShell + sectionShell.offsetHeight;
+  }
+  document.documentElement.style.setProperty("--alert-rail-top", alertRailTop + "px");
 }
 syncTopbarSpacing();
 document.fonts.ready.then(syncTopbarSpacing);
