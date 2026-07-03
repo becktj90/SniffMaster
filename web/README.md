@@ -149,6 +149,37 @@ Returns the latest Office Vitality heuristics, including CFI and transmission-ri
 
 Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Meteo forecast data and, if `OPENAI_API_KEY` is configured, an OpenAI-generated weather brief. Otherwise it falls back to deterministic local forecast logic.
 
+### GET /api/daily-summary
+
+Two modes:
+- **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
+- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via Twilio, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window.
+
+## SMS alerts (Twilio) — setup
+
+The relay can text you a **daily 6 AM ET room report** and **immediate alerts** when conditions breach restoration-safe limits (humidity > 55%, temp > 40°C, sudden gas-resistance drop, IAQ ≥ 150). With the env vars unset, texting is silently skipped and everything else keeps working.
+
+1. **Create a Twilio account** at <https://www.twilio.com/try-twilio>. A free trial works for texting *your own verified number* (trial texts carry a "Sent from your Twilio trial account" prefix).
+2. **Get a phone number**: Console → Phone Numbers → Buy a Number (with SMS capability). Trial accounts get one free. For a paid US local (10-digit) number, Twilio requires A2P 10DLC registration before SMS delivers reliably — a **toll-free number with (free) toll-free verification** is usually the fastest path for personal alerts.
+3. **Trial only**: verify your personal cell under Phone Numbers → Verified Caller IDs, or texts to it will be rejected.
+4. **Copy credentials** from the Console home page: Account SID (`AC…`) and Auth Token.
+5. **Set env vars** in Vercel → Project → Settings → Environment Variables (Production):
+   - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (your Twilio number, `+1…`), `ALERT_SMS_TO` (your cell, `+1…`; comma-separate for multiple), and `CRON_SECRET` (`openssl rand -hex 16`).
+6. **Redeploy** so the functions pick up the new env, then **test the morning report by hand**:
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" https://YOUR-APP.vercel.app/api/daily-summary
+   ```
+   You should get the JSON back and the text on your phone. (Re-runs within 6h return `skipped` — that's the resend guard working.)
+7. **Test a live alert** by posting a breaching snapshot as the device would:
+   ```bash
+   curl -X POST https://YOUR-APP.vercel.app/api/update \
+     -H "Content-Type: application/json" \
+     -d '{"key":"YOUR_SNIFFMASTER_API_KEY","temperature":22,"humidity":61,"pressure":1012,"gas_resistance":150000,"iaq":40}'
+   ```
+   Humidity 61% > 55% fires one alert text; identical re-posts stay silent (30-min per-condition cooldown; a fresh text fires when a *new* condition breaches).
+
+**Cron note**: the schedule in `vercel.json` is `0 10 * * *` (10:00 UTC = 6:00 AM EDT). Vercel Hobby supports daily crons but fires them "within the hour"; Pro is exact. During EST (winter) 10:00 UTC is 5:00 AM ET — bump to `0 11 * * *` if that matters.
+
 ## Alternative deploy targets
 
 The frontend is static files and the API is standard serverless functions. You can adapt to:
