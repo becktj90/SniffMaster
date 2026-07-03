@@ -52,11 +52,15 @@ const KEY_DAD_JOKE = "sniffmaster:dad_joke";
 const KEY_DAD_JOKE_HISTORY = "sniffmaster:dad_joke_history";
 const KEY_BLE_OCCUPANCY = "sniffmaster:ble_occupancy";
 const KEY_BLE_OCCUPANCY_HISTORY = "sniffmaster:ble_occupancy_history";
+const KEY_ALERT_STATE = "sniffmaster:alert_state";
+const KEY_DAILY_SUMMARY = "sniffmaster:daily_summary";
+const KEY_DAILY_SUMMARY_HISTORY = "sniffmaster:daily_summary_history";
 const MAX_HISTORY = 1008; // 7 days at 10-minute intervals
 const MAX_SNIFF_HISTORY = 96;
 const MAX_COMMAND_HISTORY = 48;
 const MAX_DAD_JOKE_HISTORY = 60;
 const MAX_BLE_OCCUPANCY_HISTORY = 288; // 24 hours at 5-minute intervals
+const MAX_DAILY_SUMMARY_HISTORY = 30; // ~1 month of morning reports
 
 /**
  * Store a new sensor snapshot.
@@ -322,6 +326,86 @@ export async function getBleOccupancyHistory(count = 48) {
   const redis = getRedis();
   const n = Math.min(count, MAX_BLE_OCCUPANCY_HISTORY);
   const items = await redis.lrange(KEY_BLE_OCCUPANCY_HISTORY, 0, n - 1);
+  return items.map((item) =>
+    typeof item === "string" ? JSON.parse(item) : item
+  );
+}
+
+/**
+ * Alert de-dupe state for threshold SMS alerts.
+ * Shape: { activeKeys: string[], sentAt: { [key]: epochMs } }
+ * Lets /api/update fire an SMS only when a breach newly appears (state
+ * transition) and re-fire the same breach only after a per-key cooldown.
+ */
+export async function getAlertState() {
+  const redis = getRedis();
+  const raw = await redis.get(KEY_ALERT_STATE);
+  if (!raw) return { activeKeys: [], sentAt: {} };
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  return {
+    activeKeys: Array.isArray(parsed.activeKeys) ? parsed.activeKeys : [],
+    sentAt: parsed.sentAt && typeof parsed.sentAt === "object" ? parsed.sentAt : {},
+  };
+}
+
+export async function setAlertState(state) {
+  const redis = getRedis();
+  const entry = {
+    activeKeys: Array.isArray(state?.activeKeys) ? state.activeKeys : [],
+    sentAt: state?.sentAt && typeof state.sentAt === "object" ? state.sentAt : {},
+    updatedAt: Date.now(),
+  };
+  await redis.set(KEY_ALERT_STATE, JSON.stringify(entry));
+  return entry;
+}
+
+/**
+ * Atomically claim the right to generate+send today's daily summary.
+ * Uses SET NX EX so a double cron fire (or a manual trigger racing the cron)
+ * can never double-text: exactly one caller wins the lock per window.
+ * @param {number} ttlSeconds — how long the claim blocks re-sends
+ * @returns {Promise<boolean>} true if this caller won the lock
+ */
+export async function acquireDailySummaryLock(ttlSeconds) {
+  const redis = getRedis();
+  const result = await redis.set(
+    "sniffmaster:daily_summary_lock",
+    String(Date.now()),
+    { nx: true, ex: Math.max(60, Math.floor(ttlSeconds)) }
+  );
+  // Upstash returns "OK" when the key was set, null when it already existed.
+  return result === "OK";
+}
+
+/**
+ * Store a daily summary snapshot (the morning 24h report) so the dashboard
+ * panel and follow-up runs can read it. Overwrites latest + appends to history.
+ */
+export async function putDailySummary(data) {
+  const redis = getRedis();
+  const entry = { ...data, generatedAt: data?.generatedAt || Date.now() };
+  const json = JSON.stringify(entry);
+
+  await Promise.all([
+    redis.set(KEY_DAILY_SUMMARY, json),
+    redis.lpush(KEY_DAILY_SUMMARY_HISTORY, json),
+  ]);
+
+  await redis.ltrim(KEY_DAILY_SUMMARY_HISTORY, 0, MAX_DAILY_SUMMARY_HISTORY - 1);
+  return entry;
+}
+
+export async function getDailySummary() {
+  const redis = getRedis();
+  const raw = await redis.get(KEY_DAILY_SUMMARY);
+  if (!raw) return null;
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+export async function getDailySummaryHistory(count = 14) {
+  const redis = getRedis();
+  const n = Math.min(count, MAX_DAILY_SUMMARY_HISTORY);
+  const items = await redis.lrange(KEY_DAILY_SUMMARY_HISTORY, 0, n - 1);
   return items.map((item) =>
     typeof item === "string" ? JSON.parse(item) : item
   );

@@ -5197,6 +5197,228 @@ function updateHistoryStats(history) {
   $("chart-voc").textContent = `${rhythm.activeSlots} slots from ${rhythm.sampleCount} samples`;
 }
 
+// ── Restoration Safety Monitor ────────────────────────────────────────────
+// Front-end mirror of lib/thresholds.js — KEEP THESE NUMBERS IN SYNC with the
+// backend. Drives the always-visible alert strip, the 24h baseline panel, and
+// pulsing-red card states for the switchgear-restoration deployment.
+const RESTORATION_THRESHOLDS = {
+  HUMIDITY_HIGH: 55, // %RH — condensation risk on open buswork
+  TEMP_HIGH_C: 40, // °C — control failure / overheating
+  IAQ_POOR: 150, // BME688 IAQ (higher = worse)
+  GAS_DROP_RATIO: 0.6, // gasR ≤ 60% of baseline = ≥40% sudden drop
+  GAS_MIN_BASELINE: 1000, // Ohms noise floor for the drop test
+};
+// Map each breach key to the metric element it should pulse red.
+const RESTORATION_ALERT_TARGETS = {
+  humidity: "v-hum",
+  temp: "v-temp",
+  gas: "v-gasr-raw",
+  iaq: "derived-iaq",
+};
+let dailySummaryState = { fetchedAt: 0, data: null, pending: false };
+
+function normalizeReadingClient(d) {
+  const s = d && typeof d === "object" ? d : {};
+  let tempC = num(s.temperature, NaN);
+  if (!Number.isFinite(tempC)) tempC = num(s.tempC, NaN);
+  if (!Number.isFinite(tempC)) {
+    const tempF = num(s.tempF, NaN);
+    if (Number.isFinite(tempF)) tempC = ((tempF - 32) * 5) / 9;
+  }
+  let gasR = num(s.gasR, NaN);
+  if (!Number.isFinite(gasR)) gasR = num(s.gas_resistance, NaN);
+  if (!Number.isFinite(gasR)) gasR = num(s.gasResistance, NaN);
+  return {
+    tempC,
+    humidity: num(s.humidity, NaN),
+    gasR,
+    iaq: num(s.iaq, NaN),
+    receivedAt: num(s.receivedAt, NaN),
+  };
+}
+
+function baselineGasRClient() {
+  const values = (Array.isArray(historyData) ? historyData : [])
+    .slice(1) // drop the newest (current) reading
+    .map((h) => normalizeReadingClient(h).gasR)
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b);
+  if (!values.length) return NaN;
+  const mid = Math.floor(values.length / 2);
+  return values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+}
+
+function evaluateBreachesClient(r, baseGasR) {
+  const out = [];
+  const T = RESTORATION_THRESHOLDS;
+  if (Number.isFinite(r.humidity) && r.humidity > T.HUMIDITY_HIGH) {
+    out.push({ key: "humidity", text: `Humidity ${r.humidity.toFixed(0)}% (>${T.HUMIDITY_HIGH}%) — condensation risk` });
+  }
+  if (Number.isFinite(r.tempC) && r.tempC > T.TEMP_HIGH_C) {
+    out.push({ key: "temp", text: `Temp ${r.tempC.toFixed(1)}°C (>${T.TEMP_HIGH_C}°C) — overheating` });
+  }
+  if (
+    Number.isFinite(r.gasR) &&
+    Number.isFinite(baseGasR) &&
+    baseGasR >= T.GAS_MIN_BASELINE &&
+    r.gasR <= baseGasR * T.GAS_DROP_RATIO
+  ) {
+    const dropPct = Math.round((1 - r.gasR / baseGasR) * 100);
+    out.push({ key: "gas", text: `Gas resistance ↓${dropPct}% — possible smoke/fumes` });
+  }
+  if (Number.isFinite(r.iaq) && r.iaq >= T.IAQ_POOR) {
+    out.push({ key: "iaq", text: `IAQ ${r.iaq.toFixed(0)} (>=${T.IAQ_POOR}) — degraded air` });
+  }
+  return out;
+}
+
+function ensureRestorationDom() {
+  let strip = document.getElementById("restoration-alert-strip");
+  if (!strip) {
+    strip = document.createElement("div");
+    strip.id = "restoration-alert-strip";
+    strip.className = "restoration-alert-strip is-hidden";
+    strip.setAttribute("role", "alert");
+    strip.setAttribute("aria-live", "assertive");
+    document.body.prepend(strip);
+  }
+
+  let panel = document.getElementById("card-restoration");
+  if (!panel) {
+    const dashboard = document.getElementById("dashboard");
+    if (dashboard) {
+      panel = document.createElement("section");
+      panel.className = "card restoration-card";
+      panel.id = "card-restoration";
+      panel.dataset.view = "dashboard";
+      panel.innerHTML = `
+        <div class="card-header">
+          <span>Restoration Safety Monitor</span>
+          <span class="header-pill" id="restoration-pill">Monitoring</span>
+        </div>
+        <p class="card-summary" id="restoration-live">Watching temperature, humidity, and air quality for switchgear-safe limits.</p>
+        <div class="restoration-summary" id="restoration-summary">
+          <p class="restoration-empty">Daily 24h baseline will appear after the first morning report.</p>
+        </div>`;
+      // Honor the current tab's visibility rules on injection.
+      panel.classList.toggle("is-hidden", (typeof activeView === "string" ? activeView : "dashboard") !== "dashboard");
+      dashboard.prepend(panel);
+    }
+  }
+  return { strip, panel };
+}
+
+function renderRestorationMonitor(d) {
+  const { strip } = ensureRestorationDom();
+  const reading = normalizeReadingClient(d);
+  const hasSnapshot = Number.isFinite(reading.receivedAt) && reading.receivedAt > 0;
+  const age = hasSnapshot ? Date.now() - reading.receivedAt : Infinity;
+  const isStale = hasSnapshot && age > STALE_MS;
+  const breaches = evaluateBreachesClient(reading, baselineGasRClient());
+
+  // Pulse the individual metric cards that are breaching.
+  const breachKeys = new Set(breaches.map((b) => b.key));
+  for (const [key, elId] of Object.entries(RESTORATION_ALERT_TARGETS)) {
+    const el = document.getElementById(elId);
+    if (!el) continue;
+    const target = el.closest(".telemetry-item") || el;
+    target.classList.toggle("restoration-alert", breachKeys.has(key));
+  }
+
+  // Always-visible alert strip: device offline and/or active breaches.
+  const messages = [];
+  if (!hasSnapshot) {
+    messages.push("Waiting for first telemetry from the device…");
+  } else if (isStale) {
+    messages.push(`⚠ No telemetry for ${fmtAge(reading.receivedAt).replace(" ago", "")} — check device power / Wi-Fi.`);
+  }
+  for (const b of breaches) messages.push(`⚠ ${b.text}`);
+
+  if (strip) {
+    const active = isStale || breaches.length > 0;
+    strip.classList.toggle("is-hidden", !active);
+    strip.classList.toggle("is-offline", isStale && breaches.length === 0);
+    strip.textContent = active ? messages.join("   ·   ") : "";
+  }
+
+  // Live status line + pill on the panel.
+  const live = $("restoration-live");
+  const pill = $("restoration-pill");
+  if (live && pill) {
+    if (!hasSnapshot) {
+      live.textContent = "Waiting for the first live snapshot from the device.";
+      setHeaderPill("restoration-pill", "Connecting", "neutral");
+    } else if (isStale) {
+      live.textContent = `Device offline — last reading ${fmtAge(reading.receivedAt)}. Check power/Wi-Fi in the field.`;
+      setHeaderPill("restoration-pill", "Offline", "danger");
+    } else if (breaches.length > 0) {
+      live.textContent = breaches.map((b) => b.text).join(" · ");
+      setHeaderPill("restoration-pill", `${breaches.length} alert${breaches.length > 1 ? "s" : ""}`, "danger");
+    } else {
+      live.textContent = "All parameters within switchgear-safe limits.";
+      setHeaderPill("restoration-pill", "All clear", "good");
+    }
+  }
+
+  ensureDailySummary();
+}
+
+function ensureDailySummary() {
+  const TEN_MIN = 600000;
+  if (dailySummaryState.pending) return;
+  if (dailySummaryState.data && Date.now() - dailySummaryState.fetchedAt < TEN_MIN) {
+    renderDailySummary(dailySummaryState.data);
+    return;
+  }
+  dailySummaryState.pending = true;
+  fetch("/api/daily-summary", { cache: "no-store" })
+    .then((res) => (res.status === 204 ? null : res.ok ? res.json() : null))
+    .then((data) => {
+      dailySummaryState.data = data;
+      dailySummaryState.fetchedAt = Date.now();
+      renderDailySummary(data);
+    })
+    .catch((err) => console.error("daily-summary fetch failed:", err))
+    .finally(() => {
+      dailySummaryState.pending = false;
+    });
+}
+
+function renderDailySummary(s) {
+  const wrap = $("restoration-summary");
+  if (!wrap) return;
+  if (!s || !s.sampleCount) {
+    wrap.innerHTML = `<p class="restoration-empty">Daily 24h baseline will appear after the first morning report (06:00 ET).</p>`;
+    return;
+  }
+  const stat = (obj, unit, digits = 0) =>
+    obj
+      ? `avg ${num(obj.avg).toFixed(digits)}${unit} <span class="rs-range">(${num(obj.min).toFixed(digits)}–${num(obj.max).toFixed(digits)})</span>`
+      : "—";
+  const gasStat = (obj) => {
+    if (!obj) return "—";
+    const a = num(obj.avg);
+    const label = a >= 1e6 ? `${(a / 1e6).toFixed(2)}MΩ` : a >= 1e3 ? `${(a / 1e3).toFixed(0)}kΩ` : `${Math.round(a)}Ω`;
+    return `avg ${label}`;
+  };
+  const when = num(s.generatedAt) ? fmtStamp(s.generatedAt) : "";
+  const rows = [
+    ["🌡 Temperature", stat(s.temp, "°C", 1)],
+    ["💧 Humidity", stat(s.humidity, "%", 0)],
+    ["◈ Pressure", stat(s.pressure, " hPa", 0)],
+    ["🔬 Gas resistance", gasStat(s.gas)],
+    ["⚗ Air quality (IAQ)", stat(s.iaq, "", 0)],
+  ];
+  wrap.innerHTML = `
+    <div class="restoration-verdict ${s.controlsStabilizing ? "is-good" : "is-bad"}">
+      ${s.controlsStabilizing ? "✅" : "❌"} ${s.controlsNote || ""}
+    </div>
+    <div class="restoration-stats">
+      ${rows.map(([k, v]) => `<div class="rs-row"><span class="rs-key">${k}</span><span class="rs-val">${v}</span></div>`).join("")}
+    </div>
+    <div class="restoration-foot">24h baseline · ${s.sampleCount} samples${when ? ` · updated ${when}` : ""}</div>`;
+}
+
 function render(data) {
   if (!data) return;
   let merged = mergeBriefingIntoSnapshot(mergeSnapshotWithSniff(data), weatherBriefingState.data);
@@ -5249,6 +5471,8 @@ function render(data) {
 
   $("last-update").textContent = num(merged.receivedAt) ? `Updated ${fmtAge(merged.receivedAt)} · ${fmtStamp(merged.receivedAt)}` : "No data yet";
   $("v-uptime").textContent = fmtUptime(merged.uptime);
+
+  renderRestorationMonitor(merged);
 
   ensureWeatherBriefing(merged);
   ensureLaunchData();

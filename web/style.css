@@ -5714,3 +5714,117 @@ body *::after {
   opacity: 1;
   color: var(--cobalt);
 }
+
+/* ── Restoration Safety Monitor ──────────────────────────────────────────── */
+
+/* Always-visible alert strip for stale telemetry / threshold breaches.
+   Anchored just below the fixed topbar (--sticky-rail-top) so it never covers
+   the nav, and pointer-events:none so it can't block taps on content under it. */
+.restoration-alert-strip {
+  position: fixed;
+  top: var(--sticky-rail-top);
+  left: 0;
+  right: 0;
+  z-index: 999;
+  pointer-events: none;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+  text-align: center;
+  color: #fff;
+  background: linear-gradient(180deg, rgba(231, 76, 60, 0.98), rgba(192, 45, 34, 0.98));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 8px 26px rgba(231, 76, 60, 0.4);
+  animation: restoration-strip-pulse 1.4s ease-in-out infinite;
+}
+.restoration-alert-strip.is-offline {
+  background: linear-gradient(180deg, rgba(241, 196, 15, 0.98), rgba(201, 158, 8, 0.98));
+  box-shadow: 0 8px 26px rgba(241, 196, 15, 0.35);
+  color: #1a1400;
+}
+.restoration-alert-strip.is-hidden {
+  display: none;
+}
+@keyframes restoration-strip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.72; }
+}
+
+/* Pulsing-red state on a breaching metric tile. */
+.telemetry-item.restoration-alert,
+.restoration-alert {
+  border-radius: 12px;
+  animation: restoration-card-pulse 1.3s ease-in-out infinite;
+}
+@keyframes restoration-card-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(231, 76, 60, 0.55), inset 0 0 0 9999px rgba(231, 76, 60, 0.06);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(231, 76, 60, 0.95), inset 0 0 0 9999px rgba(231, 76, 60, 0.16);
+  }
+}
+
+/* 24h baseline panel. */
+.restoration-card .restoration-summary {
+  margin-top: 12px;
+}
+.restoration-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+.restoration-verdict {
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+.restoration-verdict.is-good {
+  color: var(--mint);
+  background: rgba(57, 255, 20, 0.16);
+  border: 1px solid rgba(57, 255, 20, 0.4);
+}
+.restoration-verdict.is-bad {
+  color: var(--red);
+  background: rgba(231, 76, 60, 0.14);
+  border: 1px solid rgba(231, 76, 60, 0.4);
+}
+.restoration-stats {
+  display: grid;
+  gap: 6px;
+}
+.rs-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.rs-row:last-child {
+  border-bottom: none;
+}
+.rs-key {
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+.rs-val {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+}
+.rs-val .rs-range {
+  color: var(--muted);
+  font-weight: 400;
+}
+.restoration-foot {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
