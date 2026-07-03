@@ -81,64 +81,6 @@ const POLL_MS = 10000;
 const STALE_MS = 300000; // 5 minutes
 const SNIFF_EVENT_STALE_MS = 180000;
 const WEATHER_BRIEFING_TTL_MS = 60 * 60 * 1000; // 1-hour cadence for AI weather prediction
-const DADABASE_TTL_MS = 15 * 60 * 1000;
-const DURATION_MACROS = {
-  ML_WHOLE: (bpm) => 240000 / bpm,
-  ML_HALF: (bpm) => 120000 / bpm,
-  ML_DOTTED_Q: (bpm) => 90000 / bpm,
-  ML_QUARTER: (bpm) => 60000 / bpm,
-  ML_TRIPLET_Q: (bpm) => 40000 / bpm,
-  ML_EIGHTH: (bpm) => 30000 / bpm,
-  ML_SIXTEENTH: (bpm) => 15000 / bpm,
-  ML_DOTTED_E: (bpm) => 45000 / bpm,
-};
-const MELODY_ALIASES = {
-  "(none yet)": "",
-  "Sensor Calibrated!": "Calibration Fanfare",
-  "!! SMOKE / GAS ALERT !!": "Smoke Alert",
-};
-const DAD_JOKES = [
-  "I only know 25 letters of the alphabet. I do not know y.",
-  "Why do cows wear bells? Because their horns do not work.",
-  "I used to hate facial hair, but then it grew on me.",
-  "I am reading a book about anti-gravity. It is impossible to put down.",
-  "I told my wife she was drawing her eyebrows too high. She looked surprised.",
-  "What do you call fake spaghetti? An impasta.",
-  "Why did the scarecrow win an award? He was outstanding in his field.",
-  "I would avoid the sushi if I were you. It is a little fishy.",
-  "Why can’t you hear a pterodactyl go to the bathroom? Because the P is silent.",
-  "I used to be addicted to soap, but I am clean now.",
-  "Why did the golfer bring two pairs of pants? In case he got a hole in one.",
-  "Did you hear about the restaurant on the moon? Great food, no atmosphere.",
-  "What do you call cheese that is not yours? Nacho cheese.",
-  "I was going to tell a time-travel joke, but you did not like it.",
-  "Why are elevator jokes so good? They work on many levels.",
-  "I ordered a chicken and an egg from Amazon. I will let you know.",
-  "Why did the math book look sad? It had too many problems.",
-  "What do you call a factory that makes okay products? A satisfactory.",
-  "How do you organize a space party? You planet.",
-  "I only trust stairs. They are always up to something.",
-  "What did the ocean say to the beach? Nothing, it just waved.",
-  "Why did the bicycle fall over? It was two tired.",
-  "I used to play piano by ear, but now I use my hands.",
-  "What do you call a pile of cats? A meowtain.",
-  "Why did the coffee file a police report? It got mugged.",
-  "What do you call a belt made of watches? A waist of time.",
-  "Why did the computer go to therapy? It had too many bytes from the past.",
-  "What kind of tree fits in your hand? A palm tree.",
-  "Why did the mushroom get invited to every party? He was a fungi.",
-  "What do you call an alligator in a vest? An investigator.",
-  "Why was the stadium so cool? It was filled with fans.",
-  "What do you call a fish wearing a bowtie? Sofishticated.",
-  "Why do bees have sticky hair? Because they use honeycombs.",
-  "What did one wall say to the other wall? I will meet you at the corner.",
-  "What does a sprinter eat before a race? Nothing, they fast.",
-  "Why did the tomato blush? It saw the salad dressing.",
-  "What kind of music do planets sing? Nep-tunes.",
-  "Why was the broom late? It swept in.",
-  "What do you call a sleeping bull? A bulldozer.",
-  "Why did the orange stop? It ran out of juice."
-];
 const MAP_PREF_KEY = "sniffmaster-map-layers";
 const VIEW_PREF_KEY = "sniffmaster-view";
 const THEME_PREF_KEY = "sniffmaster-theme";
@@ -182,10 +124,6 @@ const VIEW_META = {
     title: "Space",
     subtitle: "Space Coast launch schedule and NASA Astronomy Picture of the Day.",
   },
-  labs: {
-    title: "Labs",
-    subtitle: "Experimental and playful features.",
-  },
   system: {
     title: "System",
     subtitle: "Remote device control, hardware specs, and architecture documentation.",
@@ -211,7 +149,6 @@ const VIEW_SECTIONS = {
     { id: "card-occupancy", label: "Presence" },
     { id: "card-odor", label: "Odor Class" },
     { id: "card-breath", label: "Breath" },
-    { id: "card-fart", label: "Intensity" },
   ],
   history: [
     { id: "card-trend-series", label: "24-Hour Trend" },
@@ -221,11 +158,6 @@ const VIEW_SECTIONS = {
   space: [
     { id: "card-space", label: "Launch Deck" },
     { id: "card-history", label: "Astro Pic" },
-  ],
-  labs: [
-    { id: "card-dadabase", label: "Dadabase" },
-    { id: "card-melody", label: "Melodies" },
-    { id: "card-paranormal", label: "Paranormal" },
   ],
   system: [
     { id: "card-controls", label: "Control Guide" },
@@ -244,17 +176,7 @@ let lastData = null;
 let historyData = [];
 let sniffHistoryData = [];
 let lastSniffEvent = null;
-let melodyBankPromise = null;
-let melodyBankData = null;
-let melodyLibraryState = {
-  query: "",
-  category: "all",
-  selectedTitle: "",
-};
-let audioCtx = null;
-let currentPlayback = null;
 let sniffStream = null;
-let dadabaseQuery = "";
 let weatherMap = null;
 let weatherMarker = null;
 let weatherBaseLayer = null;
@@ -280,13 +202,6 @@ let apodState = {
   pending: null,
 };
 let lastSassyMsg = "";
-let dadabaseState = {
-  fetchedAt: 0,
-  data: null,
-  pending: null,
-  refreshing: false,
-  notice: "",
-};
 let activeView = loadViewPref();
 let mapLayers = {
   radar: null,
@@ -353,7 +268,7 @@ function escapeHtml(value) {
 function loadViewPref() {
   try {
     const hash = `${window.location.hash || ""}`.replace(/^#/, "");
-    const alias = { home: "dashboard", air: "analysis", weather: "environment", paranormal: "labs" };
+    const alias = { home: "dashboard", air: "analysis", weather: "environment" };
     if (VIEW_META[hash]) return hash;
     if (alias[hash] && VIEW_META[alias[hash]]) return alias[hash];
     const raw = localStorage.getItem(VIEW_PREF_KEY);
@@ -994,12 +909,6 @@ function fmtAge(timestamp) {
   return `${Math.floor(ageSec / 3600)}h ago`;
 }
 
-function melodyReasonLabel(reason) {
-  const raw = `${reason || ""}`.trim();
-  if (!raw) return "manual trigger";
-  return raw.charAt(0).toUpperCase() + raw.slice(1);
-}
-
 function fmtStamp(timestamp) {
   if (!timestamp) return "No update yet";
   return new Intl.DateTimeFormat(undefined, {
@@ -1042,41 +951,6 @@ function snapshotMonthDayLabel(d) {
   }).format(snapshotDate(d));
 }
 
-function dailyJokeIndex(date = new Date()) {
-  const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  const current = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const dayOfYear = Math.floor((current - start) / 86400000);
-  return dayOfYear % DAD_JOKES.length;
-}
-
-function dailyJokeDateLabel(date = new Date()) {
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  }).format(date);
-}
-
-function dadabaseFallbackPayload(date = new Date()) {
-  const currentIndex = dailyJokeIndex(date);
-  return {
-    current: {
-      joke: DAD_JOKES[currentIndex],
-      dateLabel: dailyJokeDateLabel(date),
-      mode: "catalog",
-      generatedAt: date.getTime(),
-    },
-    history: [],
-    sourceCaption: "Source: local Dadabase classics baked into the portal shell",
-  };
-}
-
-function dadabaseModeLabel(mode) {
-  if (mode === "openai") return "OpenAI daily joke";
-  if (mode === "fallback") return "Server fallback joke";
-  return "Dadabase classic";
-}
-
 function isFreshTimestamp(timestamp, maxAgeMs) {
   const ts = num(timestamp, NaN);
   return Number.isFinite(ts) && Date.now() - ts <= maxAgeMs;
@@ -1101,22 +975,6 @@ function vscProxyConfidence(d) {
     0,
     100
   );
-}
-
-function sniffTone(conf) {
-  if (conf >= 85) return { label: "Sulfur spike", tone: "danger" };
-  if (conf >= 70) return { label: "High sulfur", tone: "danger" };
-  if (conf >= 40) return { label: "Sulfur active", tone: "warn" };
-  if (conf >= 20) return { label: "Sulfur trace", tone: "neutral" };
-  return { label: "Sulfur quiet", tone: "good" };
-}
-
-function stankColor(conf) {
-  if (conf >= 85) return "#d8ef72";
-  if (conf >= 70) return "#bce85a";
-  if (conf >= 40) return "#8de96c";
-  if (conf >= 20) return "#6fe59d";
-  return "#5df1a4";
 }
 
 function mergeSnapshotWithSniff(data) {
@@ -1161,550 +1019,6 @@ function mergeBriefingIntoSnapshot(data, briefing) {
   }
 
   return Object.keys(updates).length > 0 ? { ...data, ...updates } : data;
-}
-
-function cleanArrayTokens(body) {
-  return body
-    .replace(/\/\/.*$/gm, "")
-    .split(",")
-    .map((token) => token.trim())
-    .filter(Boolean);
-}
-
-function parseDurationToken(token) {
-  const numeric = Number(token.replace(/U/g, ""));
-  if (Number.isFinite(numeric)) return numeric;
-
-  const macroMatch = token.match(/^([A-Z_]+)\s*\(\s*(\d+)\s*\)$/);
-  if (!macroMatch) return 0;
-
-  const [, macroName, bpmRaw] = macroMatch;
-  const macro = DURATION_MACROS[macroName];
-  const bpm = Number(bpmRaw);
-  return macro && bpm > 0 ? Math.round(macro(bpm)) : 0;
-}
-
-function normalizeMelodyTitle(title) {
-  const raw = (title || "").trim();
-  return MELODY_ALIASES[raw] ?? raw;
-}
-
-function melodySectionLabel(sectionName) {
-  const raw = `${sectionName || ""}`.trim().toUpperCase();
-  if (raw === "SONGS") return "Songs";
-  if (raw === "ICONIC_JINGLES") return "Jingles";
-  if (raw === "ALERTS") return "Alerts";
-  return raw
-    .toLowerCase()
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function melodySectionKey(sectionName) {
-  const raw = `${sectionName || ""}`.trim().toUpperCase();
-  if (raw === "SONGS") return "songs";
-  if (raw === "ICONIC_JINGLES") return "jingles";
-  if (raw === "ALERTS") return "alerts";
-  return raw.toLowerCase() || "misc";
-}
-
-function melodyDurationMs(item) {
-  if (!item || !Array.isArray(item.durations)) return 0;
-  const base = item.durations.reduce((sum, dur) => sum + Math.max(0, num(dur, 0)), 0);
-  return Math.round(base * Math.max(1, num(item.repeats, 1)));
-}
-
-function melodyTrackTags(item) {
-  const tags = [];
-  const title = `${item?.title || ""}`.toLowerCase();
-  const source = `${item?.source || ""}`.toLowerCase();
-  const allText = `${title} ${source}`;
-
-  if (/christmas|jingle bells|we wish you|deck the halls|silent night|carol of the bells|happy birthday/.test(allText)) {
-    tags.push("Holiday");
-  }
-  if (/mario|zelda|tetris|pac-man|sonic|playstation|street fighter|wii/.test(allText)) {
-    tags.push("Game");
-  }
-  if (/theme|stinger|fanfare|stab|sweep|chimes|breaking news|network|commercial|tv/.test(allText)) {
-    tags.push("Stinger");
-  }
-  if (/jurassic|harry potter|lord of the rings|ghostbusters|mission impossible|pink panther|game of thrones|stranger things|simpsons|jaws|fur elise|beethoven|imperial march|under pressure|free bird|funkytown|beat it|thriller|hedwig/.test(allText)) {
-    tags.push("Iconic");
-  }
-  if (/traditional|beethoven|mancini|zimmer|williams|djawadi|griffin|schifrin/.test(source)) {
-    tags.push("Classic");
-  }
-  if ((item?.categoryLabel || "") === "Alerts") {
-    tags.push("System");
-  }
-
-  return [...new Set(tags)].slice(0, 3);
-}
-
-function melodyTrackSearchText(item) {
-  return [
-    item?.title || "",
-    item?.source || "",
-    item?.categoryLabel || "",
-    item?.sectionLabel || "",
-    ...(item?.tags || []),
-  ].join(" ").toLowerCase();
-}
-
-function parseMelodyHeader(text) {
-  const noteValues = new Map();
-  const noteArrays = new Map();
-  const durationArrays = new Map();
-  const byTitle = new Map();
-  const byKey = new Map();
-  const sections = [];
-
-  const noteValueRegex = /constexpr int16_t\s+(\w+)\s*=\s*(\d+);/g;
-  let match;
-  while ((match = noteValueRegex.exec(text))) {
-    noteValues.set(match[1], Number(match[2]));
-  }
-
-  const noteArrayRegex = /static const int16_t\s+(\w+)\[\]\s*=\s*\{([\s\S]*?)\};/g;
-  while ((match = noteArrayRegex.exec(text))) {
-    noteArrays.set(
-      match[1],
-      cleanArrayTokens(match[2]).map((token) => noteValues.get(token) ?? Number(token) ?? 0)
-    );
-  }
-
-  const durationArrayRegex = /static const uint16_t\s+(\w+)\[\]\s*=\s*\{([\s\S]*?)\};/g;
-  while ((match = durationArrayRegex.exec(text))) {
-    durationArrays.set(
-      match[1],
-      cleanArrayTokens(match[2]).map(parseDurationToken)
-    );
-  }
-
-  const melodyInfoRegex = /\{\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*(\w+),\s*(\w+),\s*melodyLen\(\w+\),\s*(\d+)\s*\}/g;
-  const sectionRegex = /static const MelodyInfo\s+(\w+)\[\]\s*=\s*\{([\s\S]*?)\n\};/g;
-  while ((match = sectionRegex.exec(text))) {
-    const [, sectionName, sectionBody] = match;
-    melodyInfoRegex.lastIndex = 0;
-    const sectionItems = [];
-    let entry;
-    while ((entry = melodyInfoRegex.exec(sectionBody))) {
-      const [, key, title, source, noteArrayName, durationArrayName, repeatsRaw] = entry;
-      const notes = noteArrays.get(noteArrayName);
-      const durations = durationArrays.get(durationArrayName);
-      if (!notes || !durations || !notes.length || !durations.length) continue;
-      const item = {
-        key,
-        title,
-        source,
-        notes,
-        durations,
-        repeats: Number(repeatsRaw) || 1,
-        sectionName,
-        sectionKey: melodySectionKey(sectionName),
-        sectionLabel: melodySectionLabel(sectionName),
-      };
-      item.tags = melodyTrackTags(item);
-      item.durationMs = melodyDurationMs(item);
-      item.searchText = melodyTrackSearchText(item);
-      sectionItems.push(item);
-      byTitle.set(title, item);
-      byKey.set(key, item);
-    }
-    if (sectionItems.length) {
-      sections.push({
-        sectionName,
-        sectionKey: melodySectionKey(sectionName),
-        sectionLabel: melodySectionLabel(sectionName),
-        items: sectionItems,
-      });
-    }
-  }
-
-  const items = sections.flatMap((section) => section.items);
-  return { byTitle, byKey, items, sections };
-}
-
-async function loadMelodyBank() {
-  if (!melodyBankPromise) {
-    melodyBankPromise = fetch("/melody_library.h", { cache: "no-store" })
-      .then((res) => {
-        if (!res.ok) throw new Error(`melody ${res.status}`);
-        return res.text();
-      })
-      .then(parseMelodyHeader)
-      .then((bank) => {
-        melodyBankData = bank;
-        return bank;
-      });
-  }
-  return melodyBankPromise;
-}
-
-function ensureAudioContext() {
-  if (!audioCtx) {
-    const AudioCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtor) throw new Error("Web Audio unavailable");
-    audioCtx = new AudioCtor();
-  }
-  return audioCtx;
-}
-
-function stopMelodyPlayback() {
-  if (!currentPlayback) return;
-  if (currentPlayback.timeoutId) clearTimeout(currentPlayback.timeoutId);
-  currentPlayback.oscillators.forEach((oscillator) => {
-    try { oscillator.stop(); } catch (_) {}
-  });
-  currentPlayback = null;
-}
-
-function setMelodyStatus(text) {
-  const el = $("melody-status");
-  if (el) el.textContent = text;
-}
-
-function renderMelodyControls(data) {
-  const btn = $("melody-play-btn");
-  const titleEl = $("melody-title");
-  const metaEl = $("melody-meta");
-  if (!btn || !titleEl || !metaEl) return;
-
-  const rawTitle = (data?.lastMelody || "").trim();
-  const normalizedTitle = normalizeMelodyTitle(rawTitle);
-  const hasMelody = Boolean(rawTitle && normalizedTitle);
-  const reason = melodyReasonLabel(data?.lastMelodyReason);
-  const eventTs = melodyEventTimestamp(data);
-  const isPlaying = Boolean(currentPlayback && currentPlayback.title === normalizedTitle);
-
-  titleEl.textContent = hasMelody ? `Last tune: ${rawTitle}` : "No melody posted yet";
-  metaEl.textContent = hasMelody
-    ? `${eventTs ? `Played ${fmtAge(eventTs)} · ${fmtStamp(eventTs)}` : "Play time pending"} · ${reason}`
-    : "Timing and trigger details will appear here with the first melody event.";
-
-  if (!hasMelody) {
-    btn.disabled = true;
-    btn.textContent = "Replay Last Melody";
-    setMelodyStatus("Browser replay will appear here once the device posts a tune.");
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = isPlaying ? "Stop Melody" : "Loading Melody...";
-  if (!isPlaying) {
-    setMelodyStatus("Loading the buzzer melody bank for browser replay...");
-  }
-
-  loadMelodyBank()
-    .then((bank) => {
-      const found = bank.byTitle.has(normalizedTitle);
-      btn.disabled = !found;
-      btn.textContent = isPlaying ? "Stop Melody" : (found ? "Replay Last Melody" : "Replay Unavailable");
-      if (isPlaying) {
-        setMelodyStatus(`Playing ${rawTitle} in the browser. Tap again to stop.`);
-      } else if (found) {
-        setMelodyStatus(`Triggered by ${reason.toLowerCase()}. Tap to hear the last buzzer tune in your browser.`);
-      } else {
-        setMelodyStatus(`No browser replay bank was found for ${rawTitle}.`);
-      }
-    })
-    .catch(() => {
-      btn.disabled = true;
-      btn.textContent = "Replay Offline";
-      setMelodyStatus("Melody replay bank could not be loaded from the web app.");
-    });
-}
-
-function setMelodyLibrarySelection(title) {
-  melodyLibraryState.selectedTitle = `${title || ""}`.trim();
-  renderMelodyLibrary(lastData);
-}
-
-async function playMelodyByTitle(rawTitle, options = {}) {
-  const normalizedTitle = normalizeMelodyTitle(rawTitle);
-  if (!normalizedTitle) return false;
-
-  if (currentPlayback && currentPlayback.title === normalizedTitle) {
-    stopMelodyPlayback();
-    renderMelodyControls(lastData);
-    renderMelodyLibrary(lastData);
-    return true;
-  }
-
-  try {
-    const bank = await loadMelodyBank();
-    const melody = bank.byTitle.get(normalizedTitle);
-    if (!melody) {
-      return false;
-    }
-
-    stopMelodyPlayback();
-
-    const ctx = ensureAudioContext();
-    if (ctx.state === "suspended") await ctx.resume();
-
-    const oscillators = [];
-    let cursor = ctx.currentTime + 0.04;
-    melody.notes.forEach((freq, index) => {
-      const durMs = Math.max(40, melody.durations[index] || 140);
-      const durSec = durMs / 1000;
-      const gateSec = Math.max(0.03, durSec * 0.88);
-
-      if (freq > 0) {
-        const oscillator = ctx.createOscillator();
-        const gain = ctx.createGain();
-        oscillator.type = "square";
-        oscillator.frequency.setValueAtTime(freq, cursor);
-        gain.gain.setValueAtTime(0.0001, cursor);
-        gain.gain.exponentialRampToValueAtTime(0.055, cursor + 0.01);
-        gain.gain.exponentialRampToValueAtTime(0.0001, cursor + gateSec);
-        oscillator.connect(gain);
-        gain.connect(ctx.destination);
-        oscillator.start(cursor);
-        oscillator.stop(cursor + gateSec + 0.03);
-        oscillators.push(oscillator);
-      }
-
-      cursor += durSec + 0.015;
-    });
-
-    const totalMs = Math.max(250, Math.round((cursor - ctx.currentTime) * 1000));
-    currentPlayback = {
-      title: normalizedTitle,
-      source: options.source || "browser",
-      oscillators,
-      timeoutId: window.setTimeout(() => {
-        currentPlayback = null;
-        renderMelodyControls(lastData);
-        renderMelodyLibrary(lastData);
-      }, totalMs + 60),
-    };
-
-    renderMelodyControls(lastData);
-    renderMelodyLibrary(lastData);
-    return true;
-  } catch (_) {
-    setMelodyStatus("Browser audio is unavailable here, so the melody could not be replayed.");
-    return false;
-  }
-}
-
-async function playMelodyFromSnapshot() {
-  const rawTitle = (lastData?.lastMelody || "").trim();
-  const normalizedTitle = normalizeMelodyTitle(rawTitle);
-  if (!normalizedTitle) return;
-  await playMelodyByTitle(normalizedTitle, { source: "snapshot" });
-}
-
-function melodyLibraryTrackMarkup(item, selectedTitle, playingTitle) {
-  const isSelected = item.title === selectedTitle;
-  const isPlaying = item.title === playingTitle;
-  const durationLabel = item.durationMs ? `${Math.max(1, Math.round(item.durationMs / 1000))}s` : "--";
-  const tagMarkup = item.tags.length
-    ? item.tags.map((tag) => `<span class="melody-track-tag">${escapeHtml(tag)}</span>`).join("")
-    : '<span class="melody-track-tag is-muted">No extra tags</span>';
-
-  return `
-    <article
-      class="melody-track${isSelected ? " is-selected" : ""}${isPlaying ? " is-playing" : ""}"
-      data-melody-title="${escapeHtml(item.title)}"
-      tabindex="0"
-      role="button"
-      aria-pressed="${isSelected ? "true" : "false"}"
-      aria-label="Select ${escapeHtml(item.title)}"
-    >
-      <div class="melody-track-top">
-        <div class="melody-track-copy">
-          <div class="melody-track-title">${escapeHtml(item.title)}</div>
-          <div class="melody-track-source">
-            ${escapeHtml(item.source)} · ${escapeHtml(item.sectionLabel)} · ${durationLabel}${item.repeats > 1 ? ` · x${item.repeats}` : ""}
-          </div>
-        </div>
-        <button
-          class="chrome-btn melody-track-play"
-          type="button"
-          data-melody-play="${escapeHtml(item.title)}"
-        >${isPlaying ? "Stop" : "Play"}</button>
-      </div>
-      <div class="melody-track-tags">${tagMarkup}</div>
-    </article>
-  `;
-}
-
-function selectedMelodyItem() {
-  return melodyBankData?.byTitle?.get(melodyLibraryState.selectedTitle) || null;
-}
-
-function renderMelodyLibrary(d) {
-  const bank = melodyBankData;
-  const list = $("melody-library-list");
-  const count = $("melody-library-count");
-  const badge = $("melody-library-badge");
-  const selectedTitleEl = $("melody-library-selected-title");
-  const selectedMetaEl = $("melody-library-selected-meta");
-  const selectedTagsEl = $("melody-library-selected-tags");
-  const playSelectedBtn = $("melody-library-play-selected");
-  const playDeviceBtn = $("melody-library-play-device");
-  const searchInput = $("melody-library-search");
-  const filterRow = $("melody-library-filters");
-  const empty = $("melody-library-empty");
-  const status = $("melody-library-status");
-  const deviceNote = $("melody-library-device-note");
-
-  if (searchInput && searchInput.value !== melodyLibraryState.query) {
-    searchInput.value = melodyLibraryState.query;
-  }
-
-  if (!bank) {
-    if (badge) badge.textContent = "Loading";
-    if (count) count.textContent = "Loading melody bank...";
-    if (selectedTitleEl) selectedTitleEl.textContent = "Loading melody bank...";
-    if (selectedMetaEl) selectedMetaEl.textContent = "Browser playback will appear once the melody catalog loads.";
-    if (selectedTagsEl) selectedTagsEl.innerHTML = "";
-    if (list) list.innerHTML = '<div class="melody-empty">Melody catalog loading...</div>';
-    if (status) status.textContent = "Melody bank is loading from the portal.";
-    if (playSelectedBtn) {
-      playSelectedBtn.disabled = true;
-      playSelectedBtn.textContent = "Preview selected";
-    }
-    if (playDeviceBtn) {
-      playDeviceBtn.disabled = true;
-      playDeviceBtn.textContent = "Play on device";
-    }
-    if (filterRow) filterRow.innerHTML = "";
-    if (empty) empty.hidden = true;
-    if (deviceNote) deviceNote.textContent = "Use Remote Device Actions on the System page to queue a tune on the device.";
-    return;
-  }
-
-  const allItems = bank.items || [];
-  const sections = bank.sections || [];
-  const query = melodyLibraryState.query.trim().toLowerCase();
-  const category = melodyLibraryState.category || "all";
-  const filtered = allItems.filter((item) => {
-    const categoryMatch = category === "all" || item.sectionKey === category;
-    const queryMatch = !query || item.searchText.includes(query);
-    return categoryMatch && queryMatch;
-  });
-
-  const filterButtons = [
-    { key: "all", label: `All (${allItems.length})` },
-    ...sections.map((section) => ({
-      key: section.sectionKey,
-      label: `${section.sectionLabel} (${section.items.length})`,
-    })),
-  ];
-  if (filterRow) {
-    filterRow.innerHTML = filterButtons.map((button) => `
-      <button
-        class="melody-filter-chip${melodyLibraryState.category === button.key ? " is-active" : ""}"
-        type="button"
-        data-melody-filter="${escapeHtml(button.key)}"
-      >${escapeHtml(button.label)}</button>
-    `).join("");
-  }
-
-  const snapshotTitle = normalizeMelodyTitle(d?.lastMelody || "");
-  const visibleSelection = melodyLibraryState.selectedTitle
-    && filtered.some((item) => item.title === melodyLibraryState.selectedTitle)
-      ? melodyLibraryState.selectedTitle
-      : "";
-  const snapshotSelection = snapshotTitle && filtered.some((item) => item.title === snapshotTitle)
-    ? snapshotTitle
-    : "";
-  let nextSelection = "";
-  if (filtered.length) {
-    nextSelection = visibleSelection || snapshotSelection || melodyLibraryState.selectedTitle || filtered[0]?.title || "";
-  }
-  melodyLibraryState.selectedTitle = nextSelection;
-
-  const selectedItem = bank.byTitle.get(nextSelection) || null;
-  const playingTitle = currentPlayback?.title || "";
-  const selectedPlaying = selectedItem && selectedItem.title === playingTitle;
-  const selectedDuration = selectedItem && selectedItem.durationMs ? `${Math.max(1, Math.round(selectedItem.durationMs / 1000))}s` : "--";
-
-  if (badge) badge.textContent = `${allItems.length} tracks`;
-  if (count) {
-    count.textContent = filtered.length === allItems.length
-      ? `${filtered.length} tracks`
-      : `${filtered.length} of ${allItems.length} tracks`;
-  }
-  if (selectedTitleEl) {
-    selectedTitleEl.textContent = selectedItem ? selectedItem.title : "Choose a track";
-  }
-  if (selectedMetaEl) {
-    selectedMetaEl.textContent = selectedItem
-      ? `${selectedItem.source} · ${selectedItem.sectionLabel} · ${selectedDuration}${selectedItem.repeats > 1 ? ` · ${selectedItem.repeats} passes` : ""}`
-      : "Search the catalog and tap any track to hear it in the browser.";
-  }
-  if (selectedTagsEl) {
-    selectedTagsEl.innerHTML = selectedItem
-      ? [
-          `<span class="melody-selected-tag">${escapeHtml(selectedItem.sectionLabel)}</span>`,
-          ...selectedItem.tags.map((tag) => `<span class="melody-selected-tag is-subtle">${escapeHtml(tag)}</span>`),
-          `<span class="melody-selected-tag is-subtle">${escapeHtml(selectedDuration)}</span>`,
-        ].join("")
-      : '<span class="melody-selected-tag is-subtle">Search the catalog to load details</span>';
-  }
-  if (playSelectedBtn) {
-    playSelectedBtn.disabled = !selectedItem;
-    playSelectedBtn.textContent = selectedPlaying ? "Stop preview" : "Preview selected";
-  }
-  if (playDeviceBtn) {
-    playDeviceBtn.disabled = !selectedItem || remoteCommandPending;
-    playDeviceBtn.textContent = remoteCommandPending ? "Queueing..." : "Play on device";
-  }
-  if (status) {
-    status.textContent = filtered.length
-      ? `${filtered.length} ${filtered.length === 1 ? "melody" : "melodies"} ready for browser playback.`
-      : "No matches found. Try a different search term or category.";
-  }
-  if (deviceNote) {
-    if (!selectedItem) {
-      deviceNote.textContent = "Choose a track to send it to the hardware jukebox.";
-    } else if (remoteCommandPending) {
-      deviceNote.textContent = `Queueing ${selectedItem.title} on the device now.`;
-    } else {
-      deviceNote.textContent = `Send ${selectedItem.title} to the live device without touching the button panel.`;
-    }
-  }
-
-  if (list) {
-    if (filtered.length) {
-      list.innerHTML = filtered.map((item) => melodyLibraryTrackMarkup(item, melodyLibraryState.selectedTitle, playingTitle)).join("");
-      list.querySelectorAll("[data-melody-title]").forEach((itemEl) => {
-        itemEl.addEventListener("click", (event) => {
-          if (event.target.closest("[data-melody-play]")) return;
-          setMelodyLibrarySelection(itemEl.dataset.melodyTitle || "");
-        });
-        itemEl.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setMelodyLibrarySelection(itemEl.dataset.melodyTitle || "");
-          }
-        });
-      });
-      list.querySelectorAll("[data-melody-play]").forEach((button) => {
-        button.addEventListener("click", async (event) => {
-          event.stopPropagation();
-          const title = button.dataset.melodyPlay || "";
-          setMelodyLibrarySelection(title);
-          await playMelodyByTitle(title, { source: "library" });
-          renderMelodyLibrary(lastData);
-        });
-      });
-    } else {
-      list.innerHTML = "";
-    }
-  }
-
-  if (empty) {
-    empty.hidden = filtered.length > 0;
-    empty.textContent = "No tracks match that search yet. Try a broader keyword or switch categories.";
-  }
 }
 
 function dewPointF(tempF, humidity) {
@@ -1837,45 +1151,6 @@ function gasResistanceSummary(gasR) {
   return "Lower resistance band, which usually means the gas mix is active or the room baseline is under pressure.";
 }
 
-function buildGroanArchive(payload = dadabaseFallbackPayload()) {
-  const query = dadabaseQuery.trim().toLowerCase();
-  const currentText = `${payload?.current?.joke || ""}`.trim().toLowerCase();
-  const entries = [];
-  const seen = new Set(currentText ? [currentText] : []);
-
-  (Array.isArray(payload?.history) ? payload.history : []).forEach((entry, index) => {
-    const text = `${entry?.joke || ""}`.trim();
-    if (!text) return;
-    const key = text.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    entries.push({
-      text,
-      label: entry?.mode === "openai" ? "Generated" : "Daily",
-      meta: entry?.dateLabel || `Entry ${index + 1}`,
-      generated: entry?.mode === "openai",
-    });
-  });
-
-  DAD_JOKES.forEach((text, index) => {
-    const key = text.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    entries.push({
-      text,
-      label: "Classic",
-      meta: `Catalog ${index + 1}`,
-      generated: false,
-    });
-  });
-
-  return entries.filter((entry) => {
-    if (!query) return true;
-    return [entry.text, entry.label, entry.meta]
-      .some((value) => `${value || ""}`.toLowerCase().includes(query));
-  });
-}
-
 function daybookEntriesForSnapshot(d) {
   const key = snapshotMonthDayKey(d);
   const curated = SPACE_COAST_DAYBOOK[key];
@@ -1892,35 +1167,8 @@ function daybookEntriesForSnapshot(d) {
   return [];
 }
 
-function closestHistorySnapshot(timestamp, history, current) {
-  const pool = [...(history || [])];
-  if (current?.receivedAt) pool.push(current);
-
-  let best = null;
-  let bestDelta = Number.POSITIVE_INFINITY;
-  pool.forEach((item) => {
-    const ts = num(item?.receivedAt, NaN);
-    if (!Number.isFinite(ts)) return;
-    const delta = Math.abs(ts - num(timestamp, 0));
-    if (delta < bestDelta) {
-      bestDelta = delta;
-      best = item;
-    }
-  });
-  return bestDelta <= 30 * 60 * 1000 ? best : null;
-}
-
 function eventSoundProfile(event, history, current) {
-  const matched = closestHistorySnapshot(event.timestamp, history, current);
-  const matchedMelody = normalizeMelodyTitle(matched?.lastMelody || "");
-  if (matchedMelody) {
-    const reason = `${matched?.lastMelodyReason || ""}`.trim();
-    return reason ? `${matchedMelody} · ${reason}` : matchedMelody;
-  }
-
   if (event.tag === "Sulfur") return "Sulfur Watch";
-  if (event.tag === "Fart Lab") return "Stank Alert";
-  if (event.tag === "Ghost") return "Paranormal Ping";
   if (event.tag === "Room") return num(current?.airScore) < 30 ? "Success Chime" : "Condition Shift";
   if (event.tag === "Odor") return "Odor Sweep";
   return "No linked tone";
@@ -2009,41 +1257,6 @@ function localHourForData(d) {
   if (!Number.isFinite(offset)) return new Date(ts).getHours();
   const local = new Date(ts + offset * 1000);
   return local.getUTCHours() + local.getUTCMinutes() / 60;
-}
-
-function hashString(text) {
-  let hash = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-}
-
-function paranormalSignal(d) {
-  if (!(d.paranormalEntity || d.paranormalReport)) {
-    return {
-      strength: 10,
-      tone: "neutral",
-      title: "Background static",
-      note: "No cached anomaly signature is mirrored from the device right now. This Labs view is driven by environmental volatility and themed interpretation.",
-    };
-  }
-
-  const ts = derivedEventTimestamp(d, "paranormalUptime");
-  const ageMinutes = ts ? (Date.now() - ts) / 60000 : 9999;
-  let strength = 32;
-  if (ageMinutes < 30) strength = 86;
-  else if (ageMinutes < 180) strength = 68;
-  else if (ageMinutes < 720) strength = 48;
-
-  return {
-    strength,
-    tone: strength >= 75 ? "danger" : strength >= 45 ? "warn" : "neutral",
-    title: strength >= 75 ? "Fresh anomaly" : strength >= 45 ? "Residual anomaly" : "Fading trace",
-    note: ts
-      ? `${d.paranormalEntity || "Unknown"} was last seen ${fmtAge(ts)}. The radar is visualizing cached scan intensity from the live environmental signal stack.`
-      : "A cached anomaly result exists, but its timing could not be reconstructed cleanly. The display is still based on gas and room-context signals.",
-  };
 }
 
 function dewComfort(dew) {
@@ -2907,10 +2120,6 @@ function derivedEventTimestamp(d, uptimeKey) {
   return Math.round(receivedAt - (uptime - eventUptime) * 1000);
 }
 
-function melodyEventTimestamp(d) {
-  return derivedEventTimestamp(d, "lastMelodyUptime");
-}
-
 function roomSummary(d) {
   const score = num(d.airScore);
   if (score < 15 && !hasConfidentPrimary(d)) return "Clean room, low drama, sensor happy.";
@@ -2966,19 +2175,6 @@ function buildEventLogEntries(current, history, sniffHistory) {
   for (let i = 1; i < ordered.length; i += 1) {
     const prev = ordered[i - 1];
     const curr = ordered[i];
-    const prevFarts = num(prev.fartCount);
-    const currFarts = num(curr.fartCount);
-    if (currFarts > prevFarts) {
-      const delta = currFarts - prevFarts;
-      pushEvent({
-        timestamp: curr.receivedAt,
-        tag: "Fart Lab",
-        tone: delta >= 2 || num(curr.airScore) >= 70 ? "danger" : "warn",
-        title: delta > 1 ? `Fart counter jumped by ${delta}` : "Fart counter increased",
-        detail: `Now tracking ${Math.round(currFarts)} today. Primary read: ${currentPrimary(curr, "No dominant odor")}.`,
-      });
-    }
-
     const prevBand = roomBand(num(prev.airScore));
     const currBand = roomBand(num(curr.airScore));
     if (prevBand !== currBand) {
@@ -3001,19 +2197,6 @@ function buildEventLogEntries(current, history, sniffHistory) {
         tone: num(curr.primaryConf) >= 55 ? "warn" : "neutral",
         title: `${currPrimaryName} took the lead`,
         detail: `Classifier confidence reached ${Math.round(num(curr.primaryConf))}% with room score ${Math.round(num(curr.airScore))}/100.`,
-      });
-    }
-  }
-
-  if (current?.paranormalEntity || current?.paranormalReport) {
-    const paranormalTs = derivedEventTimestamp(current, "paranormalUptime");
-    if (paranormalTs > 0) {
-      pushEvent({
-        timestamp: paranormalTs,
-        tag: "Ghost",
-        tone: "neutral",
-        title: `${current.paranormalEntity || "Paranormal"} scan cached`,
-        detail: current.paranormalReport || "A paranormal report was mirrored from the device.",
       });
     }
   }
@@ -3052,15 +2235,6 @@ function breathProxy(d) {
   }
 
   return { alcohol, voc, iaq, verdict, tone };
-}
-
-function fartStatus(d) {
-  const signals = fartSignals(d);
-  const strongest = Math.max(signals.fart, signals.sulfur, signals.garbage, signals.pet);
-  if (num(d.fartCount) > 7 || strongest >= 65) return "Biological incident";
-  if (num(d.fartCount) > 2 || strongest >= 45) return "Suspicious activity";
-  if (strongest >= 25) return "Possible mischief";
-  return "Quiet room";
 }
 
 function buildMissionReport(d) {
@@ -3170,106 +2344,6 @@ function buildOdorReport(d) {
     lines.push("--- TOP CHANNELS ---");
     odors.forEach((odor) => lines.push(`${odor.name}: ${odor.score}%`));
   }
-  return lines.join("\n");
-}
-
-function paranormalBadgeInfo(d) {
-  if (d.paranormalEntity || d.paranormalReport) {
-    return {
-      text: d.paranormalEntity || "Cached scan",
-      tone: num(d.airScore) < 40 || hasConfidentPrimary(d) ? "warn" : "neutral",
-    };
-  }
-  return { text: "No scan yet", tone: "neutral" };
-}
-
-function paranormalScienceFactors(d) {
-  const factors = [];
-  const dvoc = num(d.dVoc);
-  const voc = num(d.voc);
-  const gasR = num(d.gasR);
-  const humidity = num(d.humidity);
-  const pressure = num(d.pressHpa);
-  const airScore = num(d.airScore);
-
-  if (Math.abs(dvoc) >= 0.2) {
-    factors.push(`dVOC is ${fmtSigned(dvoc, 2)}, which suggests a recent change in the gas mix rather than a perfectly steady room.`);
-  } else {
-    factors.push(`dVOC is ${fmtSigned(dvoc, 2)}, so the room looks fairly steady right now instead of showing a sharp fresh spike.`);
-  }
-
-  if (voc >= 1.2) {
-    factors.push(`VOC is ${voc.toFixed(2)} ppm, which means the air chemistry is active and easier for the theatrical scan to dramatize.`);
-  } else {
-    factors.push(`VOC is ${voc.toFixed(2)} ppm, which is a relatively light organic-gas load for an indoor room.`);
-  }
-
-  if (gasR > 0) {
-    if (gasR < 120000) {
-      factors.push(`Gas resistance is ${fmtGasR(gasR)}Ω, a lower-reactance band that usually means the sensor is seeing more reactive gases.`);
-    } else {
-      factors.push(`Gas resistance is ${fmtGasR(gasR)}Ω, which is a calmer band and usually points to cleaner or more stable background air.`);
-    }
-  }
-
-  if (hasConfidentPrimary(d)) {
-    factors.push(`The odor classifier currently leans ${d.primary} at ${Math.round(num(d.primaryConf))}%, so the spooky label is being colored by a real odor channel, not just random text.`);
-  } else {
-    factors.push(`The odor classifier does not see one dominant smell, so this reads more like diffuse room drift than one obvious source.`);
-  }
-
-  factors.push(`Room Quality Index is ${Math.round(airScore)}/100, where lower is better and higher means the total room load is less healthy.`);
-
-  if (humidity >= 65 || humidity <= 35 || pressure <= 1008) {
-    factors.push(`Humidity ${Math.round(humidity)}% and pressure ${pressure.toFixed(1)} hPa can also make the room feel strange, stale, or stormy without implying anything supernatural.`);
-  } else {
-    factors.push(`Humidity ${Math.round(humidity)}% and pressure ${pressure.toFixed(1)} hPa are fairly ordinary, so the current read is being driven more by gas behavior than weather weirdness.`);
-  }
-
-  return factors;
-}
-
-function paranormalScienceSummary(d) {
-  return "Experimental interpretation layer using VOC, dVOC, gas resistance, humidity, pressure, and odor-classifier context to build a themed anomaly readout.";
-}
-
-function buildParanormalReport(d) {
-  const lines = [];
-  const eventTs = derivedEventTimestamp(d, "paranormalUptime");
-  const scienceFactors = paranormalScienceFactors(d);
-
-  lines.push("--- DEEP FIELD DIAGNOSTIC ---");
-  if (d.paranormalEntity || d.paranormalReport) {
-    lines.push(`Manifestation class: ${d.paranormalEntity || "Unknown"}`);
-    lines.push(eventTs ? `Last scan: ${fmtStamp(eventTs)} (${fmtAge(eventTs)})` : "Last scan: cached on device");
-    lines.push("");
-    lines.push(d.paranormalReport || "No readable paranormal report was captured.");
-    lines.push("");
-    lines.push("--- LIVE CONTEXT ---");
-    lines.push(`Room state: ${roomSummary(d)}`);
-    lines.push(`Signal stack: IAQ ${Math.round(num(d.iaq))} | VOC ${num(d.voc).toFixed(2)} | GasR ${fmtGasR(d.gasR)}Ω`);
-    lines.push(`Current lead: ${currentPrimary(d, "No dominant odor class")}`);
-    lines.push("");
-    lines.push("--- INTERPRETATION MODEL ---");
-    lines.push(paranormalScienceSummary(d));
-    scienceFactors.forEach((factor) => lines.push(`- ${factor}`));
-    lines.push("");
-    lines.push("Run a fresh scan with 5 button presses on the device.");
-  } else {
-    lines.push("No cached manifestation is available.");
-    lines.push("");
-    lines.push("Press the device button 5 times to run a new deep-field diagnostic.");
-    lines.push("");
-    lines.push("--- LIVE CONTEXT ---");
-    lines.push(roomSummary(d));
-    lines.push(`Current lead: ${currentPrimary(d, "No dominant odor class")}`);
-    lines.push(`VOC ${num(d.voc).toFixed(2)} | IAQ ${Math.round(num(d.iaq))} | GasR ${fmtGasR(d.gasR)}Ω`);
-    lines.push("");
-    lines.push("--- INTERPRETATION MODEL ---");
-    lines.push(paranormalScienceSummary(d));
-    scienceFactors.forEach((factor) => lines.push(`- ${factor}`));
-  }
-
   return lines.join("\n");
 }
 
@@ -3394,122 +2468,10 @@ function buildBroReport(d) {
     lines.push("Top mix: nothing loud enough to separate from background right now.");
   }
   lines.push(`Calibration state: ${d.calibration || `Accuracy ${num(d.iaqAcc)}/3`}`);
-  const melodyTitle = normalizeMelodyTitle(d.lastMelody || "") ? d.lastMelody : "none queued";
-  const melodyReason = `${d.lastMelodyReason || ""}`.trim();
-  lines.push(`Audio cue: ${melodyTitle}${melodyReason && melodyTitle !== "none queued" ? ` · ${melodyReason}` : ""}`);
   lines.push("");
   lines.push("RECOMMENDED ACTION");
   lines.push(broPlayCall(d));
   return lines.join("\n");
-}
-
-function renderDadabase() {
-  const current = $("dadabase-current");
-  const archive = $("dadabase-archive");
-  const count = $("dadabase-count");
-  const status = $("dadabase-status");
-  const meta = $("dadabase-meta");
-  const source = $("source-dadabase");
-  const refreshButton = $("dadabase-refresh-btn");
-  if (!current || !archive || !count || !status || !meta || !source || !refreshButton) return;
-
-  const payload = dadabaseState.data || dadabaseFallbackPayload();
-  const currentEntry = payload.current || dadabaseFallbackPayload().current;
-  const entries = buildGroanArchive(payload);
-
-  current.textContent = currentEntry.joke || "A fresh daily dad joke will appear here.";
-  if (dadabaseState.refreshing) {
-    status.textContent = "Generating a fresh Dadabase entry for today...";
-  } else if (dadabaseState.notice) {
-    status.textContent = dadabaseState.notice;
-  } else if (dadabaseState.data) {
-    status.textContent = `Daily joke ready for ${currentEntry.dateLabel || dailyJokeDateLabel(new Date())}.`;
-  } else {
-    status.textContent = "Using the built-in Dadabase classics while the daily generator warms up.";
-  }
-
-  const generatedAt = num(currentEntry.generatedAt, NaN);
-  meta.textContent = [
-    dadabaseModeLabel(currentEntry.mode),
-    Number.isFinite(generatedAt) ? fmtStamp(generatedAt) : (currentEntry.dateLabel || dailyJokeDateLabel(new Date())),
-  ].join(" · ");
-
-  source.textContent = payload.sourceCaption || "Source: local Dadabase classics baked into the portal shell";
-  count.textContent = dadabaseQuery.trim()
-    ? `${entries.length} Dadabase matches`
-    : `${entries.length} Dadabase archive entries`;
-  refreshButton.disabled = dadabaseState.refreshing;
-  refreshButton.textContent = dadabaseState.refreshing ? "Generating..." : "Refresh Joke";
-  setHeaderPill(
-    "dadabase-badge",
-    dadabaseState.refreshing
-      ? "Generating"
-      : currentEntry.mode === "openai"
-        ? "AI daily joke"
-        : currentEntry.mode === "fallback"
-          ? "Daily fallback"
-          : "Classic daily joke",
-    currentEntry.mode === "openai" ? "good" : "neutral"
-  );
-
-  if (!entries.length) {
-    archive.innerHTML = `<div class="archive-empty">${dadabaseQuery.trim()
-      ? "No Dadabase entries match this search. Try a broader keyword or clear the filter."
-      : "The Dadabase archive is standing by. Fresh generated jokes and classics will appear here."}</div>`;
-    return;
-  }
-
-  archive.innerHTML = entries.map((entry) => `
-    <article class="archive-row${entry.generated ? " is-generated" : ""}">
-      <div class="archive-meta">
-        <span>${escapeHtml(entry.label)}</span>
-        <span>${escapeHtml(entry.meta)}</span>
-      </div>
-      <div class="archive-text">${escapeHtml(entry.text)}</div>
-    </article>
-  `).join("");
-}
-
-async function ensureDadabase(forceRefresh = false) {
-  if (!forceRefresh && dadabaseState.data && Date.now() - dadabaseState.fetchedAt < DADABASE_TTL_MS) {
-    return dadabaseState.data;
-  }
-
-  if (dadabaseState.pending) return dadabaseState.pending;
-
-  dadabaseState.refreshing = forceRefresh;
-  if (forceRefresh) dadabaseState.notice = "Generating a fresh Dadabase entry...";
-  renderDadabase();
-
-  dadabaseState.pending = (async () => {
-    try {
-      const res = await fetch("/api/dad-joke", {
-        method: forceRefresh ? "POST" : "GET",
-        cache: "no-store",
-        headers: forceRefresh ? { "Content-Type": "application/json" } : undefined,
-        body: forceRefresh ? "{}" : undefined,
-      });
-
-      if (!res.ok) throw new Error(`dadabase ${res.status}`);
-
-      dadabaseState.data = await res.json();
-      dadabaseState.fetchedAt = Date.now();
-      dadabaseState.notice = forceRefresh ? "Fresh Dadabase entry generated." : "";
-      return dadabaseState.data;
-    } catch (_) {
-      if (!dadabaseState.data) dadabaseState.data = dadabaseFallbackPayload();
-      dadabaseState.notice = forceRefresh
-        ? "Dad joke refresh failed. Keeping the current entry."
-        : "Using the local Dadabase fallback while the server-side joke engine is unavailable.";
-      return dadabaseState.data;
-    } finally {
-      dadabaseState.refreshing = false;
-      dadabaseState.pending = null;
-      renderDadabase();
-    }
-  })();
-
-  return dadabaseState.pending;
 }
 
 function renderMissionHistory() {
@@ -3873,11 +2835,6 @@ function renderHero(d) {
     ? `Led by ${causeParts.slice(0, 2).join(" and ")}.`
     : "Air conditions appear stable — no dominant stressor.";
   $("hero-cause") && ($("hero-cause").textContent = causeText);
-  const melodyTagReason = `${d.lastMelodyReason || ""}`.trim();
-  const melodyTitle = `${d.lastMelody || ""}`.trim();
-  $("hero-melody").textContent = normalizeMelodyTitle(melodyTitle)
-    ? `Melody: ${melodyTitle}${melodyTagReason ? ` · ${melodyTagReason}` : ""}`
-    : "Melody: none yet";
 
   $("v-iaq").textContent = Math.round(num(d.iaq));
   $("v-voc").textContent = `${num(d.voc).toFixed(2)} ppm`;
@@ -4061,56 +3018,6 @@ function renderOfficeCard(d) {
   setHeaderPill("office-badge", officeBadgeText, officeTone);
 }
 
-function renderStankGauge(d) {
-  const conf = vscProxyConfidence(d);
-  const event = activeSniffEvent();
-  const fill = $("stank-fill");
-  const value = $("stank-value");
-  const label = $("stank-label");
-  const time = $("stank-time");
-  const caption = $("stank-caption");
-  const tone = sniffTone(conf);
-  const color = stankColor(conf);
-
-  fill.style.width = conf > 0 ? `${Math.max(6, conf)}%` : "0%";
-  fill.style.background = `linear-gradient(90deg, #5df1a4 0%, ${color} 100%)`;
-  fill.style.boxShadow = conf >= 70
-    ? "0 0 22px rgba(216, 239, 114, 0.36)"
-    : "0 0 14px rgba(93, 241, 164, 0.18)";
-  value.textContent = `${Math.round(conf)}%`;
-  value.style.color = color;
-
-  if (event) {
-    label.textContent = `${event.label} priority event`;
-    time.textContent = `${fmtAge(event.receivedAt)} · IAQ ${Math.round(num(event.iaq))}`;
-    caption.textContent = `The device escalated this sulfur/VSC proxy event immediately instead of waiting for the normal snapshot timer.`;
-  } else {
-    label.textContent = tone.label;
-    time.textContent = "Waiting for a priority sulfur event";
-    caption.textContent = conf >= 40
-      ? "Sulfur activity is visible in the main snapshot, but no fresh priority event has been posted yet."
-      : "This tracks the sulfur/VSC proxy channel and jumps live when the device posts a high-sulfur event.";
-  }
-}
-
-function renderFartCard(d) {
-  const signals = fartSignals(d);
-  const vsc = vscProxyConfidence(d);
-  $("fart-count").textContent = `${Math.round(num(d.fartCount))}`;
-  $("fart-status").textContent = fartStatus(d);
-  $("fart-sub").textContent = `Primary class: ${currentPrimary(d, "No dominant odor")}. dVOC is ${fmtSigned(d.dVoc, 2)} and room quality is ${Math.round(num(d.airScore))}/100.`;
-  $("fart-score").textContent = `${signals.fart}%`;
-  $("fart-sulfur").textContent = `${signals.sulfur}%`;
-  $("fart-garbage").textContent = `${signals.garbage}%`;
-  $("fart-pet").textContent = `${signals.pet}%`;
-  renderStankGauge(d);
-  setHeaderPill(
-    "fart-badge",
-    vsc >= 70 ? "Priority odor event" : "Stank score",
-    vsc >= 70 || signals.fart >= 45 || signals.sulfur >= 45 ? "danger" : signals.fart >= 20 || vsc >= 40 ? "warn" : "good"
-  );
-}
-
 function renderBreathCard(d) {
   const breath = breathProxy(d);
   $("breath-verdict").textContent = breath.verdict;
@@ -4197,304 +3104,6 @@ function renderWeatherIntel(d) {
     syncMapLayers();
     const srcWx = $("source-weather");
     if (srcWx) srcWx.textContent = "Source: Open-Meteo forecast (Cape Canaveral, FL) · OpenStreetMap · RainViewer radar & infrared satellite · NWS active alerts API · OpenAI weather brief when available";
-}
-
-function gasPhaseAxis(d) {
-  const voc = Math.max(0, num(d.voc));
-  const dVoc = Math.abs(num(d.dVoc));
-  const sulfur = vscProxyConfidence(d) / 100;
-  const value = clamp((voc / 4.0) * 0.55 + clamp(dVoc / 1.2, 0, 1) * 0.25 + sulfur * 0.2, 0, 1);
-  let label = "Calm";
-  if (value >= 0.75) label = "Gas surge";
-  else if (value >= 0.5) label = "Active";
-  else if (value >= 0.25) label = "Light load";
-  return {
-    key: "gas",
-    name: "VOC",
-    label,
-    value,
-    detail: `${Math.round(value * 100)}% · ${voc.toFixed(2)} ppm`,
-    standby: false,
-  };
-}
-
-function presencePhaseAxis(_d) {
-  return {
-    key: "presence",
-    name: "RSSI",
-    label: "BLE off",
-    value: 0.06,
-    detail: "Standby",
-    standby: true,
-  };
-}
-
-function emfPhaseAxis(d) {
-  const surgeMv = num(d.emfSurgeMv, NaN);
-  const ionicFlag = Boolean(d.ionicSurgeDetected);
-  if (Number.isFinite(surgeMv) || ionicFlag) {
-    const value = clamp(Math.max(ionicFlag ? 0.75 : 0, Number.isFinite(surgeMv) ? surgeMv / 300 : 0), 0, 1);
-    return {
-      key: "emf",
-      name: "EMF",
-      label: ionicFlag ? "Ionic surge" : "Static active",
-      value,
-      detail: `${Math.round(value * 100)}% · ${Number.isFinite(surgeMv) ? `${Math.round(surgeMv)} mV` : "flagged"}`,
-      standby: false,
-    };
-  }
-
-  return {
-    key: "emf",
-    name: "EMF",
-    label: "Probe standby",
-    value: 0.08,
-    detail: "No probe",
-    standby: true,
-  };
-}
-
-function pressurePhaseAxis(d, history) {
-  const current = num(d.pressHpa, NaN);
-  if (!Number.isFinite(current)) {
-    return {
-      key: "pressure",
-      name: "Pa",
-      label: "No pressure feed",
-      value: 0.06,
-      detail: "Standby",
-      standby: true,
-    };
-  }
-
-  const recent = [d, ...(history || []).slice(0, 6)]
-    .map((item) => num(item?.pressHpa, NaN))
-    .filter((item) => Number.isFinite(item));
-  const baselinePool = recent.slice(1);
-  const baseline = baselinePool.length
-    ? baselinePool.reduce((sum, item) => sum + item, 0) / baselinePool.length
-    : current;
-  const prev = recent.length > 1 ? recent[1] : current;
-  const delta = Math.abs(current - baseline);
-  const rate = Math.abs(current - prev);
-  const value = clamp((delta / 6.0) * 0.65 + (rate / 2.5) * 0.35, 0, 1);
-
-  let label = "Calm";
-  if (value >= 0.7) label = "Disturbed";
-  else if (value >= 0.42) label = "Shifted";
-  else if (value >= 0.22) label = "Light drift";
-
-  return {
-    key: "pressure",
-    name: "Pa",
-    label,
-    value,
-    detail: `${Math.round(value * 100)}% · ${current.toFixed(1)} hPa`,
-    standby: false,
-  };
-}
-
-function phaseCorrelationAxes(d, history) {
-  return [
-    gasPhaseAxis(d),
-    presencePhaseAxis(d),
-    emfPhaseAxis(d),
-    pressurePhaseAxis(d, history),
-  ];
-}
-
-function phaseCorrelationNarrative(d, axes) {
-  const average = axes.reduce((sum, axis) => sum + axis.value, 0) / Math.max(axes.length, 1);
-  const maxAxis = axes.reduce((best, axis) => axis.value > best.value ? axis : best, axes[0]);
-  const gas = axes.find((axis) => axis.key === "gas") || axes[0];
-  const presence = axes.find((axis) => axis.key === "presence") || axes[0];
-  const pressure = axes.find((axis) => axis.key === "pressure") || axes[0];
-  const emf = axes.find((axis) => axis.key === "emf") || axes[0];
-
-  let title = "Tight room signature";
-  let note = "Small, compact polygons mean the room is steady across gas load, presence, and pressure. That is the healthy shape.";
-
-  if (gas.value >= 0.58 && officeVtrLevel(d) >= 1) {
-    title = "Bio-load stretch";
-    note = "Gas activity is stretching the polygon harder than the other axes, which looks more like an air-quality or biosecurity issue than a quiet baseline room.";
-  } else if (gas.value >= 0.55 && presence.value >= 0.55 && pressure.value >= 0.35) {
-    title = "Convergent disturbance";
-    note = "Gas, presence, and pressure are all active together, so the room signature is widening into a genuinely distorted shape instead of one isolated spike.";
-  } else if (presence.value >= 0.62 && gas.value < 0.45) {
-    title = "Occupancy-led distortion";
-    note = "The shape is leaning toward the RSSI/presence axis, which usually means someone is close but the gas channel has not fully reacted yet.";
-  } else if (pressure.value >= 0.55 && gas.value < 0.45) {
-    title = "Pressure-led shift";
-    note = "The pressure axis is carrying the shape more than the gas channels, so this looks like environmental drift or a weather/room-pressure change.";
-  } else if (average >= 0.46 || maxAxis.value >= 0.72) {
-    title = `${maxAxis.name}-weighted distortion`;
-    note = `The polygon is no longer compact. ${maxAxis.name} is the strongest axis right now, so that channel is driving the current room signature.`;
-  }
-
-  if (emf.standby) {
-    note = `${note} The EMF/static axis is still in standby until a physical probe is wired into the device.`;
-  }
-
-  return { title, note, average };
-}
-
-function drawPhaseCorrelation(d, history) {
-  const canvas = $("phase-correlation-canvas");
-  if (!canvas) return;
-
-  const axes = phaseCorrelationAxes(d, history);
-  const narrative = phaseCorrelationNarrative(d, axes);
-  const titleEl = $("phase-title");
-  const noteEl = $("phase-note");
-  const gasEl = $("phase-axis-gas");
-  const presenceEl = $("phase-axis-presence");
-  const emfEl = $("phase-axis-emf");
-  const pressureEl = $("phase-axis-pressure");
-
-  if (titleEl) titleEl.textContent = narrative.title;
-  if (noteEl) noteEl.textContent = narrative.note;
-  if (gasEl) gasEl.textContent = axes[0].detail;
-  if (presenceEl) presenceEl.textContent = axes[1].detail;
-  if (emfEl) emfEl.textContent = axes[2].standby ? "Standby · no probe" : axes[2].detail;
-  if (pressureEl) pressureEl.textContent = axes[3].detail;
-
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth || 300;
-  const height = canvas.clientHeight || 280;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
-
-  const cx = width * 0.5;
-  const cy = height * 0.5;
-  const radius = Math.min(width, height) * 0.34;
-  const levels = 4;
-  const axisAngles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
-  const severity = Math.max(narrative.average, ...axes.map((axis) => axis.value));
-  const stroke = severity >= 0.72 ? "#ff8e58" : severity >= 0.45 ? "#ffd25c" : "#6bccff";
-  const fill = severity >= 0.72 ? "rgba(255, 142, 88, 0.18)" : severity >= 0.45 ? "rgba(255, 210, 92, 0.16)" : "rgba(107, 204, 255, 0.16)";
-
-  ctx.fillStyle = "rgba(4, 10, 18, 0.86)";
-  ctx.fillRect(0, 0, width, height);
-
-  for (let level = 1; level <= levels; level += 1) {
-    const r = radius * (level / levels);
-    ctx.beginPath();
-    axisAngles.forEach((angle, index) => {
-      const x = cx + Math.cos(angle) * r;
-      const y = cy + Math.sin(angle) * r;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.closePath();
-    ctx.strokeStyle = `rgba(109, 204, 255, ${0.08 + level * 0.04})`;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
-
-  axisAngles.forEach((angle, index) => {
-    const axis = axes[index];
-    const x = cx + Math.cos(angle) * radius;
-    const y = cy + Math.sin(angle) * radius;
-    ctx.save();
-    if (axis.standby) ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = axis.standby ? "rgba(171, 181, 193, 0.24)" : "rgba(109, 204, 255, 0.2)";
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    ctx.restore();
-
-    const labelX = cx + Math.cos(angle) * (radius + 22);
-    const labelY = cy + Math.sin(angle) * (radius + 22);
-    ctx.fillStyle = axis.standby ? "rgba(188, 199, 216, 0.52)" : "rgba(188, 199, 216, 0.84)";
-    ctx.font = "11px JetBrains Mono, monospace";
-    ctx.textAlign = Math.abs(Math.cos(angle)) < 0.2 ? "center" : (Math.cos(angle) > 0 ? "left" : "right");
-    ctx.fillText(axis.name, labelX, labelY);
-  });
-
-  ctx.beginPath();
-  axes.forEach((axis, index) => {
-    const angle = axisAngles[index];
-    const x = cx + Math.cos(angle) * radius * clamp(axis.value, 0, 1);
-    const y = cy + Math.sin(angle) * radius * clamp(axis.value, 0, 1);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.closePath();
-  ctx.fillStyle = fill;
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = 2;
-  ctx.fill();
-  ctx.stroke();
-
-  axes.forEach((axis, index) => {
-    const angle = axisAngles[index];
-    const x = cx + Math.cos(angle) * radius * clamp(axis.value, 0, 1);
-    const y = cy + Math.sin(angle) * radius * clamp(axis.value, 0, 1);
-    ctx.beginPath();
-    ctx.arc(x, y, axis.standby ? 3 : 4, 0, Math.PI * 2);
-    ctx.fillStyle = axis.standby ? "rgba(188, 199, 216, 0.6)" : stroke;
-    ctx.fill();
-  });
-
-  ctx.beginPath();
-  ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(93, 241, 164, 0.95)";
-  ctx.fill();
-}
-
-function renderParanormal(d) {
-  const signal = paranormalSignal(d);
-  const radar = $("ghost-radar");
-  const value = $("ghost-signal-value");
-  const fill = $("ghost-signal-fill");
-  const note = $("ghost-signal-note");
-  const blipA = $("ghost-blip-a");
-  const blipB = $("ghost-blip-b");
-
-  if (radar && value && fill && note && blipA && blipB) {
-    const seed = hashString(`${d.paranormalEntity || "static"}|${d.paranormalReport || ""}`);
-    const strength = signal.strength;
-    const placeBlip = (el, angleDeg, radiusPct, opacity, hue) => {
-      const angle = angleDeg * Math.PI / 180;
-      const cx = 50 + Math.cos(angle) * radiusPct;
-      const cy = 50 + Math.sin(angle) * radiusPct;
-      el.style.left = `calc(${cx}% - ${el.classList.contains("ghost-blip-b") ? 4 : 6}px)`;
-      el.style.top = `calc(${cy}% - ${el.classList.contains("ghost-blip-b") ? 4 : 6}px)`;
-      el.style.opacity = opacity;
-      el.style.background = hue;
-      el.style.boxShadow = `0 0 14px ${hue}`;
-    };
-
-    const hue = signal.tone === "danger"
-      ? "rgba(255, 111, 112, 0.95)"
-      : signal.tone === "warn"
-        ? "rgba(255, 210, 92, 0.95)"
-        : "rgba(109, 204, 255, 0.85)";
-    placeBlip(blipA, seed % 360, 18 + (seed % 16), strength > 18 ? 0.95 : 0.18, hue);
-    placeBlip(blipB, (seed % 360) + 110, 10 + (seed % 22), strength > 42 ? 0.75 : 0.08, hue);
-    radar.style.boxShadow = signal.tone === "danger"
-      ? "inset 0 0 0 1px rgba(255,111,112,0.18), 0 18px 40px rgba(5, 8, 18, 0.28)"
-      : signal.tone === "warn"
-        ? "inset 0 0 0 1px rgba(255,210,92,0.16), 0 18px 40px rgba(5, 8, 18, 0.28)"
-        : "inset 0 0 0 1px rgba(109,204,255,0.14), 0 18px 40px rgba(5, 8, 18, 0.28)";
-    value.textContent = `${signal.title} · ${Math.round(strength)}%`;
-    fill.style.width = `${strength}%`;
-    fill.style.background = signal.tone === "danger"
-      ? "linear-gradient(90deg, #ff6f70, #9d82ff)"
-      : signal.tone === "warn"
-        ? "linear-gradient(90deg, #ffd25c, #9d82ff)"
-        : "linear-gradient(90deg, #6bccff, #9d82ff)";
-    note.textContent = signal.note;
-  }
-
-  $("paranormal-report").innerHTML = formatDiagnosticReport(buildParanormalReport(d));
-  drawPhaseCorrelation(d, historyData);
-  const badge = paranormalBadgeInfo(d);
-  setHeaderPill("paranormal-badge", badge.text, badge.tone);
 }
 
 function renderLaunchDeck(d) {
@@ -5440,20 +4049,15 @@ function render(data) {
   renderOfficeCard(merged);
   renderTelemetry(merged);
   renderDerivedMetrics(merged);
-  renderFartCard(merged);
   renderBreathCard(merged);
-  renderDadabase();
   renderApod(apodState.data);
   renderSpaceCard(merged);
   renderOdorCard(merged);
   renderWeatherIntel(merged);
   renderWeatherForecast(merged, weatherBriefingState.data);
   renderConditionsSummary(merged, weatherBriefingState.data);
-  renderParanormal(merged);
   renderLaunchDeck(merged);
   renderEventLog(merged);
-  renderMelodyControls(merged);
-  renderMelodyLibrary(merged);
 
   $("bro-summary").textContent = buildBroSummary(merged);
   $("bro-report").innerHTML = renderStructuredReport(buildBroReport(merged));
@@ -5545,7 +4149,6 @@ async function manualRefreshDashboard() {
     await Promise.all([
       fetchLatest(),
       fetchLatestSniff(),
-      ensureDadabase(false),
     ]);
     fetchHistory();
     fetchSniffHistory();
@@ -5586,7 +4189,6 @@ function syncRemoteControlsUi(options = {}) {
       : "Remote actions ready. Queue a live device action without touching the hardware.",
     remoteCommandPending ? "warn" : "good"
   );
-  renderMelodyLibrary(lastData);
 }
 
 async function queueRemoteAction(action, extra = {}) {
@@ -5609,14 +4211,9 @@ async function queueRemoteAction(action, extra = {}) {
     const labels = {
       refresh: "Device sync queued",
       breath_check: "Breath check queued",
-      ghost_scan: "Ghost scan queued",
       presence_probe: "Presence probe queued",
-      play_melody: "Melody queued",
     };
-    const detail = action === "play_melody" && extra?.melodyKey
-      ? ` ${String(extra.melodyKey).replaceAll("_", " ")}`
-      : "";
-    setRemoteControlsState(`${labels[action] || "Action queued"}${detail}. Device will pick it up on its next command poll.`, "good");
+    setRemoteControlsState(`${labels[action] || "Action queued"}. Device will pick it up on its next command poll.`, "good");
 
     if (action === "refresh") {
       await manualRefreshDashboard();
@@ -5766,9 +4363,6 @@ function setDashboardView(view) {
   renderViewSubnav(nextView);
 
     window.requestAnimationFrame(() => {
-        if (nextView === "labs") {
-            ensureDadabase(false);
-        }
         if (nextView === "environment" || nextView === "analysis") {
             const map = ensureWeatherMap();
             if (map) {
@@ -7440,21 +6034,12 @@ fetchLatest();
 fetchHistory();
 fetchLatestSniff();
 fetchSniffHistory();
-renderDadabase();
-ensureDadabase(false);
 ensureApod();
-loadMelodyBank()
-  .then(() => {
-    renderMelodyLibrary(lastData);
-  })
-  .catch(() => {});
 startSniffStream();
 setInterval(fetchLatest, POLL_MS);
 setInterval(fetchHistory, POLL_MS * 8);
 setInterval(fetchSniffHistory, POLL_MS * 4);
 setInterval(tickAge, 1000);
-setInterval(() => ensureDadabase(false), DADABASE_TTL_MS);
-setInterval(() => renderDadabase(), 60000);
 // Hourly AI weather prediction refresh — force-expire cache so briefing
 // regenerates even when device data is not flowing.
 setInterval(() => {
@@ -7462,16 +6047,8 @@ setInterval(() => {
   if (lastData) ensureWeatherBriefing(lastData);
 }, WEATHER_BRIEFING_TTL_MS);
 
-$("melody-play-btn")?.addEventListener("click", () => {
-  playMelodyFromSnapshot();
-});
-
 $("manual-refresh-btn")?.addEventListener("click", () => {
   manualRefreshDashboard();
-});
-
-$("dadabase-refresh-btn")?.addEventListener("click", async () => {
-  await ensureDadabase(true);
 });
 
 $("theme-retro-toggle")?.addEventListener("change", (event) => {
@@ -7496,38 +6073,6 @@ document.querySelectorAll(".remote-action-btn").forEach((button) => {
   });
 });
 
-$("dadabase-search")?.addEventListener("input", (event) => {
-  dadabaseQuery = event.target.value || "";
-  renderDadabase();
-});
-
-$("melody-library-search")?.addEventListener("input", (event) => {
-  melodyLibraryState.query = `${event.target.value || ""}`;
-  renderMelodyLibrary(lastData);
-});
-
-$("melody-library-filters")?.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-melody-filter]");
-  if (!button) return;
-  melodyLibraryState.category = button.dataset.melodyFilter || "all";
-  renderMelodyLibrary(lastData);
-});
-
-$("melody-library-play-selected")?.addEventListener("click", async () => {
-  const selected = melodyBankData?.byTitle.get(melodyLibraryState.selectedTitle);
-  if (!selected) return;
-  setMelodyLibrarySelection(selected.title);
-  await playMelodyByTitle(selected.title, { source: "library" });
-  renderMelodyLibrary(lastData);
-});
-
-$("melody-library-play-device")?.addEventListener("click", async () => {
-  const selected = selectedMelodyItem();
-  if (!selected) return;
-  setMelodyLibrarySelection(selected.title);
-  await queueRemoteAction("play_melody", { melodyKey: selected.key });
-  renderMelodyLibrary(lastData);
-});
 
 
 (function initWeatherMapFullscreen() {
@@ -7587,10 +6132,6 @@ window.addEventListener("resize", () => {
   if (historyData.length) drawChart(historyData);
   clearTimeout(_topbarResizeTimer);
   _topbarResizeTimer = setTimeout(syncTopbarSpacing, 60);
-});
-
-window.addEventListener("pagehide", () => {
-  stopMelodyPlayback();
 });
 
 syncRemoteControlsUi();

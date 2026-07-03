@@ -99,7 +99,6 @@
       <button class="section-btn" type="button" data-view-target="analysis">Air &amp; Signal</button>
       <button class="section-btn" type="button" data-view-target="history">Trends</button>
       <button class="section-btn" type="button" data-view-target="space">Space</button>
-      <button class="section-btn" type="button" data-view-target="labs">Labs</button>
       <button class="section-btn" type="button" data-view-target="system">System</button>
     </nav>
   </div>
@@ -143,7 +142,6 @@
         <div class="hero-tags">
           <span class="tag" id="hero-tier">Tier --</span>
           <span class="tag" id="hero-trends">IAQ -- | VOC --</span>
-          <span class="tag" id="hero-melody">Melody: --</span>
         </div>
         <div class="hero-detail-grid">
           <div class="hero-brief">
@@ -186,14 +184,6 @@
             <div class="scope-insights" id="hero-scope-insights">
               <div class="scope-insight" data-tone="neutral">Waiting for live trend context.</div>
             </div>
-          </div>
-        </div>
-        <div class="hero-audio">
-          <button id="melody-play-btn" class="audio-btn" type="button" disabled>Replay Last Melody</button>
-          <div class="audio-copy">
-            <div class="audio-title" id="melody-title">No melody posted yet</div>
-            <div class="audio-meta" id="melody-meta">Timing and trigger details will appear here with the first melody event.</div>
-            <div class="audio-status" id="melody-status">Browser replay will appear here once the device posts a tune.</div>
           </div>
         </div>
       </div>
@@ -497,73 +487,6 @@
       </div>
       <div class="office-briefing" id="office-briefing">Office impact briefing will appear here once the room posts a live snapshot.</div>
       <div class="source-caption">Source: <a href="https://www.bosch-sensortec.com/products/environmental-sensors/gas-sensors/bme688/" target="_blank" rel="noopener noreferrer">Bosch BME688</a> device telemetry · <a href="https://www.bosch-sensortec.com/software-tools/software/bme688-software/" target="_blank" rel="noopener noreferrer">BSEC2</a>-derived proxies · local comfort, cognition, and persistence heuristics</div>
-    </section>
-
-    <section class="card" id="card-dadabase" data-view="labs">
-      <div class="card-header">
-        <span>Dadabase</span>
-        <span class="header-pill" id="dadabase-badge">Daily joke</span>
-      </div>
-      <div class="dadabase-current-shell">
-        <div class="dadabase-head">
-          <div>
-            <div class="dadabase-kicker">Dad Joke Of The Day</div>
-            <div class="dadabase-status" id="dadabase-status">Daily joke generator standing by.</div>
-          </div>
-          <button class="chrome-btn" id="dadabase-refresh-btn" type="button">Refresh Joke</button>
-        </div>
-        <p class="dadabase-current" id="dadabase-current">A fresh daily dad joke will appear here.</p>
-        <div class="dadabase-meta" id="dadabase-meta">Generated joke timing and source will appear here.</div>
-      </div>
-      <details class="dadabase-details">
-        <summary>Open Dadabase archive</summary>
-        <div class="dadabase-tools">
-          <input id="dadabase-search" class="dadabase-search" type="search" placeholder="Search the dadabase">
-          <div class="dadabase-count" id="dadabase-count">0 jokes in rotation</div>
-        </div>
-        <div class="dadabase-archive" id="dadabase-archive">
-          <div class="archive-empty">The searchable Dadabase will show up here.</div>
-        </div>
-      </details>
-      <div class="source-caption" id="source-dadabase">Source: Dadabase daily joke engine</div>
-    </section>
-
-    <section class="card melody-card" id="card-melody" data-view="labs">
-      <div class="card-header">
-        <span>Melody Library</span>
-        <span class="header-pill" id="melody-library-badge">0 tracks</span>
-      </div>
-      <div class="melody-browser-shell">
-        <div class="melody-browser-head">
-          <div>
-            <div class="melody-kicker">Browser catalog</div>
-            <div class="melody-selected-title" id="melody-library-selected-title">Choose a track</div>
-            <div class="melody-selected-meta" id="melody-library-selected-meta">Search the catalog, preview it in the browser, or send it straight to the device jukebox.</div>
-          </div>
-          <div class="melody-browser-actions">
-            <div class="melody-action-group">
-              <button class="chrome-btn accent" id="melody-library-play-selected" type="button" disabled>Preview selected</button>
-              <button class="chrome-btn" id="melody-library-play-device" type="button" disabled>Play on device</button>
-            </div>
-            <div class="melody-browser-count" id="melody-library-count">Loading melody bank...</div>
-          </div>
-        </div>
-        <div class="melody-browser-tools">
-          <label class="melody-search-wrap" for="melody-library-search">
-            <span>Search</span>
-            <input id="melody-library-search" type="search" placeholder="Title, source, or tag">
-          </label>
-          <div class="melody-filter-row" id="melody-library-filters"></div>
-        </div>
-        <div class="melody-selected-tags" id="melody-library-selected-tags"></div>
-        <div class="melody-browser-status" id="melody-library-status">Melody bank is loading from the portal.</div>
-        <div class="melody-device-note" id="melody-library-device-note">Choose a track to send it to the hardware jukebox.</div>
-        <div class="melody-library-list" id="melody-library-list">
-          <div class="melody-empty">Melody catalog loading...</div>
-        </div>
-        <div class="melody-library-empty" id="melody-library-empty" hidden>No matching tracks yet.</div>
-      </div>
-      <div class="source-caption">Source: public melody_library.h · browser synth playback · secure portal command relay</div>
     </section>
 
     <section class="card orbital-card" id="card-space" data-view="space">
@@ -900,112 +823,6 @@
       </div>
     </section>
 
-    <section class="card" id="card-fart" data-view="analysis">
-      <div class="card-header">
-        <span>Odor Intensity</span>
-        <span class="header-pill" id="fart-badge">Stank score</span>
-      </div>
-      <div class="fart-hero">
-        <div class="fart-count-shell">
-          <div class="fart-count-label">Flatulent events today</div>
-          <div class="fart-count" id="fart-count">0</div>
-        </div>
-        <div>
-          <div class="fart-status" id="fart-status">No biological drama yet</div>
-          <div class="fart-sub" id="fart-sub">Odor intensity and biological channels will light up here when the room turns suspicious.</div>
-        </div>
-      </div>
-      <div class="stank-gauge-shell">
-        <div class="stank-topline">
-          <div>
-            <div class="stank-eyebrow">Odor intensity</div>
-            <div class="stank-title">Stank Score · sulfur proxy</div>
-          </div>
-          <div class="stank-value" id="stank-value">0%</div>
-        </div>
-        <div class="stank-bar">
-          <div class="stank-fill" id="stank-fill"></div>
-        </div>
-        <div class="stank-meta">
-          <span id="stank-label">Sulfur/VSC watch is idle</span>
-          <span id="stank-time">Waiting for a priority sulfur event</span>
-        </div>
-        <p class="stank-caption" id="stank-caption">This score tracks sulfur/VSC intensity and jumps when the device posts a priority odor event.</p>
-      </div>
-      <div class="fart-metrics">
-        <div class="mini-stat">
-          <span class="mini-label">Fart</span>
-          <span class="mini-value" id="fart-score">0%</span>
-        </div>
-        <div class="mini-stat">
-          <span class="mini-label">Sulfur</span>
-          <span class="mini-value" id="fart-sulfur">0%</span>
-        </div>
-        <div class="mini-stat">
-          <span class="mini-label">Garbage</span>
-          <span class="mini-value" id="fart-garbage">0%</span>
-        </div>
-        <div class="mini-stat">
-          <span class="mini-label">Pet</span>
-          <span class="mini-value" id="fart-pet">0%</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="card haunting-card" id="card-paranormal" data-view="labs">
-      <div class="card-header">
-        <span>Paranormal Diagnostic</span>
-        <span class="header-pill" id="paranormal-badge">No scan yet</span>
-      </div>
-      <div class="paranormal-visual-row">
-        <div class="ghost-radar" id="ghost-radar">
-          <div class="ghost-radar-grid"></div>
-          <div class="ghost-radar-sweep"></div>
-          <div class="ghost-blip" id="ghost-blip-a"></div>
-          <div class="ghost-blip ghost-blip-b" id="ghost-blip-b"></div>
-          <div class="ghost-core"></div>
-        </div>
-        <div class="ghost-panel">
-          <div class="ghost-kicker">Paranormal Signal</div>
-          <div class="ghost-value" id="ghost-signal-value">Background static</div>
-          <div class="ghost-meter">
-            <div class="ghost-meter-fill" id="ghost-signal-fill"></div>
-          </div>
-          <div class="ghost-note" id="ghost-signal-note">No cached paranormal anomalies yet.</div>
-        </div>
-      </div>
-      <div class="phase-correlation-shell">
-        <div class="phase-canvas-shell">
-          <canvas id="phase-correlation-canvas" width="420" height="320" aria-label="Phase correlation spider chart"></canvas>
-        </div>
-        <div class="phase-copy">
-          <div class="phase-kicker">Phase Correlation</div>
-          <div class="phase-title" id="phase-title">Tight room signature</div>
-          <p class="phase-note" id="phase-note">Healthy rooms stay compact. Distorted polygons point to stronger gas, presence, static, or pressure activity.</p>
-          <div class="phase-axis-grid">
-            <div class="phase-axis-stat">
-              <span class="phase-axis-label">VOC / Gas</span>
-              <span class="phase-axis-value" id="phase-axis-gas">--</span>
-            </div>
-            <div class="phase-axis-stat">
-              <span class="phase-axis-label">RSSI / Presence</span>
-              <span class="phase-axis-value" id="phase-axis-presence">--</span>
-            </div>
-            <div class="phase-axis-stat">
-              <span class="phase-axis-label">EMF / Static</span>
-              <span class="phase-axis-value" id="phase-axis-emf">Standby</span>
-            </div>
-            <div class="phase-axis-stat">
-              <span class="phase-axis-label">Pa / Pressure</span>
-              <span class="phase-axis-value" id="phase-axis-pressure">--</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="report-stack" id="paranormal-report">Press the device button 5 times to run a deep-field paranormal diagnostic. The latest anomaly readout will appear here.</div>
-      <div class="source-caption">Source: experimental synthesis of live gas, room, and device telemetry</div>
-    </section>
-
     <section class="card" id="card-trend-series" data-view="history">
       <div class="card-header">
         <span>24-Hour Trend</span>
@@ -1320,7 +1137,7 @@ loop():
         <li><strong>ML classifier (medium):</strong> 12 odor channels scored 0–100%, cross-correlated with gasR/CO2/timing, 2-sample persistence filter</li>
         <li><strong>Composite scores (medium):</strong> Room Quality (0–100), CFI ventilation index, smell tier (0–5) — fuses multiple signals</li>
         <li><strong>AI commentary (low-medium):</strong> GPT-generated environmental analysis — entertaining but not a measurement</li>
-        <li><strong>Experimental (low):</strong> paranormal scan, fart attribution, breath screening — novelty features</li>
+        <li><strong>Experimental (low):</strong> breath screening — novelty feature</li>
       </ul>
     </section>
 
@@ -1421,7 +1238,6 @@ loop():
         <div class="remote-actions-grid">
           <button class="chrome-btn remote-action-btn" data-remote-action="refresh" type="button">Sync Device Now</button>
           <button class="chrome-btn remote-action-btn" data-remote-action="breath_check" type="button">Run Breath Check</button>
-          <button class="chrome-btn remote-action-btn" data-remote-action="ghost_scan" type="button">Run Ghost Scan</button>
         </div>
       </div>
       <div style="overflow-x:auto">
