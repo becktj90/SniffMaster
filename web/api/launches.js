@@ -91,6 +91,10 @@ function mapLaunch(launch, isCape) {
     name: launch.name || mission?.name || "Unknown mission",
     status: launch.launch_description || (isCape ? "Cape Canaveral" : "Upcoming"),
     time: formatLaunchTime(launch),
+    // Raw timestamps so consumers (e.g. the daily-summary SMS) can do their own
+    // date math; `time` above is already ET-formatted for display.
+    t0: launch.t0 || null,
+    winOpen: launch.win_open || null,
     provider: launch.provider?.name || "Unknown",
     pad: launch.pad?.name || "TBD",
     location: launch.pad?.location?.name || "Unknown",
@@ -115,6 +119,20 @@ async function fetchLaunches() {
 
   // Only return KSC / CCSFS launches — no global filler
   return capeLaunches.slice(0, 5);
+}
+
+/**
+ * Cache-through fetch of upcoming Cape launches. Shared with the daily-summary
+ * SMS so the morning report can mention today's launches without a second API
+ * quota. Throws on fetch failure when the cache is empty — callers decide how
+ * to degrade.
+ */
+export async function getCapeLaunches() {
+  const cached = await getCached();
+  if (cached) return cached;
+  const launches = await fetchLaunches();
+  await setCache(launches);
+  return launches;
 }
 
 export default async function handler(req, res) {

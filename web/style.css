@@ -5793,6 +5793,18 @@ body *::after {
   background: rgba(231, 76, 60, 0.14);
   border: 1px solid rgba(231, 76, 60, 0.4);
 }
+.restoration-bro {
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--muted-strong);
+  background: rgba(0, 242, 255, 0.06);
+  border: 1px solid rgba(0, 242, 255, 0.18);
+  margin-bottom: 12px;
+}
+
 .restoration-stats {
   display: grid;
   gap: 6px;

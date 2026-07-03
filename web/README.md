@@ -160,7 +160,7 @@ Two modes:
 
 The relay can text you a **daily 6 AM ET room report** and **immediate alerts** when conditions breach restoration-safe limits (humidity > 55%, temp > 40°C, sudden gas-resistance drop, IAQ ≥ 150). With the env vars unset, texting is silently skipped and everything else keeps working.
 
-**100 free SMS per month to US numbers (perpetual free tier).** After that, you only pay for what exceeds the quota at ~$0.00645/SMS.
+US SMS pricing is ~$0.00645/message (any free-tier allowance depends on your account; AWS has been phasing the SMS free tier out). Either way, one report + occasional alerts costs pennies per month.
 
 ### Step 1: Create AWS IAM User
 
@@ -168,7 +168,7 @@ The relay can text you a **daily 6 AM ET room report** and **immediate alerts** 
 2. Click **Users** → **Create user**
 3. Enter username (e.g., "sniffmaster-sns")
 4. Click **Next**
-5. Under **Attach policies directly**, search for and select **AmazonSNSFullAccess**
+5. Under **Attach policies directly**, search for and select **AmazonSNSFullAccess** (or, better, an inline policy allowing only `sns:Publish`)
 6. Click **Create user**
 7. Click on the user you just created
 8. Go to **Security credentials** tab
@@ -179,18 +179,27 @@ The relay can text you a **daily 6 AM ET room report** and **immediate alerts** 
     - Access Key ID (starts with `AKIA...`)
     - Secret Access Key (you'll only see it once)
 
-### Step 2: Set Environment Variables in Vercel
+### Step 2: Exit the SNS SMS sandbox (or verify your number)
+
+New AWS accounts start in the **SMS sandbox**: SNS will silently refuse to text any number you haven't verified.
+
+1. Go to **SNS console → Text messaging (SMS) → Sandbox destination phone numbers**
+2. Click **Add phone number**, enter your cell, confirm the verification code it texts you
+
+That's enough for personal alerts. (For unverified recipients you'd request production access from that same page.) Also note the default **$1/month SMS spend limit** — roughly 150 texts — which is plenty here; raise it via Service Quotas if you ever need more.
+
+### Step 3: Set Environment Variables in Vercel
 
 Go to **Vercel Dashboard** → your SniffMaster project → **Settings** → **Environment Variables** (Production):
 
-Add these 5 variables:
+> ⚠ The AWS variable names are prefixed with `SNS_` **on purpose**. Vercel functions run on AWS Lambda, which reserves the standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` names — Vercel won't let you set them, and at runtime they contain Lambda's own credentials, which cannot send SMS.
 
 | Variable | Value | Example |
 |----------|-------|----------|
-| `AWS_ACCESS_KEY_ID` | Your IAM Access Key ID | `AKIAIOSFODNN7EXAMPLE` |
-| `AWS_SECRET_ACCESS_KEY` | Your IAM Secret Access Key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCY...` |
-| `AWS_REGION` | AWS region | `us-east-1` |
-| `ALERT_SMS_TO` | Your phone number (E.164 format) | `+13215559876` |
+| `SNS_AWS_ACCESS_KEY_ID` | Your IAM Access Key ID | `AKIAIOSFODNN7EXAMPLE` |
+| `SNS_AWS_SECRET_ACCESS_KEY` | Your IAM Secret Access Key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCY...` |
+| `SNS_AWS_REGION` | AWS region (optional, default us-east-1) | `us-east-1` |
+| `ALERT_SMS_TO` | Recipient (E.164; optional — defaults to the owner's number baked into `lib/notify.js`) | `+15104324862` |
 | `CRON_SECRET` | Random secret for cron auth | `openssl rand -hex 16` |
 
 **Generate CRON_SECRET in your terminal:**
@@ -199,7 +208,9 @@ openssl rand -hex 16
 # Output: 3a7f2c8b1e4d9a5f6c2b8e1a3f7d4c9b
 ```
 
-### Step 3: Redeploy
+Optional: `OPENAI_API_KEY` gives the daily report a naturally written, personal tone (same key that powers the weather briefing); without it a built-in template is used — either way the text reads like a friendly site report, includes the 24h numbers, and lists any Cape Canaveral launches scheduled that day. Twilio (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM`) can be set as an automatic fallback provider.
+
+### Step 4: Redeploy
 
 In Vercel, click **Deployments** → **Redeploy** on the latest deployment, or:
 
@@ -209,7 +220,9 @@ git push  # triggers automatic redeploy
 
 Wait ~2 minutes for the deployment to finish.
 
-### Step 4: Test the Morning Report
+> **Deploying from GitHub?** In the Vercel project settings, **Build & Development Settings → Root Directory must be `web`** — the app lives in this subdirectory, and building from the repo root makes every URL 404.
+
+### Step 5: Test the Morning Report
 
 ```bash
 curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
@@ -218,7 +231,7 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
 
 You should see JSON returned + a text on your phone!
 
-### Step 5: Test a Live Alert
+### Step 6: Test a Live Alert
 
 Post a humidity breach (> 55%):
 
@@ -252,5 +265,5 @@ The frontend is static files and the API is standard serverless functions. You c
 Everything used is free tier:
 - **Vercel**: Free for hobby (100 GB bandwidth, 100k function invocations/month)
 - **Upstash Redis**: Free tier (10k commands/day — device posts 144/day, dashboard polls ~5k/day when open)
-- **AWS SNS**: 100 free SMS/month to US numbers (perpetual), then ~$0.00645/SMS
+- **AWS SNS**: ~$0.00645 per US SMS (~$0.25/month for one daily report + occasional alerts)
 - **ESP32**: One HTTPS POST every 10 minutes (~1–3 seconds, no impact on sensor loop)
