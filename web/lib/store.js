@@ -10,8 +10,6 @@
  *   sniffmaster:command  — most recent owner-triggered device command (JSON)
  *   sniffmaster:command_history — recent owner-triggered device commands
  *   sniffmaster:command_seq — monotonic sequence for remote commands
- *   sniffmaster:dad_joke — latest server-side dad joke payload
- *   sniffmaster:dad_joke_history — recent generated daily jokes
  */
 
 import { Redis } from "@upstash/redis";
@@ -48,8 +46,6 @@ const KEY_SNIFF_SEQ = "sniffmaster:sniff_seq";
 const KEY_COMMAND = "sniffmaster:command";
 const KEY_COMMAND_HISTORY = "sniffmaster:command_history";
 const KEY_COMMAND_SEQ = "sniffmaster:command_seq";
-const KEY_DAD_JOKE = "sniffmaster:dad_joke";
-const KEY_DAD_JOKE_HISTORY = "sniffmaster:dad_joke_history";
 const KEY_BLE_OCCUPANCY = "sniffmaster:ble_occupancy";
 const KEY_BLE_OCCUPANCY_HISTORY = "sniffmaster:ble_occupancy_history";
 const KEY_ALERT_STATE = "sniffmaster:alert_state";
@@ -58,7 +54,6 @@ const KEY_DAILY_SUMMARY_HISTORY = "sniffmaster:daily_summary_history";
 const MAX_HISTORY = 1008; // 7 days at 10-minute intervals
 const MAX_SNIFF_HISTORY = 96;
 const MAX_COMMAND_HISTORY = 48;
-const MAX_DAD_JOKE_HISTORY = 60;
 const MAX_BLE_OCCUPANCY_HISTORY = 288; // 24 hours at 5-minute intervals
 const MAX_DAILY_SUMMARY_HISTORY = 30; // ~1 month of morning reports
 
@@ -188,39 +183,6 @@ export async function getCommandHistory(count = 12) {
   const redis = getRedis();
   const n = Math.min(count, MAX_COMMAND_HISTORY);
   const items = await redis.lrange(KEY_COMMAND_HISTORY, 0, n - 1);
-  return items.map((item) =>
-    typeof item === "string" ? JSON.parse(item) : item
-  );
-}
-
-export async function putDadJoke(data) {
-  const redis = getRedis();
-  const entry = {
-    ...data,
-    generatedAt: Date.now(),
-  };
-  const json = JSON.stringify(entry);
-
-  await Promise.all([
-    redis.set(KEY_DAD_JOKE, json),
-    redis.lpush(KEY_DAD_JOKE_HISTORY, json),
-  ]);
-
-  await redis.ltrim(KEY_DAD_JOKE_HISTORY, 0, MAX_DAD_JOKE_HISTORY - 1);
-  return entry;
-}
-
-export async function getLatestDadJoke() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_DAD_JOKE);
-  if (!raw) return null;
-  return typeof raw === "string" ? JSON.parse(raw) : raw;
-}
-
-export async function getDadJokeHistory(count = 18) {
-  const redis = getRedis();
-  const n = Math.min(count, MAX_DAD_JOKE_HISTORY);
-  const items = await redis.lrange(KEY_DAD_JOKE_HISTORY, 0, n - 1);
   return items.map((item) =>
     typeof item === "string" ? JSON.parse(item) : item
   );
