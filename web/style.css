@@ -97,6 +97,7 @@ html {
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--body-bg);
   color: var(--text);
   font-family: "JetBrains Mono", monospace;
@@ -468,6 +469,10 @@ textarea {
   overflow-x: auto;
   padding: 0 0 6px;
   scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  scroll-padding-left: 2px;
+  overscroll-behavior-x: contain;
 }
 
 .section-nav::-webkit-scrollbar {
@@ -488,6 +493,9 @@ textarea {
   cursor: pointer;
   transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
   white-space: nowrap;
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+  touch-action: manipulation;
 }
 
 .section-btn:hover {
@@ -2457,6 +2465,7 @@ body[data-theme="retro90s"] .footer-bar {
   border-radius: 12px;
   padding: 16px 18px;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   font-size: 0.78rem;
   line-height: 1.65;
   color: var(--muted-strong, #8aa0b4);
@@ -3160,6 +3169,7 @@ body[data-theme="retro90s"] .footer-bar {
 .map-shell:fullscreen #weather-map {
   min-height: 100vh;
   height: 100vh;
+  height: 100dvh;
 }
 
 .weather-intel-copy {
@@ -3369,6 +3379,7 @@ body[data-theme="retro90s"] .footer-bar {
   background: rgba(5, 8, 18, 0.18);
   border-radius: 18px;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .heatmap-empty {
@@ -3786,6 +3797,7 @@ body[data-theme="retro90s"] .footer-bar {
 
 .events-table-shell {
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .events-table {
@@ -3880,6 +3892,7 @@ body[data-theme="retro90s"] .footer-bar {
   right: 0;
   width: min(440px, calc(100vw - 24px));
   height: 100vh;
+  height: 100dvh;
   padding: calc(20px + var(--safe-top)) 18px calc(24px + var(--safe-bottom));
   background: rgba(10, 14, 20, 0.88);
   border-left: 1px solid rgba(171, 181, 193, 0.14);
