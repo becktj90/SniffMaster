@@ -4350,6 +4350,18 @@ function setDashboardView(view) {
     const on = button.dataset.viewTarget === nextView;
     button.classList.toggle("is-active", on);
     button.setAttribute("aria-pressed", on ? "true" : "false");
+    // On narrow screens the tab strip scrolls horizontally; keep the active
+    // tab in view so a selection like TRENDS/SYSTEM isn't left cut off at the
+    // edge. Adjust the strip's scrollLeft directly (never the page) so this
+    // can't nudge vertical scroll on iOS Safari.
+    if (on) {
+      const strip = button.closest(".section-nav");
+      if (strip && strip.scrollWidth > strip.clientWidth) {
+        const target = button.offsetLeft - (strip.clientWidth - button.offsetWidth) / 2;
+        const max = strip.scrollWidth - strip.clientWidth;
+        strip.scrollTo({ left: Math.max(0, Math.min(target, max)), behavior: "smooth" });
+      }
+    }
   });
 
   document.querySelectorAll("#dashboard > [data-view]").forEach((card) => {
