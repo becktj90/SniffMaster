@@ -1,18 +1,17 @@
 /**
- * GET /api/launches — returns upcoming launches with Cape Canaveral (KSC / CCSFS) launches
- * prioritised, falling back to global upcoming launches when none are scheduled at the Cape.
+ * lib/launches.js — Cape Canaveral launch schedule (shared by /api/extras's
+ * "launches" route and the daily-summary morning report).
  *
  * Fetches from the RocketLaunch.Live free API and caches results in
  * Upstash Redis for one hour to stay well within rate limits.
- * Falls back to an empty list on any error so the dashboard degrades gracefully.
+ * Falls back to an empty list on any error so callers degrade gracefully.
  *
  * Data source: https://www.rocketlaunch.live/ (free public API, no key required)
  */
 
-import { isRedisConfigured } from "../lib/store.js";
+import { isRedisConfigured } from "./store.js";
 import { Redis } from "@upstash/redis";
 
-const RLL_BASE = "https://fdo.rocketlaunch.live/json/launches/next/5";
 const RLL_ALL_BASE = "https://fdo.rocketlaunch.live/json/launches/next/15";
 const CACHE_KEY = "sniffmaster:launches";
 const CACHE_TTL_SEC = 3600; // 1 hour
@@ -21,7 +20,7 @@ const CACHE_TTL_SEC = 3600; // 1 hour
 const CAPE_STATE = "FL";
 const CAPE_KEYWORDS = ["kennedy", "canaveral", "cape", "ccsfs", "ksc", "slc-40", "slc-41", "lc-39"];
 
-async function getCached() {
+export async function getCached() {
   if (!isRedisConfigured()) return null;
   try {
     const redis = Redis.fromEnv();
@@ -33,7 +32,7 @@ async function getCached() {
   }
 }
 
-async function setCache(data) {
+export async function setCache(data) {
   if (!isRedisConfigured()) return;
   try {
     const redis = Redis.fromEnv();
@@ -91,6 +90,10 @@ function mapLaunch(launch, isCape) {
     name: launch.name || mission?.name || "Unknown mission",
     status: launch.launch_description || (isCape ? "Cape Canaveral" : "Upcoming"),
     time: formatLaunchTime(launch),
+    // Raw timestamps so consumers (e.g. the daily-summary SMS) can do their own
+    // date math; `time` above is already ET-formatted for display.
+    t0: launch.t0 || null,
+    winOpen: launch.win_open || null,
     provider: launch.provider?.name || "Unknown",
     pad: launch.pad?.name || "TBD",
     location: launch.pad?.location?.name || "Unknown",
@@ -100,7 +103,7 @@ function mapLaunch(launch, isCape) {
   };
 }
 
-async function fetchLaunches() {
+export async function fetchLaunches() {
   // Fetch next 15 launches so we can find Cape ones even if they aren't in the first 5
   const res = await fetch(RLL_ALL_BASE, {
     headers: { "User-Agent": "SniffMaster/1.0 (environmental-dashboard)" },
@@ -117,26 +120,16 @@ async function fetchLaunches() {
   return capeLaunches.slice(0, 5);
 }
 
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Cache-Control", "no-store");
-
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
-
-  try {
-    const cached = await getCached();
-    if (cached) {
-      return res.status(200).json({ launches: cached, source: "cache" });
-    }
-
-    const launches = await fetchLaunches();
-    await setCache(launches);
-    return res.status(200).json({ launches, source: "live" });
-  } catch (err) {
-    console.error("launches error:", err);
-    return res.status(200).json({ launches: [], source: "error", error: err?.message || String(err) });
-  }
+/**
+ * Cache-through fetch of upcoming Cape launches. Shared with the daily-summary
+ * SMS so the morning report can mention today's launches without a second API
+ * quota. Throws on fetch failure when the cache is empty — callers decide how
+ * to degrade.
+ */
+export async function getCapeLaunches() {
+  const cached = await getCached();
+  if (cached) return cached;
+  const launches = await fetchLaunches();
+  await setCache(launches);
+  return launches;
 }

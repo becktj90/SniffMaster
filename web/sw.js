@@ -1,6 +1,6 @@
 // Service Worker — enables PWA install + offline shell caching
-// BUMPED TO v43 — forces a fresh shell after the restoration-monitor update (app.js/style.css)
-const CACHE_NAME = "sniffmaster-v43";
+// BUMPED TO v44 — forces a fresh shell after the BroGPT summary panel update (app.js/style.css)
+const CACHE_NAME = "sniffmaster-v44";
 const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/melody_library.h"];
 self.addEventListener("install", (e) => {
  e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL)));
