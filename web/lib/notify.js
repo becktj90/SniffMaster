@@ -1,25 +1,22 @@
 /**
- * notify.js — Twilio SMS helper for SniffMaster alerts.
+ * notify.js — Amazon SNS SMS helper for SniffMaster alerts.
  *
- * Sends plain-text SMS via the Twilio REST API using native `fetch`
- * (no extra npm deps — same pattern as the weather-briefing OpenAI fetch).
+ * 100 free SMS/month to US numbers (perpetual free tier). No per-message cost
+ * after that quota is exceeded — you only pay for what exceeds 100/month at
+ * ~$0.00645/SMS. Credentials are set via environment variables.
  *
  * Environment variables (set in Vercel dashboard / .env.local):
- *   TWILIO_ACCOUNT_SID  — Twilio Account SID (starts with "AC...")
- *   TWILIO_AUTH_TOKEN   — Twilio Auth Token
- *   TWILIO_FROM         — Twilio-provisioned sender number (E.164, e.g. +13215551234)
- *   ALERT_SMS_TO        — recipient number(s), comma-separated (E.164)
+ *   AWS_ACCESS_KEY_ID      — AWS IAM access key (starts with "AKIA...")
+ *   AWS_SECRET_ACCESS_KEY  — AWS IAM secret access key
+ *   AWS_REGION             — AWS region (e.g., "us-east-1")
+ *   ALERT_SMS_TO           — recipient number(s), comma-separated (E.164)
  *
  * Design note: sendSms() NEVER throws. Telemetry ingestion and the daily-summary
- * cron must succeed even if Twilio is down or misconfigured, so all failures are
+ * cron must succeed even if AWS is down or misconfigured, so all failures are
  * caught, logged, and surfaced only via the returned {sent, failures} summary.
  */
 
-const TWILIO_BASE = "https://api.twilio.com/2010-04-01";
-// Hard cap per Twilio request. Recipients are sent in parallel, so this also
-// bounds total send time — the ESP32 is waiting on /api/update's response, and
-// Vercel Hobby functions have a ~10s budget. A hung Twilio call must not eat it.
-const SEND_TIMEOUT_MS = 5000;
+import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
 
 function env(name) {
   const value = process.env[name];
@@ -38,16 +35,16 @@ export function getRecipients() {
 /** True only when every credential needed to actually send is present. */
 export function isSmsConfigured() {
   return Boolean(
-    env("TWILIO_ACCOUNT_SID") &&
-      env("TWILIO_AUTH_TOKEN") &&
-      env("TWILIO_FROM") &&
+    env("AWS_ACCESS_KEY_ID") &&
+      env("AWS_SECRET_ACCESS_KEY") &&
+      env("AWS_REGION") &&
       getRecipients().length > 0
   );
 }
 
 /**
- * Send an SMS to every configured recipient.
- * @param {string} body — message text (Twilio segments long bodies automatically)
+ * Send an SMS to every configured recipient via AWS SNS.
+ * @param {string} body — message text
  * @returns {Promise<{configured:boolean, sent:number, failures:Array<{to:string,error:string}>}>}
  */
 export async function sendSms(body) {
@@ -61,43 +58,35 @@ export async function sendSms(body) {
     return { configured: false, sent: 0, failures: [] };
   }
 
-  const sid = env("TWILIO_ACCOUNT_SID");
-  const token = env("TWILIO_AUTH_TOKEN");
-  const from = env("TWILIO_FROM");
-  const recipients = getRecipients();
-  const auth = Buffer.from(`${sid}:${token}`).toString("base64");
-  const url = `${TWILIO_BASE}/Accounts/${encodeURIComponent(sid)}/Messages.json`;
+  const client = new SNSClient({
+    region: env("AWS_REGION"),
+    credentials: {
+      accessKeyId: env("AWS_ACCESS_KEY_ID"),
+      secretAccessKey: env("AWS_SECRET_ACCESS_KEY"),
+    },
+  });
 
   let sent = 0;
   const failures = [];
+  const recipients = getRecipients();
 
-  // Parallel sends: total wall time stays bounded by SEND_TIMEOUT_MS no matter
-  // how many recipients are configured.
+  // Parallel sends to all recipients
   await Promise.all(
-    recipients.map(async (to) => {
+    recipients.map(async (phoneNumber) => {
       try {
-        const params = new URLSearchParams({ To: to, From: from, Body: text });
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Basic ${auth}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: params.toString(),
-          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+        const command = new PublishCommand({
+          Message: text,
+          PhoneNumber: phoneNumber,
         });
-
-        if (resp.ok) {
+        const response = await client.send(command);
+        if (response.MessageId) {
           sent += 1;
-        } else {
-          const detail = await resp.text().catch(() => "");
-          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 300) });
-          console.error(`notify: Twilio send to ${to} failed — HTTP ${resp.status} ${detail}`);
+          console.log(`notify: SMS sent to ${phoneNumber} (MessageId: ${response.MessageId})`);
         }
       } catch (err) {
-        const message = err?.name === "TimeoutError" ? `timeout after ${SEND_TIMEOUT_MS}ms` : err?.message || String(err);
-        failures.push({ to, error: message });
-        console.error(`notify: Twilio send to ${to} threw — ${message}`);
+        const message = err?.message || String(err);
+        failures.push({ to: phoneNumber, error: message });
+        console.error(`notify: SNS send to ${phoneNumber} failed — ${message}`);
       }
     })
   );

@@ -9,6 +9,7 @@
     "deploy": "vercel --prod"
   },
   "dependencies": {
-    "@upstash/redis": "^1.28.0"
+    "@upstash/redis": "^1.28.0",
+    "@aws-sdk/client-sns": "^3.600.0"
   }
 }

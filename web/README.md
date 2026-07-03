@@ -37,6 +37,7 @@ Browser / iPhone PWA         │
 - Fart counter
 - Outdoor AQI
 - IAQ history chart (up to 48 hours)
+- **Restoration Safety Monitor** — real-time threshold alerts + daily 24h baseline report
 
 ## Deploy (one-time setup)
 
@@ -153,32 +154,90 @@ Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Me
 
 Two modes:
 - **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
-- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via Twilio, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window.
+- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window.
 
-## SMS alerts (Twilio) — setup
+## SMS alerts (Amazon SNS) — setup
 
 The relay can text you a **daily 6 AM ET room report** and **immediate alerts** when conditions breach restoration-safe limits (humidity > 55%, temp > 40°C, sudden gas-resistance drop, IAQ ≥ 150). With the env vars unset, texting is silently skipped and everything else keeps working.
 
-1. **Create a Twilio account** at <https://www.twilio.com/try-twilio>. A free trial works for texting *your own verified number* (trial texts carry a "Sent from your Twilio trial account" prefix).
-2. **Get a phone number**: Console → Phone Numbers → Buy a Number (with SMS capability). Trial accounts get one free. For a paid US local (10-digit) number, Twilio requires A2P 10DLC registration before SMS delivers reliably — a **toll-free number with (free) toll-free verification** is usually the fastest path for personal alerts.
-3. **Trial only**: verify your personal cell under Phone Numbers → Verified Caller IDs, or texts to it will be rejected.
-4. **Copy credentials** from the Console home page: Account SID (`AC…`) and Auth Token.
-5. **Set env vars** in Vercel → Project → Settings → Environment Variables (Production):
-   - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (your Twilio number, `+1…`), `ALERT_SMS_TO` (your cell, `+1…`; comma-separate for multiple), and `CRON_SECRET` (`openssl rand -hex 16`).
-6. **Redeploy** so the functions pick up the new env, then **test the morning report by hand**:
-   ```bash
-   curl -H "Authorization: Bearer $CRON_SECRET" https://YOUR-APP.vercel.app/api/daily-summary
-   ```
-   You should get the JSON back and the text on your phone. (Re-runs within 6h return `skipped` — that's the resend guard working.)
-7. **Test a live alert** by posting a breaching snapshot as the device would:
-   ```bash
-   curl -X POST https://YOUR-APP.vercel.app/api/update \
-     -H "Content-Type: application/json" \
-     -d '{"key":"YOUR_SNIFFMASTER_API_KEY","temperature":22,"humidity":61,"pressure":1012,"gas_resistance":150000,"iaq":40}'
-   ```
-   Humidity 61% > 55% fires one alert text; identical re-posts stay silent (30-min per-condition cooldown; a fresh text fires when a *new* condition breaches).
+**100 free SMS per month to US numbers (perpetual free tier).** After that, you only pay for what exceeds the quota at ~$0.00645/SMS.
 
-**Cron note**: the schedule in `vercel.json` is `0 10 * * *` (10:00 UTC = 6:00 AM EDT). Vercel Hobby supports daily crons but fires them "within the hour"; Pro is exact. During EST (winter) 10:00 UTC is 5:00 AM ET — bump to `0 11 * * *` if that matters.
+### Step 1: Create AWS IAM User
+
+1. Go to **https://console.aws.amazon.com/iam/**
+2. Click **Users** → **Create user**
+3. Enter username (e.g., "sniffmaster-sns")
+4. Click **Next**
+5. Under **Attach policies directly**, search for and select **AmazonSNSFullAccess**
+6. Click **Create user**
+7. Click on the user you just created
+8. Go to **Security credentials** tab
+9. Click **Create access key**
+10. Select **Application running outside AWS**
+11. Click **Create access key**
+12. **SAVE these immediately:**
+    - Access Key ID (starts with `AKIA...`)
+    - Secret Access Key (you'll only see it once)
+
+### Step 2: Set Environment Variables in Vercel
+
+Go to **Vercel Dashboard** → your SniffMaster project → **Settings** → **Environment Variables** (Production):
+
+Add these 5 variables:
+
+| Variable | Value | Example |
+|----------|-------|----------|
+| `AWS_ACCESS_KEY_ID` | Your IAM Access Key ID | `AKIAIOSFODNN7EXAMPLE` |
+| `AWS_SECRET_ACCESS_KEY` | Your IAM Secret Access Key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCY...` |
+| `AWS_REGION` | AWS region | `us-east-1` |
+| `ALERT_SMS_TO` | Your phone number (E.164 format) | `+13215559876` |
+| `CRON_SECRET` | Random secret for cron auth | `openssl rand -hex 16` |
+
+**Generate CRON_SECRET in your terminal:**
+```bash
+openssl rand -hex 16
+# Output: 3a7f2c8b1e4d9a5f6c2b8e1a3f7d4c9b
+```
+
+### Step 3: Redeploy
+
+In Vercel, click **Deployments** → **Redeploy** on the latest deployment, or:
+
+```bash
+git push  # triggers automatic redeploy
+```
+
+Wait ~2 minutes for the deployment to finish.
+
+### Step 4: Test the Morning Report
+
+```bash
+curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
+  https://YOUR-APP.vercel.app/api/daily-summary
+```
+
+You should see JSON returned + a text on your phone!
+
+### Step 5: Test a Live Alert
+
+Post a humidity breach (> 55%):
+
+```bash
+curl -X POST https://YOUR-APP.vercel.app/api/update \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key":"YOUR_SNIFFMASTER_API_KEY",
+    "temperature":22,
+    "humidity":61,
+    "pressure":1012,
+    "gas_resistance":150000,
+    "iaq":40
+  }'
+```
+
+Humidity 61% > 55% → you'll get an alert text immediately!
+
+**Cron note**: the schedule in `vercel.json` is `0 10 * * *` (10:00 UTC = 6:00 AM EDT during daylight saving). Vercel Hobby supports daily crons but fires them "within the hour"; Pro is exact. During EST (winter) 10:00 UTC is 5:00 AM ET — bump to `0 11 * * *` if that matters.
 
 ## Alternative deploy targets
 
@@ -193,4 +252,5 @@ The frontend is static files and the API is standard serverless functions. You c
 Everything used is free tier:
 - **Vercel**: Free for hobby (100 GB bandwidth, 100k function invocations/month)
 - **Upstash Redis**: Free tier (10k commands/day — device posts 144/day, dashboard polls ~5k/day when open)
+- **AWS SNS**: 100 free SMS/month to US numbers (perpetual), then ~$0.00645/SMS
 - **ESP32**: One HTTPS POST every 10 minutes (~1–3 seconds, no impact on sensor loop)
