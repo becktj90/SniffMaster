@@ -96,7 +96,7 @@ export function isSmsConfigured() {
   return isSnsConfigured() || isTwilioConfigured();
 }
 
-async function sendViaSns(text, recipients) {
+export async function sendViaSns(text, recipients) {
   const { accessKeyId, secretAccessKey, region } = snsCreds();
   const client = new SNSClient({
     region,
@@ -140,7 +140,7 @@ async function sendViaSns(text, recipients) {
   return { sent, failures };
 }
 
-async function sendViaTwilio(text, recipients) {
+export async function sendViaTwilio(text, recipients) {
   const sid = env("TWILIO_ACCOUNT_SID");
   const token = env("TWILIO_AUTH_TOKEN");
   const from = env("TWILIO_FROM");

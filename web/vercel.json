@@ -4,7 +4,6 @@
   "rewrites": [
     { "source": "/api/apod", "destination": "/api/extras?fn=apod" },
     { "source": "/api/command", "destination": "/api/extras?fn=command" },
-    { "source": "/api/dad-joke", "destination": "/api/extras?fn=dad-joke" },
     { "source": "/api/launches", "destination": "/api/extras?fn=launches" },
     { "source": "/api/occupancy-briefing", "destination": "/api/extras?fn=occupancy-briefing" },
     { "source": "/api/office-stats", "destination": "/api/extras?fn=office-stats" },
