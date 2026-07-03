@@ -29,7 +29,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--primary", default="Sulfur", help="optional primary odor label")
     parser.add_argument("--primary-conf", type=int, default=72,
                         help="optional primary odor confidence")
-    parser.add_argument("--fart-count", type=int, default=1, help="optional fart count")
     return parser
 
 
@@ -45,7 +44,6 @@ def main() -> int:
         "dVoc": args.dvoc,
         "primary": args.primary,
         "primaryConf": args.primary_conf,
-        "fartCount": args.fart_count,
     }
 
     request = urllib.request.Request(
