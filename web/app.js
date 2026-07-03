@@ -5402,6 +5402,7 @@ function renderDailySummary(s) {
     return `avg ${label}`;
   };
   const when = num(s.generatedAt) ? fmtStamp(s.generatedAt) : "";
+  const esc = (t) => String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const rows = [
     ["🌡 Temperature", stat(s.temp, "°C", 1)],
     ["💧 Humidity", stat(s.humidity, "%", 0)],
@@ -5413,6 +5414,7 @@ function renderDailySummary(s) {
     <div class="restoration-verdict ${s.controlsStabilizing ? "is-good" : "is-bad"}">
       ${s.controlsStabilizing ? "✅" : "❌"} ${s.controlsNote || ""}
     </div>
+    ${s.reportText ? `<div class="restoration-bro">💬 This morning's text: &ldquo;${esc(s.reportText)}&rdquo;${s.launchLine ? `<br>🚀 ${esc(s.launchLine)}` : ""}</div>` : ""}
     <div class="restoration-stats">
       ${rows.map(([k, v]) => `<div class="rs-row"><span class="rs-key">${k}</span><span class="rs-val">${v}</span></div>`).join("")}
     </div>

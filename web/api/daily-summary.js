@@ -21,6 +21,7 @@ import {
 } from "../lib/store.js";
 import { normalizeReading, THRESHOLDS } from "../lib/thresholds.js";
 import { sendSms } from "../lib/notify.js";
+import { getCapeLaunches } from "./launches.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
@@ -172,8 +173,173 @@ function summaryToSms(s) {
   return lines.join("\n");
 }
 
+// ── Personal daily report ───────────────────────────────────────────────
+// The morning text reads like a friendly personal report: how the enclosure
+// held up overnight, whether the AC + dehumidifiers are doing their job, the
+// hard numbers, and any Cape Canaveral launches scheduled today. OpenAI writes
+// the narrative when OPENAI_API_KEY is set (same key as the weather briefing);
+// otherwise a deterministic template is used. The text never mentions AI/GPT
+// or that it is generated, and stays GSM-7-safe ASCII throughout.
+
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const REPORT_MAX_CHARS = 320;
+
+function sanitizeSmsAscii(text) {
+  return String(text || "")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/[^\x20-\x7E\n]/g, "")
+    // Belt-and-suspenders: the report must never present itself as AI-written.
+    .replace(/\b(BroGPT|ChatGPT|GPT[-\w]*|AI|A\.I\.|AI-generated|language model|chatbot)\b/gi, "")
+    .replace(/\bas an\s+(from\s+)?[,.]?\s*/gi, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
+function statsLine(s) {
+  const bits = [];
+  if (s.temp) bits.push(`${fmt(s.temp.avg, 1)}C`);
+  if (s.humidity) bits.push(`${fmt(s.humidity.avg)}%RH`);
+  if (s.pressure) bits.push(`${fmt(s.pressure.avg)}hPa`);
+  if (s.gas) bits.push(`gas ${gasLabel(s.gas.avg)}`);
+  if (s.iaq) bits.push(`IAQ ${fmt(s.iaq.avg)}`);
+  return bits.length ? `24h avg: ${bits.join(", ")}` : "";
+}
+
+function reportFallbackText(s) {
+  if (s.controlsStabilizing) {
+    const trend =
+      Number.isFinite(s.humidityDelta) && s.humidityDelta < -0.5
+        ? ` Humidity eased down ${Math.abs(s.humidityDelta).toFixed(0)}% overnight - the dehumidifiers are doing their job.`
+        : " The AC and dehumidifiers are holding steady.";
+    return `Good morning! Overnight report from the enclosure: everything stayed in the safe zone.${trend} The switchgear is staying dry.`;
+  }
+  return `Morning - heads up on the enclosure. ${s.controlsNote} Worth checking the AC and dehumidifiers today before condensation becomes a problem.`;
+}
+
+/** ET calendar date (YYYY-MM-DD) for a timestamp, for "today" comparisons. */
+function etDateKey(ts) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(ts));
+}
+
+function etClock(ts) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(ts));
+}
+
+/**
+ * "Launches today" line for the morning text.
+ * Returns "" when the schedule can't be fetched (better silent than wrong).
+ */
+function launchesTodayLine(launches, now = Date.now()) {
+  if (!Array.isArray(launches)) return "";
+  const today = etDateKey(now);
+  const todays = launches
+    .map((l) => {
+      const raw = l?.t0 || l?.winOpen;
+      const ts = raw ? Date.parse(raw) : NaN;
+      return Number.isFinite(ts) && etDateKey(ts) === today ? { name: l.name || "Launch", ts } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.ts - b.ts);
+
+  if (!todays.length) return "No Cape launches scheduled today.";
+  const shown = todays.slice(0, 2).map((l) => `${l.name} at ${etClock(l.ts)} ET`);
+  const more = todays.length > 2 ? ` +${todays.length - 2} more` : "";
+  return `Cape launch${todays.length > 1 ? "es" : ""} today: ${shown.join("; ")}${more}.`;
+}
+
+function extractOutputText(responseJson) {
+  if (typeof responseJson?.output_text === "string" && responseJson.output_text.trim()) {
+    return responseJson.output_text.trim();
+  }
+  const parts = [];
+  const output = Array.isArray(responseJson?.output) ? responseJson.output : [];
+  output.forEach((item) => {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    content.forEach((piece) => {
+      if (typeof piece?.text === "string" && piece.text.trim()) parts.push(piece.text.trim());
+    });
+  });
+  return parts.join("\n").trim();
+}
+
+async function generateReportText(s) {
+  const apiKey = (process.env.OPENAI_API_KEY || "").trim();
+  if (!apiKey) return null;
+  const model = `${process.env.OPENAI_REPORT_MODEL || "gpt-5.4-nano"}`.trim();
+
+  const prompt = [
+    "Write a short, warm good-morning SMS from an environmental monitor to its owner.",
+    "Context: a sensor watches a temporary enclosure protecting electrical switchgear that is drying out after an incident. AC and dehumidifiers run to keep it safe (humidity must stay under 55%, temp under 40C).",
+    "Requirements: 2-3 sentences, max 300 characters, plain ASCII only (no emoji, no degree symbols).",
+    "Tone: a nice personal daily report - friendly and direct, like a trusted site tech texting their boss.",
+    "Never mention AI, GPT, chatbots, models, or that this message is generated - it is simply the morning report.",
+    "Clearly state whether the AC and dehumidifiers kept the space safe overnight; if there is a problem, say it plainly and what to check.",
+    "",
+    `24h data: ${JSON.stringify({
+      tempC_avg: s.temp ? Number(s.temp.avg.toFixed(1)) : null,
+      humidity_avg: s.humidity ? Number(s.humidity.avg.toFixed(0)) : null,
+      humidity_max: s.humidity ? Number(s.humidity.max.toFixed(0)) : null,
+      humidity_trend: Number.isFinite(s.humidityDelta) ? Number(s.humidityDelta.toFixed(1)) : null,
+      iaq_avg: s.iaq ? Number(s.iaq.avg.toFixed(0)) : null,
+      controls_stabilizing: s.controlsStabilizing,
+      verdict: s.controlsNote,
+    })}`,
+  ].join("\n");
+
+  const res = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model, input: prompt, max_output_tokens: 150 }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`openai ${res.status}`);
+  const text = sanitizeSmsAscii(extractOutputText(await res.json()));
+  return text ? text.slice(0, REPORT_MAX_CHARS) : null;
+}
+
+/**
+ * Compose the morning SMS: personal report + stats line + today's Cape launches.
+ * Never throws; every piece degrades independently.
+ */
+async function composeReportSms(s, launches) {
+  if (!s.sampleCount) {
+    const dark =
+      "Good morning - heads up: the enclosure sensor went quiet overnight (no data in 24h). Check the device power and WiFi when you get a chance.";
+    return { smsText: dark, reportText: dark, reportMode: "deterministic" };
+  }
+
+  let reportText = null;
+  let reportMode = "deterministic";
+  try {
+    reportText = await generateReportText(s);
+    if (reportText) reportMode = "openai";
+  } catch (err) {
+    console.error("daily-summary: report generation failed, using fallback:", err?.message || err);
+  }
+  if (!reportText) reportText = reportFallbackText(s);
+
+  const launchLine = launchesTodayLine(launches);
+  const smsText = sanitizeSmsAscii([reportText, statsLine(s), launchLine].filter(Boolean).join("\n"));
+  return { smsText, reportText, reportMode, launchLine };
+}
+
 // Exported for unit testing; the Vercel runtime only invokes the default export.
-export { buildSummary, summaryToSms };
+export { buildSummary, summaryToSms, composeReportSms, reportFallbackText, sanitizeSmsAscii, launchesTodayLine };
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -213,10 +379,26 @@ export default async function handler(req, res) {
 
     const history = await getHistory(288); // up to ~48h @ 10min, we filter to 24h
     const summary = buildSummary(history);
-    const smsText = summaryToSms(summary);
+
+    // Launch schedule is decoration — never let it block the report.
+    let launches = null;
+    try {
+      launches = await getCapeLaunches();
+    } catch (err) {
+      console.error("daily-summary: launches fetch failed:", err?.message || err);
+    }
+
+    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches);
 
     const smsResult = await sendSms(smsText);
-    const stored = await putDailySummary({ ...summary, smsText });
+    const stored = await putDailySummary({
+      ...summary,
+      smsText,
+      reportText,
+      reportMode,
+      launchLine,
+      plainText: summaryToSms(summary),
+    });
 
     return res.status(200).json({
       ...stored,
