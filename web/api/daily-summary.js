@@ -8,7 +8,10 @@
  *   2. Dashboard read — any unauthenticated GET returns the most recently stored
  *      summary (read-only, no SMS sent) so the page can render the panel.
  *
- * Scheduled via vercel.json crons at 10:00 UTC (06:00 US Eastern during EDT).
+ * Scheduled via vercel.json crons at 10:00 UTC (06:00 US Eastern during EDT),
+ * with a second slot at 10:40 UTC that acts purely as a delivery-retry sweep:
+ * if the first run generated the report but every send failed, the second run
+ * re-sends the stored text; if the first run delivered, it no-ops.
  */
 
 import crypto from "node:crypto";
@@ -18,9 +21,10 @@ import {
   putDailySummary,
   getDailySummaryHistory,
   acquireDailySummaryLock,
+  markDailySummaryDelivered,
 } from "../lib/store.js";
 import { normalizeReading, THRESHOLDS } from "../lib/thresholds.js";
-import { sendSms } from "../lib/notify.js";
+import { sendSms, isSmsConfigured } from "../lib/notify.js";
 import { getCapeLaunches } from "../lib/launches.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -370,6 +374,28 @@ export default async function handler(req, res) {
     // so even two simultaneous triggers can't both send.
     const existing = await getDailySummary();
     if (existing && Date.now() - Number(existing.generatedAt || 0) < RESEND_GUARD_MS) {
+      // Self-healing resend: smsDelivered === false means a recent run built
+      // the report but no channel accepted it (provider blip, bad creds).
+      // Re-send the ALREADY-STORED text — no regeneration, no history append —
+      // so the second cron slot (or a manual trigger) recovers the day's text.
+      // Older records predate the flag (undefined) and are treated as delivered.
+      if (existing.smsDelivered === false && isSmsConfigured()) {
+        const retryText = existing.smsText || existing.plainText || "";
+        const retry = await sendSms(retryText);
+        if (retry.sent > 0) {
+          const updated = await markDailySummaryDelivered();
+          return res.status(200).json({
+            ...(updated || { ...existing, smsDelivered: true }),
+            retriedSms: true,
+            sms: { configured: retry.configured, sent: retry.sent, failures: retry.failures },
+          });
+        }
+        return res.status(200).json({
+          ...existing,
+          retriedSms: true,
+          sms: { configured: retry.configured, sent: 0, failures: retry.failures },
+        });
+      }
       return res.status(200).json({ ...existing, skipped: "recently generated" });
     }
     const wonLock = await acquireDailySummaryLock(RESEND_GUARD_MS / 1000);
@@ -398,6 +424,9 @@ export default async function handler(req, res) {
       reportMode,
       launchLine,
       plainText: summaryToSms(summary),
+      // false arms the retry path above; null means "nothing to retry" (no
+      // channel configured at all, so a resend attempt would be pointless).
+      smsDelivered: smsResult.configured ? smsResult.sent > 0 : null,
     });
 
     return res.status(200).json({
