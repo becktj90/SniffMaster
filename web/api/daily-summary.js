@@ -5,6 +5,8 @@
  *   1. Cron target — when called by Vercel Cron (header `x-vercel-cron`) or with
  *      `Authorization: Bearer $CRON_SECRET`, it computes the last-24h baseline,
  *      texts the owner the morning report, stores it, and returns the JSON.
+ *      Add `?force=true` (authorized only) to bypass the 6h resend guard and
+ *      lock — for previewing the report format on demand; it WILL send again.
  *   2. Dashboard read — any unauthenticated GET returns the most recently stored
  *      summary (read-only, no SMS sent) so the page can render the panel.
  *
@@ -85,6 +87,49 @@ function fmt(n, digits = 0) {
   return Number.isFinite(n) ? n.toFixed(digits) : "—";
 }
 
+// Report text speaks Fahrenheit; internals (stats, thresholds, stored
+// summaries) stay Celsius so history and the dashboard remain comparable.
+const cToF = (c) => (c * 9) / 5 + 32;
+
+/** "+1.8%" / "-0.3%" — relative change of a current value vs its baseline. */
+function pctDiff(current, baselineValue) {
+  if (!Number.isFinite(current) || !Number.isFinite(baselineValue) || baselineValue === 0) return null;
+  const pct = ((current - baselineValue) / Math.abs(baselineValue)) * 100;
+  return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+}
+
+/**
+ * Per-metric norm from previously stored summaries: the mean of each metric's
+ * daily average over the retained history. Multiple runs on the same ET day
+ * collapse to the newest, and today's runs are excluded, so the comparison is
+ * genuinely "today vs prior days". days === 0 means no usable baseline yet.
+ */
+function buildBaseline(prevSummaries, now = Date.now()) {
+  const today = etDateKey(now);
+  const byDay = new Map();
+  (Array.isArray(prevSummaries) ? prevSummaries : []).forEach((s) => {
+    const ts = Number(s?.generatedAt);
+    if (!Number.isFinite(ts)) return;
+    const day = etDateKey(ts);
+    if (day === today || byDay.has(day)) return; // newest-first: keep latest per day
+    byDay.set(day, s);
+  });
+  const days = [...byDay.values()];
+  const mean = (pick) => {
+    const vals = days.map(pick).filter(Number.isFinite);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  };
+  const tempCAvg = mean((d) => d?.temp?.avg);
+  return {
+    days: days.length,
+    tempF: Number.isFinite(tempCAvg) ? cToF(tempCAvg) : null,
+    humidity: mean((d) => d?.humidity?.avg),
+    pressure: mean((d) => d?.pressure?.avg),
+    gas: mean((d) => d?.gas?.avg),
+    iaq: mean((d) => d?.iaq?.avg),
+  };
+}
+
 // ASCII ohm labels: this string ships over SMS, where non-GSM-7 characters
 // (like the ohm symbol) force UCS-2 encoding and shrink segments 160 -> 70.
 function gasLabel(ohms) {
@@ -130,7 +175,7 @@ function buildSummary(history) {
   } else {
     const reasons = [];
     if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% above the ${THRESHOLDS.HUMIDITY_HIGH}% limit`);
-    if (!tempInBand) reasons.push(`temp avg ${fmt(temp.avg, 1)}C above the ${THRESHOLDS.TEMP_HIGH_C}C limit`);
+    if (!tempInBand) reasons.push(`temp avg ${fmt(cToF(temp.avg), 1)}F above the ${fmt(cToF(THRESHOLDS.TEMP_HIGH_C))}F limit`);
     if (humidityInBand && tempInBand && !humidityFalling)
       reasons.push(`humidity rising (+${fmt(humidityDelta, 1)}%)`);
     controlsNote = `Environmental controls not keeping up: ${reasons.join("; ")}.`;
@@ -152,7 +197,7 @@ function buildSummary(history) {
   };
 }
 
-function summaryToSms(s) {
+function summaryToSms(s, baseline = null) {
   const dateLabel = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     month: "short",
@@ -165,14 +210,23 @@ function summaryToSms(s) {
 
   // ASCII only (GSM-7): no degree signs, ohm symbols, dashes, or emoji.
   // Metrics the device never reported are skipped rather than shown as "-".
+  const tag = (cur, base) => {
+    const d = pctDiff(cur, base);
+    return d ? `, ${d}` : "";
+  };
   const lines = [`SniffMaster AM report (${dateLabel})`];
-  if (s.temp) lines.push(`Temp: avg ${fmt(s.temp.avg, 1)}C (${fmt(s.temp.min, 1)} to ${fmt(s.temp.max, 1)})`);
-  if (s.humidity) lines.push(`Humidity: avg ${fmt(s.humidity.avg)}% (${fmt(s.humidity.min)} to ${fmt(s.humidity.max)})`);
-  if (s.pressure) lines.push(`Pressure: avg ${fmt(s.pressure.avg)} hPa`);
+  if (s.temp)
+    lines.push(
+      `Temp: ${fmt(cToF(s.temp.avg), 1)}F (${fmt(cToF(s.temp.min), 1)} to ${fmt(cToF(s.temp.max), 1)})${tag(cToF(s.temp.avg), baseline?.tempF)}`
+    );
+  if (s.humidity)
+    lines.push(`Humidity: ${fmt(s.humidity.avg)}% (${fmt(s.humidity.min)} to ${fmt(s.humidity.max)})${tag(s.humidity.avg, baseline?.humidity)}`);
+  if (s.pressure) lines.push(`Pressure: ${fmt(s.pressure.avg)} hPa${tag(s.pressure.avg, baseline?.pressure)}`);
   const air = [];
-  if (s.gas) air.push(`gas ${gasLabel(s.gas.avg)}`);
-  if (s.iaq) air.push(`IAQ ${fmt(s.iaq.avg)}`);
-  if (air.length) lines.push(`Air: ${air.join(", ")}`);
+  if (s.gas) air.push(`gas ${gasLabel(s.gas.avg)}${tag(s.gas.avg, baseline?.gas)}`);
+  if (s.iaq) air.push(`IAQ ${fmt(s.iaq.avg)}${tag(s.iaq.avg, baseline?.iaq)}`);
+  if (air.length) lines.push(`Air: ${air.join("; ")}`);
+  if (baseline?.days) lines.push(`(% = change vs ${baseline.days}-day avg)`);
   lines.push(`${s.controlsStabilizing ? "OK:" : "PROBLEM:"} ${s.controlsNote}`);
   return lines.join("\n");
 }
@@ -202,14 +256,24 @@ function sanitizeSmsAscii(text) {
     .trim();
 }
 
-function statsLine(s) {
-  const bits = [];
-  if (s.temp) bits.push(`${fmt(s.temp.avg, 1)}C`);
-  if (s.humidity) bits.push(`${fmt(s.humidity.avg)}%RH`);
-  if (s.pressure) bits.push(`${fmt(s.pressure.avg)}hPa`);
-  if (s.gas) bits.push(`gas ${gasLabel(s.gas.avg)}`);
-  if (s.iaq) bits.push(`IAQ ${fmt(s.iaq.avg)}`);
-  return bits.length ? `24h avg: ${bits.join(", ")}` : "";
+// One metric per line so the morning text scans at a glance, each with its
+// change vs the recent-days norm when enough stored history exists.
+function statsBlock(s, baseline = null) {
+  const tag = (cur, base) => {
+    const d = pctDiff(cur, base);
+    return d ? ` (${d})` : "";
+  };
+  const lines = [];
+  if (s.temp) lines.push(`Temp ${fmt(cToF(s.temp.avg), 1)}F${tag(cToF(s.temp.avg), baseline?.tempF)}`);
+  if (s.humidity) lines.push(`Humidity ${fmt(s.humidity.avg)}%${tag(s.humidity.avg, baseline?.humidity)}`);
+  if (s.pressure) lines.push(`Pressure ${fmt(s.pressure.avg)} hPa${tag(s.pressure.avg, baseline?.pressure)}`);
+  const air = [];
+  if (s.gas) air.push(`Gas ${gasLabel(s.gas.avg)}${tag(s.gas.avg, baseline?.gas)}`);
+  if (s.iaq) air.push(`IAQ ${fmt(s.iaq.avg)}${tag(s.iaq.avg, baseline?.iaq)}`);
+  if (air.length) lines.push(air.join(", "));
+  if (!lines.length) return "";
+  const header = baseline?.days ? `24h averages (% = vs ${baseline.days}-day avg):` : "24h averages:";
+  return [header, ...lines].join("\n");
 }
 
 function reportFallbackText(s) {
@@ -285,14 +349,14 @@ async function generateReportText(s) {
 
   const prompt = [
     "Write a short, warm good-morning SMS from an environmental monitor to its owner.",
-    "Context: a sensor watches a temporary enclosure protecting electrical switchgear that is drying out after an incident. AC and dehumidifiers run to keep it safe (humidity must stay under 55%, temp under 40C).",
-    "Requirements: 2-3 sentences, max 300 characters, plain ASCII only (no emoji, no degree symbols).",
+    "Context: a sensor watches a temporary enclosure protecting electrical switchgear that is drying out after an incident. AC and dehumidifiers run to keep it safe (humidity must stay under 55%, temp under 104F).",
+    "Requirements: 2-3 sentences, max 300 characters, plain ASCII only (no emoji, no degree symbols). Use Fahrenheit for any temperature you mention.",
     "Tone: a nice personal daily report - friendly and direct, like a trusted site tech texting their boss.",
     "Never mention AI, GPT, chatbots, models, or that this message is generated - it is simply the morning report.",
     "Clearly state whether the AC and dehumidifiers kept the space safe overnight; if there is a problem, say it plainly and what to check.",
     "",
     `24h data: ${JSON.stringify({
-      tempC_avg: s.temp ? Number(s.temp.avg.toFixed(1)) : null,
+      tempF_avg: s.temp ? Number(cToF(s.temp.avg).toFixed(1)) : null,
       humidity_avg: s.humidity ? Number(s.humidity.avg.toFixed(0)) : null,
       humidity_max: s.humidity ? Number(s.humidity.max.toFixed(0)) : null,
       humidity_trend: Number.isFinite(s.humidityDelta) ? Number(s.humidityDelta.toFixed(1)) : null,
@@ -317,10 +381,10 @@ async function generateReportText(s) {
 }
 
 /**
- * Compose the morning SMS: personal report + stats line + today's Cape launches.
- * Never throws; every piece degrades independently.
+ * Compose the morning SMS: personal report + readable stats block + today's
+ * Cape launches. Never throws; every piece degrades independently.
  */
-async function composeReportSms(s, launches) {
+async function composeReportSms(s, launches, baseline = null) {
   if (!s.sampleCount) {
     const dark =
       "Good morning - heads up: the enclosure sensor went quiet overnight (no data in 24h). Check the device power and WiFi when you get a chance.";
@@ -338,7 +402,7 @@ async function composeReportSms(s, launches) {
   if (!reportText) reportText = reportFallbackText(s);
 
   const launchLine = launchesTodayLine(launches);
-  const smsText = sanitizeSmsAscii([reportText, statsLine(s), launchLine].filter(Boolean).join("\n"));
+  const smsText = sanitizeSmsAscii([reportText, statsBlock(s, baseline), launchLine].filter(Boolean).join("\n"));
   return { smsText, reportText, reportMode, launchLine };
 }
 
@@ -370,10 +434,15 @@ export default async function handler(req, res) {
 
   // Authorized (cron / secret): compute, text, store.
   try {
+    // ?force=true bypasses BOTH idempotency layers — deliberate double-send
+    // for previewing the report format. Authorized callers only (we're already
+    // past the isAuthorized gate here).
+    const force = req.query?.force === "true";
+
     // Idempotency, two layers: a fast read check, then an atomic SET NX lock
     // so even two simultaneous triggers can't both send.
     const existing = await getDailySummary();
-    if (existing && Date.now() - Number(existing.generatedAt || 0) < RESEND_GUARD_MS) {
+    if (!force && existing && Date.now() - Number(existing.generatedAt || 0) < RESEND_GUARD_MS) {
       // Self-healing resend: smsDelivered === false means a recent run built
       // the report but no channel accepted it (provider blip, bad creds).
       // Re-send the ALREADY-STORED text — no regeneration, no history append —
@@ -398,12 +467,18 @@ export default async function handler(req, res) {
       }
       return res.status(200).json({ ...existing, skipped: "recently generated" });
     }
-    const wonLock = await acquireDailySummaryLock(RESEND_GUARD_MS / 1000);
-    if (!wonLock) {
-      return res.status(200).json({ ...(existing || {}), skipped: "another run holds the lock" });
+    if (!force) {
+      const wonLock = await acquireDailySummaryLock(RESEND_GUARD_MS / 1000);
+      if (!wonLock) {
+        return res.status(200).json({ ...(existing || {}), skipped: "another run holds the lock" });
+      }
     }
 
-    const history = await getHistory(288); // up to ~48h @ 10min, we filter to 24h
+    const [history, prevSummaries] = await Promise.all([
+      getHistory(288), // up to ~48h @ 10min, we filter to 24h
+      getDailySummaryHistory(14), // prior days' summaries → % vs norm
+    ]);
+    const baseline = buildBaseline(prevSummaries);
     const summary = buildSummary(history);
 
     // Launch schedule is decoration — never let it block the report.
@@ -414,7 +489,7 @@ export default async function handler(req, res) {
       console.error("daily-summary: launches fetch failed:", err?.message || err);
     }
 
-    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches);
+    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline);
 
     const smsResult = await sendSms(smsText);
     const stored = await putDailySummary({
@@ -423,7 +498,7 @@ export default async function handler(req, res) {
       reportText,
       reportMode,
       launchLine,
-      plainText: summaryToSms(summary),
+      plainText: summaryToSms(summary, baseline),
       // false arms the retry path above; null means "nothing to retry" (no
       // channel configured at all, so a resend attempt would be pointless).
       smsDelivered: smsResult.configured ? smsResult.sent > 0 : null,
