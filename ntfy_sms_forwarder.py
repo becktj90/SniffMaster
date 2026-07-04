@@ -3,20 +3,34 @@
 ntfy_sms_forwarder.py — Background service that forwards push notifications from ntfy.sh
 to your phone as SMS text messages via Twilio.
 
-This script:
-1. Connects to a specified ntfy topic via Server-Sent Events (SSE)
-2. Listens for incoming JSON notifications
-3. Forwards them to a phone number via the Twilio SMS API (real SMS network,
-   not an email-to-SMS carrier gateway)
-4. Automatically reconnects on network failures
-5. Loads all configuration from .env (no hardcoded secrets)
+This is the SMS half of the SniffMaster alert pipeline. The Vercel web app
+publishes every alert and the daily report to an ntfy topic (it does NOT send
+its own Twilio SMS — Twilio credentials live here, in this forwarder, so there
+is exactly one SMS sender and no duplicate texts). This script:
 
-Why Twilio instead of an Email-to-SMS gateway: live testing showed AT&T's
+1. Connects to that ntfy topic via a streaming JSON subscription
+2. Forwards each notification to your phone via the Twilio SMS API (the real
+   SMS network, not an email-to-SMS carrier gateway)
+3. Verifies delivery with Twilio (a message SID is NOT proof of delivery — see
+   below) and logs the real carrier status, including the A2P-registration
+   block (error 30034)
+4. Reconnects automatically on network failure, catching up on anything
+   published during the outage without re-texting duplicates
+
+INTEGRATION — the one thing that must be true:
+    NTFY_TOPIC here must EXACTLY match the NTFY_TOPIC the web app publishes to
+    (its Vercel env var). Same topic string = the dashboard's pushes arrive
+    here and become SMS. A mismatch means silence with no error.
+
+Why Twilio instead of an email-to-SMS gateway: live testing showed AT&T's
 txt.att.net/mms.att.net gateways silently drop mail with no bounce or error —
 the sending SMTP server reports success even though the phone never receives
 anything. Twilio sends over the real SMS network and returns a message SID
-plus a real HTTP error (not silence) when a send fails, so failures are
-actually observable. See README.md for details.
+plus a real HTTP error when a send fails. But note: a Twilio SID still is not
+proof of delivery for US numbers — the carrier can mark it `undelivered` with
+error 30034 if the sending number hasn't completed A2P 10DLC registration.
+This script polls the message status so that block is visible in the log
+instead of looking like success. See README.md for details.
 
 Usage:
     python3 ntfy_sms_forwarder.py
@@ -36,6 +50,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 import requests
@@ -111,7 +126,27 @@ ALERT_SMS_TO = _to_e164(os.getenv("ALERT_SMS_TO", ""))
 # Reconnection settings
 RECONNECT_DELAY_BASE = 5  # Start with 5 seconds
 RECONNECT_DELAY_MAX = 300  # Max 5 minutes
-TIMEOUT_SEC = 30
+# Streaming timeouts, as a (connect, read) pair. The READ timeout MUST be
+# larger than ntfy's keepalive interval (~45s by default) or the stream is
+# torn down mid-idle every read-timeout seconds, reconnecting forever and
+# risking dropped messages. 75s comfortably clears the keepalive.
+CONNECT_TIMEOUT_SEC = 10
+READ_TIMEOUT_SEC = 75
+# Plain request timeout for one-shot Twilio calls (send + status poll).
+TWILIO_TIMEOUT_SEC = 30
+
+# Twilio accepts up to 1600 chars in one API call and segments it into
+# concatenated SMS parts automatically. The morning report (personal note +
+# stats + LC-36 weather + launches) runs several hundred chars, so the old
+# 160-char hard cap silently dropped everything past the first line.
+SMS_MAX_CHARS = 1600
+
+# Delivery-status verification: how many times to re-check the message after
+# sending, and how long to wait between checks. A SID comes back immediately
+# but the carrier status (delivered / undelivered+30034) lands a few seconds
+# later, so poll briefly. Kept short so it never stalls the listener for long.
+STATUS_POLL_ATTEMPTS = 4
+STATUS_POLL_DELAY_SEC = 2
 
 # ═══════════════════════════════════════════════════════════════════════════
 # VALIDATION
@@ -154,20 +189,25 @@ def validate_config():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def send_sms_via_twilio(message_body: str) -> bool:
+def _twilio_auth_header() -> str:
+    token = base64.b64encode(
+        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode("utf-8")
+    ).decode("ascii")
+    return f"Basic {token}"
+
+
+def send_sms_via_twilio(message_body: str):
     """
     Send an SMS via the Twilio REST API (real SMS network, not an email
-    gateway). Returns True only when Twilio's API accepts the message and
-    hands back a message SID.
+    gateway). Returns the Twilio message SID on acceptance, or None on failure.
 
-    Args:
-        message_body: Text content to send
-
-    Returns:
-        True if Twilio accepted the message, False otherwise
+    A returned SID means Twilio ACCEPTED the message for sending — not that the
+    carrier delivered it. Delivery is confirmed separately by
+    poll_delivery_status().
     """
-    # Keep message body short (SMS character limit)
-    body = message_body[:160] if len(message_body) > 160 else message_body
+    # Twilio segments long bodies into concatenated SMS automatically; only
+    # guard against an absurdly long body (10 segments) to bound cost.
+    body = message_body if len(message_body) <= SMS_MAX_CHARS else message_body[:SMS_MAX_CHARS]
 
     url = f"{TWILIO_API_BASE}/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID)}/Messages.json"
 
@@ -178,64 +218,153 @@ def send_sms_via_twilio(message_body: str) -> bool:
         form["From"] = TWILIO_FROM
 
     data = urllib.parse.urlencode(form).encode("utf-8")
-    auth = base64.b64encode(
-        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode("utf-8")
-    ).decode("ascii")
 
     request = urllib.request.Request(
         url,
         data=data,
         method="POST",
         headers={
-            "Authorization": f"Basic {auth}",
+            "Authorization": _twilio_auth_header(),
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
 
     try:
-        logger.info(f"Sending SMS to {ALERT_SMS_TO} via Twilio...")
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SEC) as response:
+        logger.info(f"Sending SMS to {ALERT_SMS_TO} via Twilio ({len(body)} chars)...")
+        with urllib.request.urlopen(request, timeout=TWILIO_TIMEOUT_SEC) as response:
             payload = json.loads(response.read().decode("utf-8"))
             sid = payload.get("sid")
             if sid:
-                logger.info(f"✓ SMS sent successfully (Twilio SID: {sid})")
-                return True
+                logger.info(f"✓ Twilio accepted the message (SID: {sid}, status: {payload.get('status')})")
+                return sid
             logger.error(f"Twilio response missing SID: {payload}")
-            return False
+            return None
 
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
         logger.error(f"Twilio API error: HTTP {e.code} — {detail}")
-        return False
+        return None
     except urllib.error.URLError as e:
         logger.error(f"Failed to reach Twilio API: {e.reason}")
-        return False
+        return None
     except Exception as e:
         logger.error(f"Failed to send SMS: {e}")
-        return False
+        return None
+
+
+def poll_delivery_status(sid: str) -> str:
+    """
+    Poll Twilio for the real carrier delivery status of a sent message.
+
+    A SID from send_sms_via_twilio() only means "accepted"; the carrier verdict
+    (delivered / undelivered / failed) and any error_code arrive a few seconds
+    later. This surfaces the common US block — error 30034, sending number not
+    A2P-10DLC-registered — which otherwise looks exactly like success.
+
+    Returns the last observed status string (best-effort; never raises).
+    """
+    if not sid:
+        return "unknown"
+    url = (
+        f"{TWILIO_API_BASE}/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID)}"
+        f"/Messages/{urllib.parse.quote(sid)}.json"
+    )
+    request = urllib.request.Request(
+        url, method="GET", headers={"Authorization": _twilio_auth_header()}
+    )
+
+    last_status = "unknown"
+    for attempt in range(STATUS_POLL_ATTEMPTS):
+        time.sleep(STATUS_POLL_DELAY_SEC)
+        try:
+            with urllib.request.urlopen(request, timeout=TWILIO_TIMEOUT_SEC) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001 - status check must never crash the loop
+            logger.warning(f"Could not check delivery status for {sid}: {e}")
+            return last_status
+
+        last_status = payload.get("status", "unknown")
+        error_code = payload.get("error_code")
+
+        if last_status == "delivered":
+            logger.info(f"✓ Carrier confirmed delivery (SID: {sid})")
+            return last_status
+        if last_status in ("undelivered", "failed"):
+            if str(error_code) == "30034":
+                logger.error(
+                    f"✗ Carrier BLOCKED the SMS (SID: {sid}, error 30034): the "
+                    f"sending number is not A2P 10DLC registered. This is a "
+                    f"one-time Twilio Console step (Messaging → Regulatory "
+                    f"Compliance → A2P 10DLC), not a code fix."
+                )
+            else:
+                logger.error(
+                    f"✗ Carrier did not deliver the SMS (SID: {sid}, status: "
+                    f"{last_status}, error_code: {error_code})"
+                )
+            return last_status
+
+    # Still queued/sending/sent after the poll window — accepted, delivery pending.
+    logger.info(
+        f"… Delivery still pending for {sid} (status: {last_status}). Twilio "
+        f"accepted it; the carrier receipt may land shortly."
+    )
+    return last_status
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ntfy STREAMING
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Bounded dedup of already-forwarded ntfy message ids. On reconnect we ask
+# ntfy to replay anything published during the outage (via `since`), which can
+# re-deliver the boundary message; this stops it becoming a duplicate text.
+_seen_ids = deque(maxlen=1000)
+_seen_set = set()
+
+
+def _already_seen(msg_id: str) -> bool:
+    if not msg_id:
+        return False
+    if msg_id in _seen_set:
+        return True
+    if len(_seen_ids) == _seen_ids.maxlen:
+        _seen_set.discard(_seen_ids[0])
+    _seen_ids.append(msg_id)
+    _seen_set.add(msg_id)
+    return False
+
 
 def listen_to_ntfy_topic():
     """
-    Connect to ntfy topic via SSE and listen for incoming notifications.
-    Automatically reconnects on failure with exponential backoff.
+    Connect to the ntfy topic via a streaming JSON subscription and forward
+    each message. Reconnects with exponential backoff, and on reconnect uses
+    `since` to catch up on messages published during the gap (deduped by id).
     """
     reconnect_delay = RECONNECT_DELAY_BASE
+    # None on first connect → ntfy streams only messages published from now on
+    # (we don't want the whole topic history texted at startup). After that,
+    # the last-seen message time so a reconnect catches up without a gap.
+    last_event_time = None
 
     while True:
         try:
             ntfy_url = f"{NTFY_BASE_URL}/{NTFY_TOPIC}/json"
-            logger.info(f"Connecting to {ntfy_url}...")
+            params = {}
+            if last_event_time is not None:
+                # ntfy accepts a Unix timestamp; replay anything at/after it.
+                params["since"] = str(last_event_time)
+            logger.info(
+                f"Connecting to {ntfy_url}"
+                + (f" (catching up since {last_event_time})" if last_event_time else "")
+                + "..."
+            )
 
             response = requests.get(
                 ntfy_url,
+                params=params,
                 stream=True,
-                timeout=TIMEOUT_SEC,
+                timeout=(CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC),
                 headers={"Accept": "application/x-ndjson"},
             )
             response.raise_for_status()
@@ -243,7 +372,6 @@ def listen_to_ntfy_topic():
             logger.info("✓ Connected to ntfy topic")
             reconnect_delay = RECONNECT_DELAY_BASE  # Reset backoff on success
 
-            # Process incoming lines
             for line in response.iter_lines(decode_unicode=True):
                 if not line or line.startswith(":"):
                     # Skip empty lines and keep-alive comments
@@ -251,7 +379,11 @@ def listen_to_ntfy_topic():
 
                 try:
                     notification = json.loads(line)
-                    handle_notification(notification)
+                    event_time = handle_notification(notification)
+                    if event_time is not None:
+                        # Track the newest message time for reconnect catch-up.
+                        if last_event_time is None or event_time > last_event_time:
+                            last_event_time = event_time
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse JSON: {e}")
                 except Exception as e:
@@ -272,44 +404,78 @@ def listen_to_ntfy_topic():
         reconnect_delay = min(reconnect_delay * 2, RECONNECT_DELAY_MAX)
 
 
+def build_sms_body(notification: dict) -> str:
+    """
+    Turn an ntfy notification into the SMS text. Includes the title, the
+    message body, and — since the SniffMaster morning report attaches an NWS
+    radar tap-through link (ntfy `click`) and forecast icon (ntfy
+    `attachment`) — appends the click URL so it still reaches a plain-SMS
+    recipient. Text-only: the image itself can't ride an SMS, but the link can.
+    """
+    title = notification.get("title", "Notification")
+    message = notification.get("message", "")
+    body = f"{title}: {message}" if message else title
+
+    click = (notification.get("click") or "").strip()
+    attachment = notification.get("attachment") or {}
+    attachment_url = (attachment.get("url") or "").strip()
+
+    # Prefer the click URL (the radar page); fall back to the attachment URL.
+    link = click or attachment_url
+    if link and link not in body:
+        candidate = f"{body}\n{link}"
+        # Only append if it fits the segment budget; never truncate the link.
+        if len(candidate) <= SMS_MAX_CHARS:
+            body = candidate
+
+    return body[:SMS_MAX_CHARS]
+
+
 def handle_notification(notification: dict):
     """
     Process an incoming ntfy notification and forward it as SMS.
 
-    Expected notification structure (from ntfy JSON):
+    Returns the notification's `time` (Unix seconds) when it was a real message
+    we acted on (so the caller can track reconnect catch-up position), or None
+    for skipped events (open/keepalive/duplicate).
+
+    Expected ntfy JSON message shape:
     {
-        "id": "...",
-        "time": 1234567890,
-        "event": "message",
-        "title": "Alert Title",
-        "message": "Alert message body",
-        "tags": ["tag1", "tag2"]
+        "id": "...", "time": 1234567890, "event": "message",
+        "title": "SniffMaster", "message": "...",
+        "click": "https://radar...", "attachment": {"url": "https://..."}
     }
     """
     try:
-        # Extract relevant fields
-        title = notification.get("title", "Notification")
-        message = notification.get("message", "")
         event = notification.get("event", "message")
-
         if event != "message":
+            # open / keepalive / poll_request — not something to text.
             logger.debug(f"Skipping non-message event: {event}")
-            return
+            return None
 
-        # Construct SMS body (keep it short for SMS character limit)
-        sms_body = f"{title}: {message}" if message else title
-        sms_body = sms_body[: 160]  # Truncate to SMS limit
+        msg_id = notification.get("id", "")
+        event_time = notification.get("time")
 
-        logger.info(f"Forwarding notification: {sms_body}")
+        if _already_seen(msg_id):
+            logger.debug(f"Skipping already-forwarded message id: {msg_id}")
+            return event_time
 
-        # Send via Twilio
-        if send_sms_via_twilio(sms_body):
-            logger.info("✓ Notification forwarded successfully")
+        sms_body = build_sms_body(notification)
+        preview = sms_body.replace("\n", " ")
+        logger.info(f"Forwarding notification: {preview[:120]}")
+
+        sid = send_sms_via_twilio(sms_body)
+        if sid:
+            # Confirm the carrier actually took it (surfaces the 30034 A2P block).
+            poll_delivery_status(sid)
         else:
-            logger.error("✗ Failed to forward notification")
+            logger.error("✗ Failed to forward notification (Twilio did not accept it)")
+
+        return event_time
 
     except Exception as e:
         logger.error(f"Error handling notification: {e}")
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

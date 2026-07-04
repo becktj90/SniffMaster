@@ -4174,6 +4174,17 @@ function renderDailySummary(s) {
       ${s.controlsStabilizing ? "✅" : "❌"} ${s.controlsNote || ""}
     </div>
     ${s.reportText ? `<div class="restoration-bro">💬 This morning's text: &ldquo;${esc(s.reportText)}&rdquo;${s.launchLine ? `<br>🚀 ${esc(s.launchLine)}` : ""}</div>` : ""}
+    ${Array.isArray(s.lc36Lines) && s.lc36Lines.length ? `
+    <div class="restoration-lc36">
+      ${s.lc36IconUrl ? (() => {
+        // Attribute context (href/src), not text — encodeURI (not esc, which
+        // only escapes &/</> for text nodes) so a stray quote can't break out.
+        let href = "", src = "";
+        try { href = encodeURI(s.lc36ClickUrl || s.lc36IconUrl); src = encodeURI(s.lc36IconUrl); } catch (_) { return ""; }
+        return `<a href="${href}" target="_blank" rel="noopener"><img class="rs-lc36-icon" src="${src}" alt="LC-36 forecast icon" loading="lazy" onerror="this.style.display='none'"></a>`;
+      })() : ""}
+      <div class="rs-lc36-text">🌤 ${s.lc36Lines.map(esc).join("<br>")}</div>
+    </div>` : ""}
     <div class="restoration-stats">
       ${rows.map(([k, v]) => `<div class="rs-row"><span class="rs-key">${k}</span><span class="rs-val">${v}</span></div>`).join("")}
     </div>
