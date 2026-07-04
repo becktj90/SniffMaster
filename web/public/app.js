@@ -4381,7 +4381,9 @@ async function queueRemoteAction(action, extra = {}) {
 
 async function fetchHistory() {
   try {
-    const res = await fetch("/api/history?count=1008", { cache: "no-store" });
+    // fields=dash → server projects each entry down to the fields the charts,
+    // rhythm grid, event log, and gas baseline actually read (~5x less JSON).
+    const res = await fetch("/api/history?count=1008&fields=dash", { cache: "no-store" });
     if (!res.ok) return;
     historyData = await res.json();
     drawChart(historyData);
