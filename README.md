@@ -200,18 +200,29 @@ and keeps retrying on an interval until a send comes back `delivered`, then
 reports clear success and exits. It logs every attempt (status, Twilio error
 code/message) to `twilio_delivery_check.log` so nothing is silent.
 
+Since every retry is a real, billed Twilio send, it defaults to a cost
+ceiling instead of retrying forever on a fixed cadence: the wait interval
+starts at 30 minutes and doubles after each failed attempt (up to 4 hours
+between attempts), and it gives up after 16 attempts if nothing is
+delivered by then — enough attempts, at that backoff schedule, to span
+roughly the "couple of days" approval window without hammering Twilio.
+
 ```bash
-# Keep re-checking every 30 minutes (default) until delivered:
+# Keep re-checking with growing backoff (default) until delivered or the
+# default attempt cap (16) is reached:
 python3 scripts/check_twilio_delivery.py
 
 # Run it in the background so you don't have to babysit it:
 nohup python3 scripts/check_twilio_delivery.py > twilio_delivery_check.log 2>&1 &
 
-# Custom interval (seconds) between attempts:
+# Custom starting interval (seconds) between attempts:
 python3 scripts/check_twilio_delivery.py --interval 900
 
-# Give up after N attempts instead of retrying forever:
+# Give up after N attempts instead of the default cap (0 = unlimited):
 python3 scripts/check_twilio_delivery.py --max-attempts 20
+
+# Disable backoff and retry on a fixed interval:
+python3 scripts/check_twilio_delivery.py --backoff-multiplier 1
 
 # Single check-and-exit (useful for cron instead of a long-running loop):
 python3 scripts/check_twilio_delivery.py --once
