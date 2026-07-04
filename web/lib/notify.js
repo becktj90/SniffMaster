@@ -1,14 +1,18 @@
 /**
  * notify.js — SMS helper for SniffMaster alerts (AWS SNS primary, Twilio fallback).
  *
- * Providers, tried in order (first one that delivers wins):
- *   1. AWS SNS  — configured via SNS_AWS_* env vars (see below)
- *   2. Twilio   — configured via TWILIO_* env vars
- *   3. ntfy     — free push notification (https://ntfy.sh), configured via
- *                 NTFY_TOPIC (or NTFY_URL for a self-hosted server). Not SMS,
- *                 but needs no carrier registration, so it guarantees the
- *                 message reaches the owner's phone even while SMS providers
- *                 are pending approval or having an outage.
+ * Channels:
+ *   SMS chain (first success wins): AWS SNS (SNS_AWS_* env vars), then
+ *   Twilio (TWILIO_* env vars).
+ *
+ *   ntfy — free push notification (https://ntfy.sh), configured via
+ *   NTFY_TOPIC (or NTFY_URL for a self-hosted server). ALWAYS sent in
+ *   parallel with the SMS chain, not as a fallback: both SNS (sandbox) and
+ *   Twilio (pre-A2P/toll-free registration) will happily return success for
+ *   messages the carrier then drops silently, so an SMS provider's "sent" is
+ *   not proof of delivery. The push needs no carrier registration and is the
+ *   one channel we can actually trust; when real SMS also lands, the owner
+ *   simply gets the message twice (remove NTFY_TOPIC to stop that).
  *
  * ⚠ Env naming: Vercel functions run on AWS Lambda, which RESERVES the standard
  * AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION names and injects its
@@ -203,9 +207,8 @@ export async function sendViaTwilio(text, recipients) {
 
 /**
  * Publish to an ntfy topic (push notification, not SMS). One POST regardless
- * of recipient count — the topic itself is the destination. Timeout is kept
- * shorter than the SMS providers' because ntfy only runs after both of them
- * have already had their turn, and /api/update's total budget is tight.
+ * of recipient count — the topic itself is the destination. Runs in parallel
+ * with the SMS chain, so its shorter timeout never extends total send time.
  */
 export async function sendViaNtfy(text) {
   const url = env("NTFY_URL") || `https://ntfy.sh/${encodeURIComponent(env("NTFY_TOPIC"))}`;
@@ -245,31 +248,43 @@ export async function sendSms(body) {
   }
 
   const recipients = getRecipients();
-  const allFailures = [];
-  let lastProvider = null;
 
-  if (isSnsConfigured()) {
-    const { sent, failures } = await sendViaSns(text, recipients);
-    allFailures.push(...failures.map((f) => ({ ...f, provider: "sns" })));
-    if (sent > 0) return { configured: true, sent, failures: allFailures, provider: "sns" };
-    lastProvider = "sns";
-    console.warn("notify: all SNS sends failed — trying next provider");
-  }
+  // SNS → Twilio, first API-level success wins.
+  const smsChain = async () => {
+    const failures = [];
+    if (isSnsConfigured()) {
+      const r = await sendViaSns(text, recipients);
+      failures.push(...r.failures.map((f) => ({ ...f, provider: "sns" })));
+      if (r.sent > 0) return { sent: r.sent, failures, provider: "sns" };
+      console.warn("notify: all SNS sends failed" + (isTwilioConfigured() ? " — trying Twilio" : ""));
+    }
+    if (isTwilioConfigured()) {
+      const r = await sendViaTwilio(text, recipients);
+      failures.push(...r.failures.map((f) => ({ ...f, provider: "twilio" })));
+      if (r.sent > 0) return { sent: r.sent, failures, provider: "twilio" };
+    }
+    return { sent: 0, failures, provider: null };
+  };
 
-  if (isTwilioConfigured()) {
-    const { sent, failures } = await sendViaTwilio(text, recipients);
-    allFailures.push(...failures.map((f) => ({ ...f, provider: "twilio" })));
-    if (sent > 0) return { configured: true, sent, failures: allFailures, provider: "twilio" };
-    lastProvider = "twilio";
-    console.warn("notify: all Twilio sends failed" + (isNtfyConfigured() ? " — trying ntfy" : ""));
-  }
+  // ntfy runs alongside the SMS chain, never gated on its outcome — see the
+  // header note on SMS providers reporting success for undeliverable messages.
+  const [sms, ntfy] = await Promise.all([
+    smsChain(),
+    isNtfyConfigured() ? sendViaNtfy(text) : Promise.resolve(null),
+  ]);
 
-  if (isNtfyConfigured()) {
-    const { sent, failures } = await sendViaNtfy(text);
-    allFailures.push(...failures.map((f) => ({ ...f, provider: "ntfy" })));
-    if (sent > 0) return { configured: true, sent, failures: allFailures, provider: "ntfy" };
-    lastProvider = "ntfy";
-  }
+  const allFailures = [
+    ...sms.failures,
+    ...(ntfy ? ntfy.failures.map((f) => ({ ...f, provider: "ntfy" })) : []),
+  ];
+  const providers = [];
+  if (sms.sent > 0) providers.push(sms.provider);
+  if (ntfy?.sent > 0) providers.push("ntfy");
 
-  return { configured: true, sent: 0, failures: allFailures, provider: lastProvider };
+  return {
+    configured: true,
+    sent: sms.sent + (ntfy?.sent || 0),
+    failures: allFailures,
+    provider: providers.join("+") || null,
+  };
 }
