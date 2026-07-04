@@ -1,10 +1,14 @@
 /**
  * notify.js — SMS helper for SniffMaster alerts (AWS SNS primary, Twilio fallback).
  *
- * Providers, tried in order:
+ * Providers, tried in order (first one that delivers wins):
  *   1. AWS SNS  — configured via SNS_AWS_* env vars (see below)
- *   2. Twilio   — configured via TWILIO_* env vars; used when SNS is not
- *                 configured, or as a fallback if every SNS send fails
+ *   2. Twilio   — configured via TWILIO_* env vars
+ *   3. ntfy     — free push notification (https://ntfy.sh), configured via
+ *                 NTFY_TOPIC (or NTFY_URL for a self-hosted server). Not SMS,
+ *                 but needs no carrier registration, so it guarantees the
+ *                 message reaches the owner's phone even while SMS providers
+ *                 are pending approval or having an outage.
  *
  * ⚠ Env naming: Vercel functions run on AWS Lambda, which RESERVES the standard
  * AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION names and injects its
@@ -17,7 +21,10 @@
  *   SNS_AWS_REGION             — optional, defaults to us-east-1
  *   ALERT_SMS_TO               — recipient number(s), comma-separated (E.164)
  *
- *   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM — optional fallback
+ *   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN — optional fallback, plus one of:
+ *   TWILIO_MESSAGING_SERVICE_SID — preferred: an MG... Messaging Service whose
+ *                                  sender pool holds your registered number
+ *   TWILIO_FROM                  — or a bare from-number (E.164)
  *
  * (For local dev outside Vercel, the standard AWS_* names also work as a
  * fallback source for the SNS credentials.)
@@ -86,14 +93,18 @@ export function isTwilioConfigured() {
   return Boolean(
     env("TWILIO_ACCOUNT_SID") &&
       env("TWILIO_AUTH_TOKEN") &&
-      env("TWILIO_FROM") &&
+      (env("TWILIO_MESSAGING_SERVICE_SID") || env("TWILIO_FROM")) &&
       getRecipients().length > 0
   );
 }
 
-/** True when at least one SMS provider is fully configured. */
+export function isNtfyConfigured() {
+  return Boolean(env("NTFY_URL") || env("NTFY_TOPIC"));
+}
+
+/** True when at least one delivery channel (SMS or push) is fully configured. */
 export function isSmsConfigured() {
-  return isSnsConfigured() || isTwilioConfigured();
+  return isSnsConfigured() || isTwilioConfigured() || isNtfyConfigured();
 }
 
 export async function sendViaSns(text, recipients) {
@@ -143,6 +154,7 @@ export async function sendViaSns(text, recipients) {
 export async function sendViaTwilio(text, recipients) {
   const sid = env("TWILIO_ACCOUNT_SID");
   const token = env("TWILIO_AUTH_TOKEN");
+  const messagingServiceSid = env("TWILIO_MESSAGING_SERVICE_SID");
   const from = env("TWILIO_FROM");
   const auth = Buffer.from(`${sid}:${token}`).toString("base64");
   const url = `${TWILIO_BASE}/Accounts/${encodeURIComponent(sid)}/Messages.json`;
@@ -153,7 +165,14 @@ export async function sendViaTwilio(text, recipients) {
   await Promise.all(
     recipients.map(async (to) => {
       try {
-        const params = new URLSearchParams({ To: to, From: from, Body: text });
+        // A Messaging Service (MG...) is Twilio's recommended sender for
+        // A2P/toll-free-registered traffic: it picks the right number from its
+        // sender pool. A bare From number still works for unregistered routes.
+        const params = new URLSearchParams(
+          messagingServiceSid
+            ? { To: to, MessagingServiceSid: messagingServiceSid, Body: text }
+            : { To: to, From: from, Body: text }
+        );
         const resp = await fetch(url, {
           method: "POST",
           headers: {
@@ -183,6 +202,33 @@ export async function sendViaTwilio(text, recipients) {
 }
 
 /**
+ * Publish to an ntfy topic (push notification, not SMS). One POST regardless
+ * of recipient count — the topic itself is the destination. Timeout is kept
+ * shorter than the SMS providers' because ntfy only runs after both of them
+ * have already had their turn, and /api/update's total budget is tight.
+ */
+export async function sendViaNtfy(text) {
+  const url = env("NTFY_URL") || `https://ntfy.sh/${encodeURIComponent(env("NTFY_TOPIC"))}`;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Title: "SniffMaster", "Content-Type": "text/plain" },
+      body: text,
+      signal: AbortSignal.timeout(3000),
+    });
+    if (resp.ok) return { sent: 1, failures: [] };
+    const detail = await resp.text().catch(() => "");
+    const error = `HTTP ${resp.status} ${detail}`.trim().slice(0, 300);
+    console.error(`notify: ntfy publish failed — ${error}`);
+    return { sent: 0, failures: [{ to: "ntfy", error }] };
+  } catch (err) {
+    const message = err?.name === "TimeoutError" ? "timeout after 3000ms" : err?.message || String(err);
+    console.error(`notify: ntfy publish threw — ${message}`);
+    return { sent: 0, failures: [{ to: "ntfy", error: message }] };
+  }
+}
+
+/**
  * Send an SMS to every configured recipient via the first working provider.
  * @param {string} body — message text (keep it GSM-7-safe ASCII; see thresholds.js)
  * @returns {Promise<{configured:boolean, sent:number, failures:Array<{to:string,error:string}>, provider:string|null}>}
@@ -200,17 +246,30 @@ export async function sendSms(body) {
 
   const recipients = getRecipients();
   const allFailures = [];
+  let lastProvider = null;
 
   if (isSnsConfigured()) {
     const { sent, failures } = await sendViaSns(text, recipients);
     allFailures.push(...failures.map((f) => ({ ...f, provider: "sns" })));
-    if (sent > 0 || !isTwilioConfigured()) {
-      return { configured: true, sent, failures: allFailures, provider: "sns" };
-    }
-    console.warn("notify: all SNS sends failed — falling back to Twilio");
+    if (sent > 0) return { configured: true, sent, failures: allFailures, provider: "sns" };
+    lastProvider = "sns";
+    console.warn("notify: all SNS sends failed — trying next provider");
   }
 
-  const { sent, failures } = await sendViaTwilio(text, recipients);
-  allFailures.push(...failures.map((f) => ({ ...f, provider: "twilio" })));
-  return { configured: true, sent, failures: allFailures, provider: "twilio" };
+  if (isTwilioConfigured()) {
+    const { sent, failures } = await sendViaTwilio(text, recipients);
+    allFailures.push(...failures.map((f) => ({ ...f, provider: "twilio" })));
+    if (sent > 0) return { configured: true, sent, failures: allFailures, provider: "twilio" };
+    lastProvider = "twilio";
+    console.warn("notify: all Twilio sends failed" + (isNtfyConfigured() ? " — trying ntfy" : ""));
+  }
+
+  if (isNtfyConfigured()) {
+    const { sent, failures } = await sendViaNtfy(text);
+    allFailures.push(...failures.map((f) => ({ ...f, provider: "ntfy" })));
+    if (sent > 0) return { configured: true, sent, failures: allFailures, provider: "ntfy" };
+    lastProvider = "ntfy";
+  }
+
+  return { configured: true, sent: 0, failures: allFailures, provider: lastProvider };
 }
