@@ -67,6 +67,39 @@ The script also writes its own rotating-free log to `ntfy_forwarder.log` in
 the working directory regardless of how it's launched, so `tail -f
 ntfy_forwarder.log` works for checking on it later.
 
+**⚠️ Known issue: AT&T's email-to-SMS gateway silently drops messages.**
+
+With real Gmail App Password credentials in place, the forwarder was tested
+end-to-end against the destination number (510-432-4862, confirmed AT&T):
+
+- The script connected to the ntfy topic, received the test notification, and
+  logged `✓ SMS sent successfully` — meaning Gmail's SMTP server accepted the
+  message for delivery.
+- **No text message arrived on the phone**, across three separate attempts:
+  `15104324862@txt.att.net` (with the incorrect leading country code `1`,
+  which is itself invalid for AT&T's gateway and should never be used),
+  `5104324862@txt.att.net` (correct 10-digit format), and
+  `5104324862@mms.att.net` (MMS gateway, tried as a fallback).
+- There is no bounce-back or SMTP error in any case — Gmail hands the email
+  off successfully, and AT&T's gateway (or an intermediate spam filter)
+  drops it silently with no notification to the sender.
+
+This matches a widely-reported, ongoing problem: AT&T has significantly
+tightened spam filtering on `txt.att.net`/`mms.att.net` in recent years and
+frequently blocks mail from unfamiliar/bulk senders (including standard
+Gmail SMTP) with zero feedback. **SMTP acceptance is not proof of SMS
+delivery for AT&T numbers** — the only way to know for certain is to check
+the physical phone.
+
+**Implication:** this script cannot be relied on to deliver SMS to AT&T
+numbers as currently built. If reliable delivery to this number is required,
+switch to a dedicated transactional SMS API (e.g. Twilio, which sends over
+the standard SMS network instead of an email gateway and gives real
+delivery-status callbacks) rather than continuing to debug the email-to-SMS
+route. Other carriers (Verizon `vtext.com`, T-Mobile `tmomail.net`) are
+generally more permissive of email-to-SMS traffic, so this issue may be
+specific to AT&T.
+
 ## Recommended git branches
 
 - `main` — stable builds only

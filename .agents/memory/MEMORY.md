@@ -1,0 +1,1 @@
+- [Email-to-SMS gateway reliability](email-to-sms-gateway-reliability.md) — SMTP "sent successfully" does not mean the SMS arrived; AT&T's txt.att.net/mms.att.net gateways can silently drop mail with no bounce.
