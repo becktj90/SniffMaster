@@ -1,0 +1,17 @@
+[Unit]
+Description=ntfy -> SMS forwarder (ntfy_sms_forwarder.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/sniffmaster-pro
+ExecStart=/usr/bin/python3 %h/sniffmaster-pro/ntfy_sms_forwarder.py
+Restart=always
+RestartSec=5
+# Belt-and-suspenders: also restart if it somehow gets stuck and the
+# watchdog below doesn't fire quickly enough.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target
