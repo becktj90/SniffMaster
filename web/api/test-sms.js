@@ -5,13 +5,13 @@
  * Query parameters:
  *   ?send=true       — actually send a test SMS
  *   ?send=false      — just report configuration status (default)
- *   ?provider=sns    — force the send through AWS SNS, skipping the normal
- *   ?provider=twilio   SNS-first/Twilio-fallback order (diagnostic use only —
- *                       lets you confirm one provider actually delivers even
- *                       when the other reports success but the text never
- *                       arrives, e.g. an unverified number in the SNS SMS
- *                       sandbox: Publish returns a MessageId with no error,
- *                       but the carrier never receives it).
+ *   ?provider=sns    — force the send through one provider, skipping the
+ *   ?provider=twilio   normal SNS → Twilio → ntfy fallback order (diagnostic
+ *   ?provider=ntfy     use only — lets you confirm one provider actually
+ *                       delivers even when another reports success but the
+ *                       text never arrives, e.g. an unverified number in the
+ *                       SNS SMS sandbox: Publish returns a MessageId with no
+ *                       error, but the carrier never receives it).
  *
  * Response:
  * {
@@ -32,10 +32,12 @@ import {
   isSmsConfigured,
   isSnsConfigured,
   isTwilioConfigured,
+  isNtfyConfigured,
   getRecipients,
   sendSms,
   sendViaSns,
   sendViaTwilio,
+  sendViaNtfy,
 } from "../lib/notify.js";
 
 export default async function handler(req, res) {
@@ -56,6 +58,7 @@ export default async function handler(req, res) {
     configured: isSmsConfigured(),
     snsConfigured: isSnsConfigured(),
     twilioConfigured: isTwilioConfigured(),
+    ntfyConfigured: isNtfyConfigured(),
     recipients,
     test: null,
   };
@@ -72,12 +75,16 @@ export default async function handler(req, res) {
     });
   }
 
-  const forceProvider = req.query?.provider === "twilio" ? "twilio" : req.query?.provider === "sns" ? "sns" : null;
+  const requested = String(req.query?.provider || "");
+  const forceProvider = ["twilio", "sns", "ntfy"].includes(requested) ? requested : null;
   if (forceProvider === "twilio" && !isTwilioConfigured()) {
     return res.status(400).json({ ...response, error: "Twilio is not configured." });
   }
   if (forceProvider === "sns" && !isSnsConfigured()) {
     return res.status(400).json({ ...response, error: "AWS SNS is not configured." });
+  }
+  if (forceProvider === "ntfy" && !isNtfyConfigured()) {
+    return res.status(400).json({ ...response, error: "ntfy is not configured. Set NTFY_TOPIC (or NTFY_URL)." });
   }
 
   try {
@@ -91,6 +98,9 @@ export default async function handler(req, res) {
     } else if (forceProvider === "sns") {
       const { sent, failures } = await sendViaSns(testMessage, recipients);
       result = { sent, failures: failures.map((f) => ({ ...f, provider: "sns" })), provider: "sns" };
+    } else if (forceProvider === "ntfy") {
+      const { sent, failures } = await sendViaNtfy(testMessage);
+      result = { sent, failures: failures.map((f) => ({ ...f, provider: "ntfy" })), provider: "ntfy" };
     } else {
       result = await sendSms(testMessage);
     }

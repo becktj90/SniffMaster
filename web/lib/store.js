@@ -357,6 +357,28 @@ export async function putDailySummary(data) {
   return entry;
 }
 
+/**
+ * Flip smsDelivered on the stored latest summary (and its history head) after
+ * a successful retry send — WITHOUT re-appending to history the way
+ * putDailySummary would.
+ */
+export async function markDailySummaryDelivered() {
+  const redis = getRedis();
+  const raw = await redis.get(KEY_DAILY_SUMMARY);
+  if (!raw) return null;
+  const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
+  entry.smsDelivered = true;
+  const json = JSON.stringify(entry);
+  await redis.set(KEY_DAILY_SUMMARY, json);
+  // Best effort: the history head is the same record; keep it consistent. The
+  // latest key above is the source of truth for the retry guard, so a failure
+  // here (empty list, rotated head) is cosmetic.
+  try {
+    await redis.lset(KEY_DAILY_SUMMARY_HISTORY, 0, json);
+  } catch {}
+  return entry;
+}
+
 export async function getDailySummary() {
   const redis = getRedis();
   const raw = await redis.get(KEY_DAILY_SUMMARY);
