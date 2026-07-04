@@ -1,1 +1,3 @@
 - [Email-to-SMS gateway reliability](email-to-sms-gateway-reliability.md) — SMTP "sent successfully" does not mean the SMS arrived; AT&T's txt.att.net/mms.att.net gateways can silently drop mail with no bounce.
+- [Twilio SMS US delivery gotchas](twilio-sms-us-delivery-gotchas.md) — a 200/SID from Twilio isn't proof of delivery to a US phone; unregistered numbers get blocked by carrier A2P 10DLC rules (error 30034).
+- [Replit secret truncation quirk](replit-secret-truncation-quirk.md) — a specific secret can get silently truncated on save despite correct re-entry; verify via /run/replit/env/latest.json, work around with a differently-named key.

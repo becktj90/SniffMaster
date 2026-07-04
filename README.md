@@ -8,7 +8,7 @@ Monorepo for the SniffMaster Pro embedded firmware, hosted web dashboard, and su
 - `web/` — Vercel-hosted dashboard and API relay
 - `docs/` — architecture notes and stabilization roadmap
 - `tools/` — future data/ML utilities
-- `ntfy_sms_forwarder.py` — standalone background script that forwards ntfy.sh push notifications to a phone as SMS via an Email-to-SMS gateway (independent of the web dashboard's own SNS/Twilio/ntfy alert pipeline)
+- `ntfy_sms_forwarder.py` — standalone background script that forwards ntfy.sh push notifications to a phone as SMS via the Twilio API (independent of the web dashboard's own SNS/Twilio/ntfy alert pipeline)
 - `systemd/` — optional systemd user unit to keep the ntfy forwarder running across reboots/crashes
 - `scripts/ntfy_watchdog.sh` — cron-friendly alternative to systemd for keeping the ntfy forwarder alive
 
@@ -34,20 +34,23 @@ Monorepo for the SniffMaster Pro embedded firmware, hosted web dashboard, and su
 ### ntfy SMS forwarder
 
 `ntfy_sms_forwarder.py` (repo root) listens on a ntfy.sh topic over SSE and
-forwards each notification as an SMS by emailing an Email-to-SMS gateway
-address (e.g. `15104324862@txt.att.net` for AT&T) via SMTP. It reconnects
-automatically with exponential backoff and never hardcodes secrets — all
-config comes from a root-level `.env`.
+forwards each notification as an SMS via the [Twilio](https://www.twilio.com/)
+API, which sends over the real SMS network (not an email gateway). It
+reconnects automatically with exponential backoff and never hardcodes
+secrets — all config comes from a root-level `.env`.
 
 **Setup:**
 
 1. `pip install -r requirements.txt`
 2. A root `.env` already exists (copied from `.env.example`) with
-   `NTFY_BASE_URL`, `NTFY_TOPIC`, and `SMS_GATEWAY_ADDRESS` pre-filled.
-   Fill in the remaining SMTP secrets in `.env`:
-   - `SMTP_SERVER` / `SMTP_PORT` — your SMTP provider (defaults to Gmail's `smtp.gmail.com:587`)
-   - `SMTP_USERNAME` / `SMTP_PASSWORD` — SMTP login (for Gmail, use an [App Password](https://myaccount.google.com/apppasswords), not your normal password)
-   - `SENDER_EMAIL` — the "From" address for the outgoing email (usually the same as `SMTP_USERNAME`)
+   `NTFY_BASE_URL`, `NTFY_TOPIC`, and `ALERT_SMS_TO` pre-filled. Fill in the
+   Twilio credentials in `.env` (from the
+   [Twilio Console](https://console.twilio.com)):
+   - `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` — API credentials
+   - `TWILIO_MESSAGING_SERVICE_SID` — preferred sender: a Messaging Service
+     whose sender pool holds your registered Twilio number
+   - `TWILIO_FROM` — or, instead of a Messaging Service, a bare Twilio
+     phone number in E.164 format (e.g. `+15555550100`)
 3. Run it in the foreground to verify it connects: `python3 ntfy_sms_forwarder.py`
 
 **Running it in the background** (matches the usage notes in the script's own docstring):
@@ -121,38 +124,73 @@ intentionally out of scope here — they're just enough supervision to make
 sure the forwarder comes back after a reboot or crash without someone
 noticing missed alerts first.
 
-**⚠️ Known issue: AT&T's email-to-SMS gateway silently drops messages.**
+**Switched off AT&T's email-to-SMS gateway in favor of Twilio — one manual
+registration step still required before texts are actually delivered.**
 
-With real Gmail App Password credentials in place, the forwarder was tested
-end-to-end against the destination number (510-432-4862, confirmed AT&T):
+Live end-to-end testing (with real Gmail App Password credentials) confirmed
+that the previous email-to-SMS approach was unusable: Gmail's SMTP server
+accepted every message (`✓ SMS sent successfully` in the logs), but no text
+ever arrived on the destination phone (510-432-4862, confirmed AT&T), across
+three separate attempts against both `txt.att.net` and `mms.att.net`. There
+was no bounce-back or error in any case — AT&T's gateway (or an intermediate
+spam filter) silently dropped the mail. This matches a widely-reported,
+ongoing problem: AT&T has significantly tightened spam filtering on its
+email-to-SMS gateways and frequently blocks mail from unfamiliar/bulk senders
+(including standard Gmail SMTP) with zero feedback. **SMTP acceptance was
+never proof of SMS delivery for AT&T numbers.**
 
-- The script connected to the ntfy topic, received the test notification, and
-  logged `✓ SMS sent successfully` — meaning Gmail's SMTP server accepted the
-  message for delivery.
-- **No text message arrived on the phone**, across three separate attempts:
-  `15104324862@txt.att.net` (with the incorrect leading country code `1`,
-  which is itself invalid for AT&T's gateway and should never be used),
-  `5104324862@txt.att.net` (correct 10-digit format), and
-  `5104324862@mms.att.net` (MMS gateway, tried as a fallback).
-- There is no bounce-back or SMTP error in any case — Gmail hands the email
-  off successfully, and AT&T's gateway (or an intermediate spam filter)
-  drops it silently with no notification to the sender.
+The forwarder now sends via the [Twilio](https://www.twilio.com/) SMS API
+instead (`TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_MESSAGING_SERVICE_SID`
+or `TWILIO_FROM` / `ALERT_SMS_TO` in `.env` — see Setup above), which sends
+over the real SMS network rather than an email gateway and returns a message
+SID on success and a real HTTP error on failure — so send failures are now
+actually observable in `ntfy_forwarder.log` instead of failing silently like
+the old gateway did.
 
-This matches a widely-reported, ongoing problem: AT&T has significantly
-tightened spam filtering on `txt.att.net`/`mms.att.net` in recent years and
-frequently blocks mail from unfamiliar/bulk senders (including standard
-Gmail SMTP) with zero feedback. **SMTP acceptance is not proof of SMS
-delivery for AT&T numbers** — the only way to know for certain is to check
-the physical phone.
+**⚠️ One-time setup still needed: A2P 10DLC registration.** A live test after
+switching to Twilio showed the API accepting the message, but the carrier
+then marked it `undelivered` with error code
+[30034](https://www.twilio.com/docs/api/errors/30034) — U.S. carriers require
+long-code phone numbers to complete **A2P 10DLC registration** (a spam/abuse
+prevention program) before they'll deliver application-to-person texts, and
+this project's Twilio number (`+17543379692`) hasn't completed it yet. This
+is a one-time business verification step (brand + campaign registration) done
+directly in the Twilio Console — it needs business details the forwarder
+script has no business handling automatically:
 
-**Implication:** this script cannot be relied on to deliver SMS to AT&T
-numbers as currently built. If reliable delivery to this number is required,
-switch to a dedicated transactional SMS API (e.g. Twilio, which sends over
-the standard SMS network instead of an email gateway and gives real
-delivery-status callbacks) rather than continuing to debug the email-to-SMS
-route. Other carriers (Verizon `vtext.com`, T-Mobile `tmomail.net`) are
-generally more permissive of email-to-SMS traffic, so this issue may be
-specific to AT&T.
+1. Go to [Messaging → Regulatory Compliance → A2P 10DLC](https://console.twilio.com/us1/develop/sms/regulatory-compliance/a2p-10dlc) in the Twilio Console.
+2. Register a brand (your business/organization info).
+3. Register a campaign for this use case (e.g. "low-volume alerts/notifications").
+4. Attach the campaign to `+17543379692` (or whichever number `TWILIO_FROM` points to).
+
+Approval is often near-instant for low-volume/verified brands, but can take
+up to a couple of days for full vetting. Once approved, re-run the forwarder
+(or the quick test below) — no code changes are needed on this end.
+
+**Quick way to verify delivery once registration is approved:**
+
+```bash
+python3 -c "
+import ntfy_sms_forwarder as f
+f.validate_config()
+print('Send succeeded:', f.send_sms_via_twilio('Test: A2P 10DLC registration verification'))
+"
+```
+
+The Twilio message SID is printed in the log line right above (e.g.
+`✓ SMS sent successfully (Twilio SID: SM...)`), and `send_sms_via_twilio`
+prints `True`/`False` for whether Twilio *accepted* the send. Check the
+message status directly with Twilio's API if you want to confirm the
+carrier actually delivered it (replace `<SID>` with the SID from the log):
+
+```bash
+curl -s -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
+  "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_ACCOUNT_SID/Messages/<SID>.json" \
+  | python3 -m json.tool
+```
+
+A `status` of `delivered` (not `undelivered`/`failed`) confirms the phone
+actually received it.
 
 ## Recommended git branches
 
