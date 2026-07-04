@@ -1,6 +1,6 @@
 {
   "name": "sniffmaster-web",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "SniffMaster Pro web dashboard — hosted PWA with cloud relay",

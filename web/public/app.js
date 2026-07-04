@@ -4259,6 +4259,23 @@ function applySniffEvent(event) {
   }
 }
 
+async function fetchVersion() {
+    const el = $("app-version");
+    if (!el) return;
+    try {
+        const res = await fetch("/api/version", { cache: "no-store" });
+        if (!res.ok) throw new Error(`version ${res.status}`);
+        const data = await res.json();
+        el.textContent = data.label || `v${data.version || "?"}`;
+        el.title = `Deployed build — version ${data.version || "unknown"}${
+            data.commitSha ? `, commit ${data.commitSha}` : ""
+        }${data.commitRef ? ` (${data.commitRef})` : ""}, env: ${data.environment || "unknown"}`;
+    } catch (err) {
+        console.error("fetchVersion failed:", err);
+        el.textContent = "Build unknown";
+    }
+}
+
 async function fetchLatest() {
     try {
         const res = await fetch("/api/latest", {
@@ -6201,6 +6218,7 @@ fetchLatest();
 fetchHistory();
 fetchLatestSniff();
 fetchSniffHistory();
+fetchVersion();
 ensureApod();
 startSniffStream();
 setInterval(fetchLatest, POLL_MS);

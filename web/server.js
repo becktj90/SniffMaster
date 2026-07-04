@@ -22,6 +22,7 @@ const healthHandler = (await import("./api/health.js")).default;
 const testSmsHandler = (await import("./api/test-sms.js")).default;
 const dailySummaryHandler = (await import("./api/daily-summary.js")).default;
 const extrasHandler = (await import("./api/extras.js")).default;
+const versionHandler = (await import("./api/version.js")).default;
 
 const app = express();
 app.disable("x-powered-by");
@@ -80,6 +81,7 @@ app.all("/api/health", wrap(healthHandler));
 app.all("/api/test-sms", wrap(testSmsHandler));
 app.all("/api/daily-summary", wrap(dailySummaryHandler));
 app.all("/api/extras", wrap(extrasHandler));
+app.all("/api/version", wrap(versionHandler));
 
 app.use(
   express.static(path.join(__dirname, "public"), {
