@@ -9,6 +9,8 @@ Monorepo for the SniffMaster Pro embedded firmware, hosted web dashboard, and su
 - `docs/` — architecture notes and stabilization roadmap
 - `tools/` — future data/ML utilities
 - `ntfy_sms_forwarder.py` — standalone background script that forwards ntfy.sh push notifications to a phone as SMS via an Email-to-SMS gateway (independent of the web dashboard's own SNS/Twilio/ntfy alert pipeline)
+- `systemd/` — optional systemd user unit to keep the ntfy forwarder running across reboots/crashes
+- `scripts/ntfy_watchdog.sh` — cron-friendly alternative to systemd for keeping the ntfy forwarder alive
 
 ## Quick start
 
@@ -66,6 +68,58 @@ pythonw ntfy_sms_forwarder.py
 The script also writes its own rotating-free log to `ntfy_forwarder.log` in
 the working directory regardless of how it's launched, so `tail -f
 ntfy_forwarder.log` works for checking on it later.
+
+**Keeping it running automatically (survives reboots and crashes):**
+
+`nohup`/`screen` above are fine for a manual foreground session, but neither
+comes back on its own after a reboot or if the script dies (uncaught
+exception, OOM kill, etc). Use one of these instead for unattended,
+long-term operation:
+
+*Option A — systemd user service (Linux, preferred if available)*
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/ntfy-sms-forwarder.service ~/.config/systemd/user/
+# edit the copied unit if your checkout isn't at ~/sniffmaster-pro
+systemctl --user daemon-reload
+systemctl --user enable --now ntfy-sms-forwarder.service
+# let user services start without an active login session:
+loginctl enable-linger "$USER"
+```
+
+`Restart=always` in the unit restarts the process a few seconds after any
+crash, and `enable`d units start automatically on every boot. Check status
+and logs with:
+
+```bash
+systemctl --user status ntfy-sms-forwarder.service
+journalctl --user -u ntfy-sms-forwarder.service -f
+```
+
+*Option B — cron (no systemd, e.g. some minimal Linux setups)*
+
+`scripts/ntfy_watchdog.sh` starts the forwarder if it isn't already running
+and tracks its PID. Wire it up with cron so it fires once at boot and then
+rechecks every 5 minutes in case the process crashed in between:
+
+```bash
+crontab -e
+```
+
+```cron
+@reboot /full/path/to/sniffmaster-pro/scripts/ntfy_watchdog.sh
+*/5 * * * * /full/path/to/sniffmaster-pro/scripts/ntfy_watchdog.sh
+```
+
+*macOS equivalent:* use `launchd` (a `~/Library/LaunchAgents/*.plist` with
+`RunAtLoad` + `KeepAlive` set to `true`) instead of systemd/cron — the same
+`ExecStart` command (`python3 ntfy_sms_forwarder.py`) applies.
+
+None of these are a full process manager (e.g. pm2/supervisord) — that's
+intentionally out of scope here — they're just enough supervision to make
+sure the forwarder comes back after a reboot or crash without someone
+noticing missed alerts first.
 
 **⚠️ Known issue: AT&T's email-to-SMS gateway silently drops messages.**
 
