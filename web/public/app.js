@@ -4159,8 +4159,11 @@ function renderDailySummary(s) {
   };
   const when = num(s.generatedAt) ? fmtStamp(s.generatedAt) : "";
   const esc = (t) => String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Stored stats are Celsius; display Fahrenheit to match the morning texts.
+  const cToF = (c) => (c * 9) / 5 + 32;
+  const tempF = s.temp ? { avg: cToF(num(s.temp.avg)), min: cToF(num(s.temp.min)), max: cToF(num(s.temp.max)) } : null;
   const rows = [
-    ["🌡 Temperature", stat(s.temp, "°C", 1)],
+    ["🌡 Temperature", stat(tempF, "°F", 1)],
     ["💧 Humidity", stat(s.humidity, "%", 0)],
     ["◈ Pressure", stat(s.pressure, " hPa", 0)],
     ["🔬 Gas resistance", gasStat(s.gas)],

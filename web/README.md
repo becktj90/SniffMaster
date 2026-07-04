@@ -34,7 +34,6 @@ Browser / iPhone PWA         │
 - All 20 odor detection scores as bar charts
 - Local weather forecast briefing with deterministic fallback
 - Temperature, humidity, pressure, gas resistance
-- Fart counter
 - Outdoor AQI
 - IAQ history chart (up to 48 hours)
 - **Restoration Safety Monitor** — real-time threshold alerts + daily 24h baseline report

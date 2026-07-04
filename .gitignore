@@ -1,6 +1,12 @@
 # PlatformIO
 .pio/
 .vscode/
+firmware/compile_commands.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
 
 # Node/Vercel
 web/node_modules/

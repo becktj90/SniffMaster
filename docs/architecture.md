@@ -13,7 +13,7 @@ The web portal documents the current embedded flow as:
 - ML/post-processing on fresh data
 - cloud sync and display rendering
 
-This loop shape is why firmware stability is the first engineering priority. The stack is also documented as carrying Wi-Fi, BLE 5, OLED, BSEC2 virtual sensors, and a quantized SmellNet model on the XIAO platform. fileciteturn14file3 fileciteturn14file11
+This loop shape is why firmware stability is the first engineering priority. The stack is also documented as carrying Wi-Fi, BLE 5, OLED, BSEC2 virtual sensors, and a quantized SmellNet model on the XIAO platform.  
 
 ## Refactor plan
 
