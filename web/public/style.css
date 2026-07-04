@@ -4949,6 +4949,30 @@ body *::after {
   margin-bottom: 12px;
 }
 
+.restoration-lc36 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted-strong);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+.rs-lc36-icon {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.rs-lc36-text {
+  flex: 1 1 auto;
+}
+
 .restoration-stats {
   display: grid;
   gap: 6px;

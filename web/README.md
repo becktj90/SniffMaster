@@ -153,11 +153,11 @@ Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Me
 
 Two modes:
 - **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
-- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window.
+- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron, or `?force=true` to preview on demand): computes the 24h min/avg/max baseline, fetches LC-36 outdoor conditions/lightning risk/daylight (Open-Meteo) and the day's NWS forecast icon, sends the morning report through the SNS/Twilio/ntfy delivery chain (see below), stores it, and returns the JSON. An atomic Redis lock plus a same-morning retry sweep guarantee reliable, at-most-once-per-6-hours delivery.
 
-## SMS alerts (Amazon SNS) — setup
+## SMS + push alerts — setup
 
-The relay can text you a **daily 6 AM ET room report** and **immediate alerts** when conditions breach restoration-safe limits (humidity > 55%, temp > 40°C, sudden gas-resistance drop, IAQ ≥ 150). With the env vars unset, texting is silently skipped and everything else keeps working.
+The relay can text/push you a **daily 6 AM ET room report** (indoor baseline + LC-36 outdoor weather, lightning risk, and daylight window, with the day's NWS forecast icon attached) and **immediate alerts** when conditions breach the alarm limits (humidity and temp are owner-adjustable from the dashboard's Restoration card — defaults 60%RH / 40°C — plus sudden gas-resistance drop and IAQ ≥ 150). Delivery tries AWS SNS, then Twilio, and always also pushes via ntfy in parallel (see `.env.example`) since either SMS provider can report success for a message the carrier silently drops. With no channel configured, sending is silently skipped and everything else keeps working.
 
 US SMS pricing is ~$0.00645/message (any free-tier allowance depends on your account; AWS has been phasing the SMS free tier out). Either way, one report + occasional alerts costs pennies per month.
 

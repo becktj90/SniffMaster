@@ -31,6 +31,7 @@ import { sendSms, isSmsConfigured } from "../lib/notify.js";
 // Shared SMS-text helpers (single source of truth; also used by the alert path).
 import { sanitizeSmsAscii, extractOutputText } from "../lib/brogpt.js";
 import { getCapeLaunches } from "../lib/launches.js";
+import { fetchLc36Weather, fetchLc36Icon, LC36_RADAR_PAGE } from "../lib/lc36weather.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
@@ -357,10 +358,11 @@ async function generateReportText(s) {
 }
 
 /**
- * Compose the morning SMS: personal report + readable stats block + today's
- * Cape launches. Never throws; every piece degrades independently.
+ * Compose the morning SMS: personal report + readable stats block + LC-36
+ * outdoor/lightning/daylight + today's Cape launches. Never throws; every
+ * piece degrades independently.
  */
-async function composeReportSms(s, launches, baseline = null) {
+async function composeReportSms(s, launches, baseline = null, lc36 = null) {
   if (!s.sampleCount) {
     const dark =
       "Good morning - heads up: the enclosure sensor went quiet overnight (no data in 24h). Check the device power and WiFi when you get a chance.";
@@ -378,7 +380,10 @@ async function composeReportSms(s, launches, baseline = null) {
   if (!reportText) reportText = reportFallbackText(s);
 
   const launchLine = launchesTodayLine(launches);
-  const smsText = sanitizeSmsAscii([reportText, statsBlock(s, baseline), launchLine].filter(Boolean).join("\n"));
+  const lc36Block = lc36?.lines?.length ? lc36.lines.join("\n") : "";
+  const smsText = sanitizeSmsAscii(
+    [reportText, statsBlock(s, baseline), lc36Block, launchLine].filter(Boolean).join("\n")
+  );
   return { smsText, reportText, reportMode, launchLine };
 }
 
@@ -426,7 +431,10 @@ export default async function handler(req, res) {
       // Older records predate the flag (undefined) and are treated as delivered.
       if (existing.smsDelivered === false && isSmsConfigured()) {
         const retryText = existing.smsText || existing.plainText || "";
-        const retry = await sendSms(retryText);
+        const retry = await sendSms(retryText, {
+          imageUrl: existing.lc36IconUrl || undefined,
+          clickUrl: existing.lc36ClickUrl || undefined,
+        });
         if (retry.sent > 0) {
           const updated = await markDailySummaryDelivered();
           return res.status(200).json({
@@ -459,23 +467,36 @@ export default async function handler(req, res) {
     const thresholds = getEffectiveThresholds(storedSettings);
     const summary = buildSummary(history, thresholds);
 
-    // Launch schedule is decoration — never let it block the report.
-    let launches = null;
-    try {
-      launches = await getCapeLaunches();
-    } catch (err) {
-      console.error("daily-summary: launches fetch failed:", err?.message || err);
+    // Launches, LC-36 outdoor conditions, and the NWS forecast icon are all
+    // decoration — none may block or fail the report. Run concurrently so
+    // total added latency is bounded by the slowest one, not their sum.
+    const [launchesResult, lc36Result, lc36IconResult] = await Promise.allSettled([
+      getCapeLaunches(),
+      fetchLc36Weather(),
+      fetchLc36Icon(),
+    ]);
+    const launches = launchesResult.status === "fulfilled" ? launchesResult.value : null;
+    if (launchesResult.status === "rejected") {
+      console.error("daily-summary: launches fetch failed:", launchesResult.reason?.message || launchesResult.reason);
     }
+    const lc36 = lc36Result.status === "fulfilled" ? lc36Result.value : null;
+    const lc36Icon = lc36IconResult.status === "fulfilled" ? lc36IconResult.value : null;
 
-    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline);
+    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline, lc36);
 
-    const smsResult = await sendSms(smsText);
+    const smsResult = await sendSms(smsText, {
+      imageUrl: lc36Icon?.iconUrl,
+      clickUrl: lc36Icon ? LC36_RADAR_PAGE : undefined,
+    });
     const stored = await putDailySummary({
       ...summary,
       smsText,
       reportText,
       reportMode,
       launchLine,
+      lc36Lines: lc36?.lines || null,
+      lc36IconUrl: lc36Icon?.iconUrl || null,
+      lc36ClickUrl: lc36Icon ? LC36_RADAR_PAGE : null,
       plainText: summaryToSms(summary, baseline),
       // false arms the retry path above; null means "nothing to retry" (no
       // channel configured at all, so a resend attempt would be pointless).

@@ -4,7 +4,7 @@
 // 404s, so the install event failed and NO shell caching ever happened.
 // Also: navigations are now network-first, so a fresh deploy shows up on the
 // next load without waiting for the skip-waiting handshake.
-const CACHE_NAME = "sniffmaster-v46"; // v46: slim history fetch in app.js
+const CACHE_NAME = "sniffmaster-v47"; // v47: LC-36 weather block on the Restoration card
 const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 self.addEventListener("install", (e) => {
  e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL)));
