@@ -154,17 +154,27 @@ def validate_config():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def send_sms_via_twilio(message_body: str) -> bool:
+def _twilio_auth_header() -> str:
+    auth = base64.b64encode(
+        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode("utf-8")
+    ).decode("ascii")
+    return f"Basic {auth}"
+
+
+def send_sms_via_twilio_raw(message_body: str):
     """
-    Send an SMS via the Twilio REST API (real SMS network, not an email
-    gateway). Returns True only when Twilio's API accepts the message and
-    hands back a message SID.
+    Send an SMS via the Twilio REST API and return full details instead of
+    just a bool. Used by callers (like the delivery-status checker) that
+    need the message SID to poll for carrier delivery status afterwards.
 
     Args:
         message_body: Text content to send
 
     Returns:
-        True if Twilio accepted the message, False otherwise
+        dict with keys:
+          - accepted (bool): True if Twilio's API accepted the message
+          - sid (str | None): Twilio message SID, if accepted
+          - error (str | None): error detail, if not accepted
     """
     # Keep message body short (SMS character limit)
     body = message_body[:160] if len(message_body) > 160 else message_body
@@ -178,16 +188,13 @@ def send_sms_via_twilio(message_body: str) -> bool:
         form["From"] = TWILIO_FROM
 
     data = urllib.parse.urlencode(form).encode("utf-8")
-    auth = base64.b64encode(
-        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode("utf-8")
-    ).decode("ascii")
 
     request = urllib.request.Request(
         url,
         data=data,
         method="POST",
         headers={
-            "Authorization": f"Basic {auth}",
+            "Authorization": _twilio_auth_header(),
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
@@ -199,20 +206,74 @@ def send_sms_via_twilio(message_body: str) -> bool:
             sid = payload.get("sid")
             if sid:
                 logger.info(f"✓ SMS sent successfully (Twilio SID: {sid})")
-                return True
+                return {"accepted": True, "sid": sid, "error": None}
             logger.error(f"Twilio response missing SID: {payload}")
-            return False
+            return {"accepted": False, "sid": None, "error": f"missing SID in response: {payload}"}
 
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
         logger.error(f"Twilio API error: HTTP {e.code} — {detail}")
-        return False
+        return {"accepted": False, "sid": None, "error": f"HTTP {e.code} — {detail}"}
     except urllib.error.URLError as e:
         logger.error(f"Failed to reach Twilio API: {e.reason}")
-        return False
+        return {"accepted": False, "sid": None, "error": f"unreachable: {e.reason}"}
     except Exception as e:
         logger.error(f"Failed to send SMS: {e}")
-        return False
+        return {"accepted": False, "sid": None, "error": str(e)}
+
+
+def get_message_status(sid: str):
+    """
+    Fetch a previously-sent message's current delivery status from Twilio.
+
+    Returns:
+        dict with keys: status (str|None), error_code (int|None),
+        error_message (str|None), raw (dict|None). On transport failure,
+        status is None and raw contains an "error" key with the detail.
+    """
+    url = (
+        f"{TWILIO_API_BASE}/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID)}"
+        f"/Messages/{urllib.parse.quote(sid)}.json"
+    )
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Authorization": _twilio_auth_header()},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SEC) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            return {
+                "status": payload.get("status"),
+                "error_code": payload.get("error_code"),
+                "error_message": payload.get("error_message"),
+                "raw": payload,
+            }
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        return {"status": None, "error_code": None, "error_message": None, "raw": {"error": f"HTTP {e.code} — {detail}"}}
+    except urllib.error.URLError as e:
+        return {"status": None, "error_code": None, "error_message": None, "raw": {"error": f"unreachable: {e.reason}"}}
+    except Exception as e:
+        return {"status": None, "error_code": None, "error_message": None, "raw": {"error": str(e)}}
+
+
+def send_sms_via_twilio(message_body: str) -> bool:
+    """
+    Send an SMS via the Twilio REST API (real SMS network, not an email
+    gateway). Returns True only when Twilio's API accepts the message and
+    hands back a message SID.
+
+    Kept as a simple bool-returning wrapper around send_sms_via_twilio_raw()
+    for backward compatibility with existing callers (e.g. handle_notification).
+
+    Args:
+        message_body: Text content to send
+
+    Returns:
+        True if Twilio accepted the message, False otherwise
+    """
+    return send_sms_via_twilio_raw(message_body)["accepted"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

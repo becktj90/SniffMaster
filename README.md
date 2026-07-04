@@ -192,6 +192,34 @@ curl -s -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
 A `status` of `delivered` (not `undelivered`/`failed`) confirms the phone
 actually received it.
 
+**Automatic re-checking (no manual curl needed):** since approval timing
+after registering in the Twilio Console varies (near-instant to a couple of
+days), `scripts/check_twilio_delivery.py` automates the whole check above —
+it sends the test message, polls Twilio for that message's delivery status,
+and keeps retrying on an interval until a send comes back `delivered`, then
+reports clear success and exits. It logs every attempt (status, Twilio error
+code/message) to `twilio_delivery_check.log` so nothing is silent.
+
+```bash
+# Keep re-checking every 30 minutes (default) until delivered:
+python3 scripts/check_twilio_delivery.py
+
+# Run it in the background so you don't have to babysit it:
+nohup python3 scripts/check_twilio_delivery.py > twilio_delivery_check.log 2>&1 &
+
+# Custom interval (seconds) between attempts:
+python3 scripts/check_twilio_delivery.py --interval 900
+
+# Give up after N attempts instead of retrying forever:
+python3 scripts/check_twilio_delivery.py --max-attempts 20
+
+# Single check-and-exit (useful for cron instead of a long-running loop):
+python3 scripts/check_twilio_delivery.py --once
+```
+
+Exit code `0` means delivery was confirmed; `1` means it gave up after
+`--max-attempts` without confirming; `2` means `.env` is misconfigured.
+
 ## Recommended git branches
 
 - `main` — stable builds only
