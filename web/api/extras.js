@@ -14,7 +14,7 @@
  * sniff-stream, weather-briefing.
  */
 
-import { requireDeviceAuth } from "../lib/auth.js";
+import { requireDeviceAuth, requireOwnerAuth } from "../lib/auth.js";
 import {
   isRedisConfigured,
   getLatest,
@@ -24,7 +24,10 @@ import {
   getLatestCommand,
   putCommand,
   getLatestSniff,
+  getSettings,
+  putSettings,
 } from "../lib/store.js";
+import { getEffectiveThresholds, THRESHOLDS, THRESHOLD_LIMITS } from "../lib/thresholds.js";
 import { getCapeLaunches, getCached as getCachedLaunches, setCache as setCacheLaunches, fetchLaunches } from "../lib/launches.js";
 import { Redis } from "@upstash/redis";
 
@@ -1078,6 +1081,73 @@ async function weatherBriefing(req, res) {
   }
 }
 
+// ── settings ─────────────────────────────────────────────────────────────
+// GET  /api/settings — public read of effective alert thresholds (so the
+//                      dashboard can show/sync the live humidity alarm limit).
+// POST /api/settings — owner-authenticated update of the adjustable limits
+//                      (currently humidityHigh, tempHighC). Values are clamped
+//                      to safe ranges in getEffectiveThresholds so a bad input
+//                      can never silently disable monitoring.
+function effectiveSettingsPayload(overrides) {
+  const t = getEffectiveThresholds(overrides);
+  return {
+    humidityHigh: t.HUMIDITY_HIGH,
+    tempHighC: t.TEMP_HIGH_C,
+    updatedAt: Number(overrides?.updatedAt) || null,
+    defaults: { humidityHigh: THRESHOLDS.HUMIDITY_HIGH, tempHighC: THRESHOLDS.TEMP_HIGH_C },
+    limits: THRESHOLD_LIMITS,
+  };
+}
+
+async function settings(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-SniffMaster-Key");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+
+  if (req.method === "GET") {
+    try {
+      const stored = await getSettings();
+      return res.status(200).json(effectiveSettingsPayload(stored));
+    } catch (err) {
+      console.error("settings read error:", err);
+      // Never break the dashboard over a settings read — serve defaults.
+      return res.status(200).json(effectiveSettingsPayload({}));
+    }
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "GET/POST only" });
+  }
+
+  if (!requireOwnerAuth(req, res)) return;
+
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const patch = {};
+  if (body.humidityHigh !== undefined) {
+    const v = Number(body.humidityHigh);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "humidityHigh must be a number" });
+    patch.humidityHigh = v;
+  }
+  if (body.tempHighC !== undefined) {
+    const v = Number(body.tempHighC);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "tempHighC must be a number" });
+    patch.tempHighC = v;
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: "no adjustable settings supplied (humidityHigh, tempHighC)" });
+  }
+
+  try {
+    const stored = await putSettings(patch);
+    return res.status(200).json({ ok: true, ...effectiveSettingsPayload(stored) });
+  } catch (err) {
+    console.error("settings write error:", err);
+    return res.status(500).json({ error: "storage error" });
+  }
+}
+
 // ── dispatcher ───────────────────────────────────────────────────────────
 const ROUTES = {
   apod,
@@ -1087,6 +1157,7 @@ const ROUTES = {
   "office-stats": officeStats,
   "sniff-stream": sniffStream,
   "weather-briefing": weatherBriefing,
+  settings,
 };
 
 export default async function handler(req, res) {

@@ -7,22 +7,60 @@
  * normalizes to canonical units (temperature in °C) before comparing.
  *
  * Thresholds target electrical-equipment restoration in a temporary enclosure:
- *   - Humidity > 55 %RH  → condensation risk on open switchgear buswork
+ *   - Humidity > 60 %RH  → condensation risk on open switchgear buswork
  *   - Temperature > 40 °C → environmental-control failure / localized overheating
  *   - Sudden gas-resistance drop OR poor IAQ → smoke / fumes / construction fumes
  *
+ * The humidity/temperature limits are OWNER-ADJUSTABLE at runtime: the settings
+ * endpoint stores overrides in Redis, and callers merge them via
+ * getEffectiveThresholds() before evaluating. THRESHOLDS below are the built-in
+ * defaults / fallback.
+ *
  * NOTE: These constants are the single source of truth for the backend. The
  * static frontend cannot import this module, so it mirrors the same numbers in
- * app.js — keep them in sync if you change anything here.
+ * app.js and pulls live overrides from /api/settings — keep the defaults in
+ * sync if you change anything here.
  */
 
 export const THRESHOLDS = {
-  HUMIDITY_HIGH: 55, // %RH
+  HUMIDITY_HIGH: 60, // %RH (loosened from 55 — was firing at the ~56% baseline)
   TEMP_HIGH_C: 40, // °C
   IAQ_POOR: 150, // BME688 IAQ index (higher = worse)
   GAS_DROP_RATIO: 0.6, // gasR at/under 60% of baseline = ≥40% sudden drop
   GAS_MIN_BASELINE: 1000, // ignore drop test below this baseline (noise floor, Ohms)
 };
+
+// Guardrails for owner-supplied overrides — a fat-fingered value must never
+// disable safety monitoring (e.g. humidity set to 500 would never alarm).
+export const THRESHOLD_LIMITS = {
+  HUMIDITY_HIGH: { min: 40, max: 90 },
+  TEMP_HIGH_C: { min: 25, max: 70 },
+};
+
+function clampNum(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Merge owner overrides onto the built-in defaults, clamped to safe ranges.
+ * Unknown/invalid fields are ignored so a partial or malformed settings blob
+ * degrades to defaults rather than breaking evaluation.
+ * @param {object} [overrides] — e.g. { humidityHigh: 62, tempHighC: 42 }
+ * @returns {typeof THRESHOLDS}
+ */
+export function getEffectiveThresholds(overrides) {
+  const o = overrides && typeof overrides === "object" ? overrides : {};
+  const t = { ...THRESHOLDS };
+  const hum = Number(o.humidityHigh);
+  if (Number.isFinite(hum)) {
+    t.HUMIDITY_HIGH = clampNum(hum, THRESHOLD_LIMITS.HUMIDITY_HIGH.min, THRESHOLD_LIMITS.HUMIDITY_HIGH.max);
+  }
+  const temp = Number(o.tempHighC);
+  if (Number.isFinite(temp)) {
+    t.TEMP_HIGH_C = clampNum(temp, THRESHOLD_LIMITS.TEMP_HIGH_C.min, THRESHOLD_LIMITS.TEMP_HIGH_C.max);
+  }
+  return t;
+}
 
 function num(value, fallback = NaN) {
   const parsed = Number(value);
@@ -94,27 +132,30 @@ export function baselineGasR(history) {
  *
  * @param {ReturnType<normalizeReading>} reading
  * @param {number} [baseGasR] — baseline gas resistance for the sudden-drop test
+ * @param {typeof THRESHOLDS} [thresholds] — effective limits (see
+ *        getEffectiveThresholds); defaults to the built-in THRESHOLDS.
  * @returns {Array<{key:string, level:"warn"|"crit", label:string, message:string}>}
  */
-export function evaluateBreaches(reading, baseGasR) {
+export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS) {
   const breaches = [];
   const r = reading || {};
+  const T = thresholds || THRESHOLDS;
 
-  if (Number.isFinite(r.humidity) && r.humidity > THRESHOLDS.HUMIDITY_HIGH) {
+  if (Number.isFinite(r.humidity) && r.humidity > T.HUMIDITY_HIGH) {
     breaches.push({
       key: "humidity",
       level: "crit",
       label: "High humidity",
-      message: `Humidity ${r.humidity.toFixed(0)}% (limit ${THRESHOLDS.HUMIDITY_HIGH}%) - condensation risk on switchgear buswork.`,
+      message: `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - condensation risk on switchgear buswork.`,
     });
   }
 
-  if (Number.isFinite(r.tempC) && r.tempC > THRESHOLDS.TEMP_HIGH_C) {
+  if (Number.isFinite(r.tempC) && r.tempC > T.TEMP_HIGH_C) {
     breaches.push({
       key: "temp",
       level: "crit",
       label: "High temperature",
-      message: `Temp ${r.tempC.toFixed(1)}C (limit ${THRESHOLDS.TEMP_HIGH_C}C) - check environmental controls / overheating.`,
+      message: `Temp ${r.tempC.toFixed(1)}C (limit ${T.TEMP_HIGH_C}C) - check environmental controls / overheating.`,
     });
   }
 
@@ -122,8 +163,8 @@ export function evaluateBreaches(reading, baseGasR) {
   if (
     Number.isFinite(r.gasR) &&
     Number.isFinite(base) &&
-    base >= THRESHOLDS.GAS_MIN_BASELINE &&
-    r.gasR <= base * THRESHOLDS.GAS_DROP_RATIO
+    base >= T.GAS_MIN_BASELINE &&
+    r.gasR <= base * T.GAS_DROP_RATIO
   ) {
     const dropPct = Math.round((1 - r.gasR / base) * 100);
     breaches.push({
@@ -134,12 +175,12 @@ export function evaluateBreaches(reading, baseGasR) {
     });
   }
 
-  if (Number.isFinite(r.iaq) && r.iaq >= THRESHOLDS.IAQ_POOR) {
+  if (Number.isFinite(r.iaq) && r.iaq >= T.IAQ_POOR) {
     breaches.push({
       key: "iaq",
       level: "warn",
       label: "Poor air quality",
-      message: `IAQ ${r.iaq.toFixed(0)} (limit ${THRESHOLDS.IAQ_POOR}) - degraded air quality in the enclosure.`,
+      message: `IAQ ${r.iaq.toFixed(0)} (limit ${T.IAQ_POOR}) - degraded air quality in the enclosure.`,
     });
   }
 

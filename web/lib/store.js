@@ -51,6 +51,7 @@ const KEY_BLE_OCCUPANCY_HISTORY = "sniffmaster:ble_occupancy_history";
 const KEY_ALERT_STATE = "sniffmaster:alert_state";
 const KEY_DAILY_SUMMARY = "sniffmaster:daily_summary";
 const KEY_DAILY_SUMMARY_HISTORY = "sniffmaster:daily_summary_history";
+const KEY_SETTINGS = "sniffmaster:settings";
 const MAX_HISTORY = 1008; // 7 days at 10-minute intervals
 const MAX_SNIFF_HISTORY = 96;
 const MAX_COMMAND_HISTORY = 48;
@@ -384,6 +385,34 @@ export async function getDailySummary() {
   const raw = await redis.get(KEY_DAILY_SUMMARY);
   if (!raw) return null;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+/**
+ * Owner-adjustable settings (currently alert-threshold overrides). Returns {}
+ * when unset so callers fall back to built-in defaults.
+ */
+export async function getSettings() {
+  const redis = getRedis();
+  const raw = await redis.get(KEY_SETTINGS);
+  if (!raw) return {};
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  return parsed && typeof parsed === "object" ? parsed : {};
+}
+
+/**
+ * Merge a partial patch into stored settings and persist. Only defined keys in
+ * the patch overwrite; returns the full merged object.
+ */
+export async function putSettings(patch) {
+  const redis = getRedis();
+  const current = await getSettings();
+  const next = { ...current };
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v !== undefined) next[k] = v;
+  }
+  next.updatedAt = Date.now();
+  await redis.set(KEY_SETTINGS, JSON.stringify(next));
+  return next;
 }
 
 export async function getDailySummaryHistory(count = 14) {

@@ -3822,6 +3822,134 @@ const RESTORATION_ALERT_TARGETS = {
   iaq: "derived-iaq",
 };
 let dailySummaryState = { fetchedAt: 0, data: null, pending: false };
+let restorationSettingsState = { fetchedAt: 0, data: null, pending: false };
+
+// Pull the owner-adjustable alarm limits from /api/settings and fold them into
+// the frontend threshold mirror so the alert strip / pulsing cards match what
+// the backend will actually text about. Cached ~10 min; refreshes after a save.
+function ensureRestorationSettings(force = false) {
+  const TEN_MIN = 600000;
+  if (restorationSettingsState.pending) return;
+  if (!force && restorationSettingsState.data && Date.now() - restorationSettingsState.fetchedAt < TEN_MIN) {
+    return;
+  }
+  restorationSettingsState.pending = true;
+  fetch("/api/settings", { cache: "no-store" })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      if (!data) return;
+      restorationSettingsState.data = data;
+      restorationSettingsState.fetchedAt = Date.now();
+      applyRestorationSettings(data);
+      if (lastData) renderRestorationMonitor(lastData);
+    })
+    .catch((err) => console.error("settings fetch failed:", err))
+    .finally(() => {
+      restorationSettingsState.pending = false;
+    });
+}
+
+function applyRestorationSettings(data) {
+  if (!data || typeof data !== "object") return;
+  if (Number.isFinite(Number(data.humidityHigh))) {
+    RESTORATION_THRESHOLDS.HUMIDITY_HIGH = Number(data.humidityHigh);
+  }
+  if (Number.isFinite(Number(data.tempHighC))) {
+    RESTORATION_THRESHOLDS.TEMP_HIGH_C = Number(data.tempHighC);
+  }
+  // Reflect the live value in the control (unless the user is mid-edit).
+  const cur = $("rs-adjust-current");
+  if (cur) cur.textContent = `now ${RESTORATION_THRESHOLDS.HUMIDITY_HIGH}%`;
+  const input = $("rs-humidity-input");
+  if (input && document.activeElement !== input && !input.value) {
+    input.value = String(RESTORATION_THRESHOLDS.HUMIDITY_HIGH);
+  }
+}
+
+let restorationControlsWired = false;
+function wireRestorationControls() {
+  if (restorationControlsWired) return;
+  const toggle = $("rs-adjust-toggle");
+  const body = $("rs-adjust-body");
+  const saveBtn = $("rs-humidity-save");
+  const input = $("rs-humidity-input");
+  const keyInput = $("rs-owner-key");
+  if (!toggle || !body || !saveBtn || !input) return;
+  restorationControlsWired = true;
+
+  toggle.addEventListener("click", () => {
+    const open = body.classList.toggle("is-hidden") === false;
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      if (!input.value) input.value = String(RESTORATION_THRESHOLDS.HUMIDITY_HIGH);
+      if (keyInput && !keyInput.value) keyInput.value = loadOwnerKey();
+      input.focus();
+    }
+  });
+
+  saveBtn.addEventListener("click", () => saveHumidityThreshold());
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); saveHumidityThreshold(); }
+  });
+}
+
+async function saveHumidityThreshold() {
+  const input = $("rs-humidity-input");
+  const keyInput = $("rs-owner-key");
+  const status = $("rs-adjust-status");
+  const saveBtn = $("rs-humidity-save");
+  if (!input) return;
+
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) {
+    setAdjustStatus("Enter a number for the humidity limit.", "warn");
+    return;
+  }
+  const key = (keyInput?.value || "").trim();
+  if (!key) {
+    setAdjustStatus("Owner key required to change the alarm.", "warn");
+    keyInput?.focus();
+    return;
+  }
+
+  if (saveBtn) saveBtn.disabled = true;
+  setAdjustStatus("Saving…", "neutral");
+  try {
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-SniffMaster-Key": key },
+      body: JSON.stringify({ humidityHigh: value }),
+    });
+    if (res.status === 401) {
+      setAdjustStatus("Owner key rejected. Check the key and try again.", "warn");
+      return;
+    }
+    if (!res.ok) throw new Error(`settings ${res.status}`);
+    const data = await res.json();
+    saveOwnerKey(key);
+    restorationSettingsState.data = data;
+    restorationSettingsState.fetchedAt = Date.now();
+    applyRestorationSettings(data);
+    const clamped = Number(data.humidityHigh);
+    const note = clamped !== value
+      ? `Saved — clamped to ${clamped}% (allowed ${data.limits?.HUMIDITY_HIGH?.min}–${data.limits?.HUMIDITY_HIGH?.max}%).`
+      : `Saved — humidity alarm now fires above ${clamped}%.`;
+    setAdjustStatus(note, "good");
+    if (lastData) renderRestorationMonitor(lastData);
+  } catch (err) {
+    console.error("save humidity threshold failed:", err);
+    setAdjustStatus("Save failed. Check your connection and try again.", "warn");
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+function setAdjustStatus(text, tone) {
+  const status = $("rs-adjust-status");
+  if (!status) return;
+  status.textContent = text || "";
+  status.className = `rs-adjust-status${tone ? ` is-${tone}` : ""}`;
+}
 
 function normalizeReadingClient(d) {
   const s = d && typeof d === "object" ? d : {};
@@ -3905,10 +4033,31 @@ function ensureRestorationDom() {
         <p class="card-summary" id="restoration-live">Watching temperature, humidity, and air quality for switchgear-safe limits.</p>
         <div class="restoration-summary" id="restoration-summary">
           <p class="restoration-empty">Daily 24h baseline will appear after the first morning report.</p>
+        </div>
+        <div class="restoration-controls">
+          <button type="button" class="rs-adjust-toggle" id="rs-adjust-toggle" aria-expanded="false" aria-controls="rs-adjust-body">
+            <span>⚙ Adjust humidity alarm</span>
+            <span class="rs-adjust-current" id="rs-adjust-current"></span>
+          </button>
+          <div class="rs-adjust-body is-hidden" id="rs-adjust-body">
+            <label class="rs-adjust-field">
+              <span>Alarm when humidity is above</span>
+              <span class="rs-adjust-input"><input type="number" id="rs-humidity-input" min="40" max="90" step="1" inputmode="numeric" enterkeyhint="done"> %RH</span>
+            </label>
+            <label class="rs-adjust-field">
+              <span>Owner key</span>
+              <input type="password" id="rs-owner-key" placeholder="Owner key" autocomplete="off">
+            </label>
+            <div class="rs-adjust-actions">
+              <button type="button" class="rs-save-btn" id="rs-humidity-save">Save alarm limit</button>
+            </div>
+            <p class="rs-adjust-status" id="rs-adjust-status" role="status" aria-live="polite"></p>
+          </div>
         </div>`;
       // Honor the current tab's visibility rules on injection.
       panel.classList.toggle("is-hidden", (typeof activeView === "string" ? activeView : "dashboard") !== "dashboard");
       dashboard.prepend(panel);
+      wireRestorationControls();
     }
   }
   return { strip, panel };
@@ -3966,6 +4115,7 @@ function renderRestorationMonitor(d) {
     }
   }
 
+  ensureRestorationSettings();
   ensureDailySummary();
 }
 
