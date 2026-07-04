@@ -24,8 +24,9 @@ import {
   getDailySummaryHistory,
   acquireDailySummaryLock,
   markDailySummaryDelivered,
+  getSettings,
 } from "../lib/store.js";
-import { normalizeReading, THRESHOLDS } from "../lib/thresholds.js";
+import { normalizeReading, THRESHOLDS, getEffectiveThresholds } from "../lib/thresholds.js";
 import { sendSms, isSmsConfigured } from "../lib/notify.js";
 import { getCapeLaunches } from "../lib/launches.js";
 
@@ -139,7 +140,8 @@ function gasLabel(ohms) {
   return `${Math.round(ohms)} ohm`;
 }
 
-function buildSummary(history) {
+function buildSummary(history, thresholds = THRESHOLDS) {
+  const T = thresholds || THRESHOLDS;
   const now = Date.now();
   const window = history.filter((h) => {
     const r = normalizeReading(h);
@@ -158,8 +160,9 @@ function buildSummary(history) {
 
   // "Controls stabilizing?" — humidity and temperature within safe band and
   // not trending upward means the AC + dehumidifiers are holding the space.
-  const humidityInBand = !humidity || humidity.avg <= THRESHOLDS.HUMIDITY_HIGH;
-  const tempInBand = !temp || temp.avg <= THRESHOLDS.TEMP_HIGH_C;
+  // Uses the same owner-adjustable limits as the real-time alerts.
+  const humidityInBand = !humidity || humidity.avg <= T.HUMIDITY_HIGH;
+  const tempInBand = !temp || temp.avg <= T.TEMP_HIGH_C;
   const humidityFalling = humidityDelta === null || humidityDelta <= 1; // ≤ +1% drift
   const controlsStabilizing = Boolean(humidityInBand && tempInBand && humidityFalling);
 
@@ -174,8 +177,8 @@ function buildSummary(history) {
     controlsNote = `AC + dehumidifiers stabilizing the space${trend}.`;
   } else {
     const reasons = [];
-    if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% above the ${THRESHOLDS.HUMIDITY_HIGH}% limit`);
-    if (!tempInBand) reasons.push(`temp avg ${fmt(cToF(temp.avg), 1)}F above the ${fmt(cToF(THRESHOLDS.TEMP_HIGH_C))}F limit`);
+    if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% above the ${T.HUMIDITY_HIGH}% limit`);
+    if (!tempInBand) reasons.push(`temp avg ${fmt(cToF(temp.avg), 1)}F above the ${fmt(cToF(T.TEMP_HIGH_C))}F limit`);
     if (humidityInBand && tempInBand && !humidityFalling)
       reasons.push(`humidity rising (+${fmt(humidityDelta, 1)}%)`);
     controlsNote = `Environmental controls not keeping up: ${reasons.join("; ")}.`;
@@ -474,12 +477,14 @@ export default async function handler(req, res) {
       }
     }
 
-    const [history, prevSummaries] = await Promise.all([
+    const [history, prevSummaries, storedSettings] = await Promise.all([
       getHistory(288), // up to ~48h @ 10min, we filter to 24h
       getDailySummaryHistory(14), // prior days' summaries → % vs norm
+      getSettings().catch(() => ({})), // owner-adjusted alarm limits
     ]);
     const baseline = buildBaseline(prevSummaries);
-    const summary = buildSummary(history);
+    const thresholds = getEffectiveThresholds(storedSettings);
+    const summary = buildSummary(history, thresholds);
 
     // Launch schedule is decoration — never let it block the report.
     let launches = null;
