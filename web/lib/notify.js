@@ -155,7 +155,7 @@ export async function sendViaSns(text, recipients) {
   return { sent, failures };
 }
 
-export async function sendViaTwilio(text, recipients) {
+export async function sendViaTwilio(text, recipients, opts = {}) {
   const sid = env("TWILIO_ACCOUNT_SID");
   const token = env("TWILIO_AUTH_TOKEN");
   const messagingServiceSid = env("TWILIO_MESSAGING_SERVICE_SID");
@@ -172,11 +172,13 @@ export async function sendViaTwilio(text, recipients) {
         // A Messaging Service (MG...) is Twilio's recommended sender for
         // A2P/toll-free-registered traffic: it picks the right number from its
         // sender pool. A bare From number still works for unregistered routes.
-        const params = new URLSearchParams(
-          messagingServiceSid
-            ? { To: to, MessagingServiceSid: messagingServiceSid, Body: text }
-            : { To: to, From: from, Body: text }
-        );
+        const base = messagingServiceSid
+          ? { To: to, MessagingServiceSid: messagingServiceSid, Body: text }
+          : { To: to, From: from, Body: text };
+        // MediaUrl turns this into an MMS. Optional — a fetch failure on
+        // Twilio's side degrades to plain SMS, it never blocks the send.
+        if (opts.mediaUrl) base.MediaUrl = opts.mediaUrl;
+        const params = new URLSearchParams(base);
         const resp = await fetch(url, {
           method: "POST",
           headers: {
@@ -209,13 +211,26 @@ export async function sendViaTwilio(text, recipients) {
  * Publish to an ntfy topic (push notification, not SMS). One POST regardless
  * of recipient count — the topic itself is the destination. Runs in parallel
  * with the SMS chain, so its shorter timeout never extends total send time.
+ *
+ * @param {string} text
+ * @param {{imageUrl?:string, clickUrl?:string}} [opts] — imageUrl: ntfy
+ *   downloads it server-side and attaches it to the notification (e.g. an NWS
+ *   forecast icon). clickUrl: tapping the notification opens this (e.g. a
+ *   radar page). Both optional and best-effort — a bad URL degrades to a
+ *   plain text push, it never blocks the send.
  */
-export async function sendViaNtfy(text) {
+export async function sendViaNtfy(text, opts = {}) {
   const url = env("NTFY_URL") || `https://ntfy.sh/${encodeURIComponent(env("NTFY_TOPIC"))}`;
+  // Header values must be single-line; strip anything that would break the
+  // request rather than trust an upstream API to never return a stray newline.
+  const headerSafe = (v) => String(v || "").replace(/[\r\n]/g, "").trim();
+  const headers = { Title: "SniffMaster", "Content-Type": "text/plain" };
+  if (opts.imageUrl) headers.Attach = headerSafe(opts.imageUrl);
+  if (opts.clickUrl) headers.Click = headerSafe(opts.clickUrl);
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Title: "SniffMaster", "Content-Type": "text/plain" },
+      headers,
       body: text,
       signal: AbortSignal.timeout(3000),
     });
@@ -234,9 +249,13 @@ export async function sendViaNtfy(text) {
 /**
  * Send an SMS to every configured recipient via the first working provider.
  * @param {string} body — message text (keep it GSM-7-safe ASCII; see thresholds.js)
+ * @param {{imageUrl?:string, clickUrl?:string}} [opts] — optional graphic: an
+ *   image attached via Twilio MMS (if configured) and/or the ntfy push;
+ *   clickUrl only applies to ntfy (SMS has no concept of a tap-through link).
+ *   Both best-effort — never blocks or fails the underlying text send.
  * @returns {Promise<{configured:boolean, sent:number, failures:Array<{to:string,error:string}>, provider:string|null}>}
  */
-export async function sendSms(body) {
+export async function sendSms(body, opts = {}) {
   const text = String(body || "").trim();
   if (!text) {
     return { configured: isSmsConfigured(), sent: 0, failures: [], provider: null };
@@ -249,7 +268,8 @@ export async function sendSms(body) {
 
   const recipients = getRecipients();
 
-  // SNS → Twilio, first API-level success wins.
+  // SNS → Twilio, first API-level success wins. SNS has no MMS/attachment
+  // capability at all, so opts.imageUrl only ever reaches Twilio.
   const smsChain = async () => {
     const failures = [];
     if (isSnsConfigured()) {
@@ -259,7 +279,7 @@ export async function sendSms(body) {
       console.warn("notify: all SNS sends failed" + (isTwilioConfigured() ? " — trying Twilio" : ""));
     }
     if (isTwilioConfigured()) {
-      const r = await sendViaTwilio(text, recipients);
+      const r = await sendViaTwilio(text, recipients, { mediaUrl: opts.imageUrl });
       failures.push(...r.failures.map((f) => ({ ...f, provider: "twilio" })));
       if (r.sent > 0) return { sent: r.sent, failures, provider: "twilio" };
     }
@@ -270,7 +290,7 @@ export async function sendSms(body) {
   // header note on SMS providers reporting success for undeliverable messages.
   const [sms, ntfy] = await Promise.all([
     smsChain(),
-    isNtfyConfigured() ? sendViaNtfy(text) : Promise.resolve(null),
+    isNtfyConfigured() ? sendViaNtfy(text, opts) : Promise.resolve(null),
   ]);
 
   const allFailures = [
