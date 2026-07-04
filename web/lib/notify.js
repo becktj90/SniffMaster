@@ -17,7 +17,10 @@
  *   SNS_AWS_REGION             — optional, defaults to us-east-1
  *   ALERT_SMS_TO               — recipient number(s), comma-separated (E.164)
  *
- *   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM — optional fallback
+ *   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN — optional fallback, plus one of:
+ *   TWILIO_MESSAGING_SERVICE_SID — preferred: an MG... Messaging Service whose
+ *                                  sender pool holds your registered number
+ *   TWILIO_FROM                  — or a bare from-number (E.164)
  *
  * (For local dev outside Vercel, the standard AWS_* names also work as a
  * fallback source for the SNS credentials.)
@@ -86,7 +89,7 @@ export function isTwilioConfigured() {
   return Boolean(
     env("TWILIO_ACCOUNT_SID") &&
       env("TWILIO_AUTH_TOKEN") &&
-      env("TWILIO_FROM") &&
+      (env("TWILIO_MESSAGING_SERVICE_SID") || env("TWILIO_FROM")) &&
       getRecipients().length > 0
   );
 }
@@ -143,6 +146,7 @@ export async function sendViaSns(text, recipients) {
 export async function sendViaTwilio(text, recipients) {
   const sid = env("TWILIO_ACCOUNT_SID");
   const token = env("TWILIO_AUTH_TOKEN");
+  const messagingServiceSid = env("TWILIO_MESSAGING_SERVICE_SID");
   const from = env("TWILIO_FROM");
   const auth = Buffer.from(`${sid}:${token}`).toString("base64");
   const url = `${TWILIO_BASE}/Accounts/${encodeURIComponent(sid)}/Messages.json`;
@@ -153,7 +157,14 @@ export async function sendViaTwilio(text, recipients) {
   await Promise.all(
     recipients.map(async (to) => {
       try {
-        const params = new URLSearchParams({ To: to, From: from, Body: text });
+        // A Messaging Service (MG...) is Twilio's recommended sender for
+        // A2P/toll-free-registered traffic: it picks the right number from its
+        // sender pool. A bare From number still works for unregistered routes.
+        const params = new URLSearchParams(
+          messagingServiceSid
+            ? { To: to, MessagingServiceSid: messagingServiceSid, Body: text }
+            : { To: to, From: from, Body: text }
+        );
         const resp = await fetch(url, {
           method: "POST",
           headers: {
