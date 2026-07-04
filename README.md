@@ -43,4 +43,6 @@ Monorepo for the SniffMaster Pro embedded firmware, hosted web dashboard, and su
 2. Gate BLE scans and Wi-Fi/cloud tasks on intervals.
 3. Split the hot loop into timed tasks.
 4. Reduce OLED redraw frequency.
-5. Fix service-worker shell caching in the web app.
+
+(Web service-worker shell caching was fixed in `web/public/sw.js` v45 —
+the install step had been failing on a stale pre-cache entry.)
