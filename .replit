@@ -2,7 +2,7 @@ modules = ["nodejs-20", "web", "python-3.11"]
 [agent]
 expertMode = true
 stack = "BEST_EFFORT_FALLBACK"
-integrations = ["vercel:1.0.0"]
+integrations = ["vercel:1.0.0", "github:1.0.0"]
 
 [nix]
 channel = "stable-25_05"
