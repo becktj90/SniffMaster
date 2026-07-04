@@ -8,6 +8,9 @@ firmware/compile_commands.json
 __pycache__/
 *.pyc
 
+# Root env (contains real SMTP credentials once filled in) — .env.example is checked in
+/.env
+
 # Node/Vercel
 web/node_modules/
 web/.vercel/
