@@ -27,7 +27,8 @@ export function sanitizeSmsAscii(text) {
     .trim();
 }
 
-function extractOutputText(responseJson) {
+/** Pull the text out of an OpenAI Responses API payload (any shape). */
+export function extractOutputText(responseJson) {
   if (typeof responseJson?.output_text === "string" && responseJson.output_text.trim()) {
     return responseJson.output_text.trim();
   }

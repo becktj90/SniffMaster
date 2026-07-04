@@ -28,6 +28,8 @@ import {
 } from "../lib/store.js";
 import { normalizeReading, THRESHOLDS, getEffectiveThresholds } from "../lib/thresholds.js";
 import { sendSms, isSmsConfigured } from "../lib/notify.js";
+// Shared SMS-text helpers (single source of truth; also used by the alert path).
+import { sanitizeSmsAscii, extractOutputText } from "../lib/brogpt.js";
 import { getCapeLaunches } from "../lib/launches.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -245,20 +247,6 @@ function summaryToSms(s, baseline = null) {
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const REPORT_MAX_CHARS = 320;
 
-function sanitizeSmsAscii(text) {
-  return String(text || "")
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, "-")
-    .replace(/[^\x20-\x7E\n]/g, "")
-    // Belt-and-suspenders: the report must never present itself as AI-written.
-    .replace(/\b(BroGPT|ChatGPT|GPT[-\w]*|AI|A\.I\.|AI-generated|language model|chatbot)\b/gi, "")
-    .replace(/\bas an\s+(from\s+)?[,.]?\s*/gi, "")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
-}
-
 // One metric per line so the morning text scans at a glance, each with its
 // change vs the recent-days norm when enough stored history exists.
 function statsBlock(s, baseline = null) {
@@ -328,21 +316,6 @@ function launchesTodayLine(launches, now = Date.now()) {
   const shown = todays.slice(0, 2).map((l) => `${l.name} at ${etClock(l.ts)} ET`);
   const more = todays.length > 2 ? ` +${todays.length - 2} more` : "";
   return `Cape launch${todays.length > 1 ? "es" : ""} today: ${shown.join("; ")}${more}.`;
-}
-
-function extractOutputText(responseJson) {
-  if (typeof responseJson?.output_text === "string" && responseJson.output_text.trim()) {
-    return responseJson.output_text.trim();
-  }
-  const parts = [];
-  const output = Array.isArray(responseJson?.output) ? responseJson.output : [];
-  output.forEach((item) => {
-    const content = Array.isArray(item?.content) ? item.content : [];
-    content.forEach((piece) => {
-      if (typeof piece?.text === "string" && piece.text.trim()) parts.push(piece.text.trim());
-    });
-  });
-  return parts.join("\n").trim();
 }
 
 async function generateReportText(s) {

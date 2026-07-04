@@ -1,7 +1,11 @@
 // Service Worker — enables PWA install + offline shell caching
-// BUMPED TO v44 — forces a fresh shell after the BroGPT summary panel update (app.js/style.css)
-const CACHE_NAME = "sniffmaster-v44";
-const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/melody_library.h"];
+// v45 — FIXES BROKEN INSTALL: the shell list still included /melody_library.h
+// (removed with the Melody feature); cache.addAll() rejects when any entry
+// 404s, so the install event failed and NO shell caching ever happened.
+// Also: navigations are now network-first, so a fresh deploy shows up on the
+// next load without waiting for the skip-waiting handshake.
+const CACHE_NAME = "sniffmaster-v45";
+const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 self.addEventListener("install", (e) => {
  e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL)));
  self.skipWaiting();           // new SW activates immediately
@@ -24,7 +28,23 @@ self.addEventListener("fetch", (e) => {
  const url = new URL(e.request.url);
  // API calls: always go to network (live sensor data)
  if (url.pathname.startsWith("/api/")) return;
- // Static shell: cache-first with network fallback + background refresh
+ // HTML navigations: network-first so deploys are picked up immediately,
+ // with the cached shell as the offline fallback.
+ if (e.request.mode === "navigate") {
+   e.respondWith(
+     fetch(e.request)
+       .then((resp) => {
+         if (resp.ok) {
+           const clone = resp.clone();
+           caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+         }
+         return resp;
+       })
+       .catch(() => caches.match(e.request).then((c) => c || caches.match("/")))
+   );
+   return;
+ }
+ // Other static assets: cache-first with network fallback + background refresh
  e.respondWith(
    caches.match(e.request).then((cached) => {
      const fetched = fetch(e.request).then((resp) => {
