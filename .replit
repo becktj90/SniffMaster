@@ -41,3 +41,12 @@ run = ["node", "web/server.js"]
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 120000
+
+[userenv]
+
+[userenv.shared]
+NTFY_BASE_URL = "https://ntfy.sh"
+NTFY_TOPIC = "sniffmaster-pro-alerts-7f3k2"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = "587"
+SMS_GATEWAY_ADDRESS = "5104324862@txt.att.net"
