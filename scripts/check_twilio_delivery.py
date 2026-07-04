@@ -12,15 +12,29 @@ on an interval until a send comes back `delivered` — then it reports clear
 success and exits. It never silently gives up: every attempt is logged with
 enough detail (status, Twilio error code/message) to see what's going on.
 
+Cost safety: A2P 10DLC approval can reportedly take "up to a couple of
+days," and each retry attempt is a real, billed Twilio send. To avoid an
+unattended run silently racking up sends for days, this script by default
+(a) caps the total number of attempts, and (b) doubles the wait interval
+after each failed attempt (up to a max interval) instead of hammering on a
+fixed cadence. Together the defaults span roughly the "couple of days"
+window while sending far fewer than one message per interval-tick. Override
+any of this via the flags below if you want to check more aggressively (or
+pass --max-attempts 0 for unlimited retries).
+
 Usage:
-    # Keep re-checking every 30 minutes (default) until delivered:
+    # Keep re-checking with growing backoff (default) until delivered or
+    # the default attempt cap is reached:
     python3 scripts/check_twilio_delivery.py
 
-    # Custom interval between attempts, in seconds:
+    # Custom starting interval between attempts, in seconds:
     python3 scripts/check_twilio_delivery.py --interval 900
 
-    # Give up after N attempts instead of retrying forever:
+    # Give up after N attempts (0 = unlimited) instead of the default cap:
     python3 scripts/check_twilio_delivery.py --max-attempts 20
+
+    # Disable backoff and retry on a fixed interval:
+    python3 scripts/check_twilio_delivery.py --backoff-multiplier 1
 
     # Single check-and-exit, no retry loop (useful for cron):
     python3 scripts/check_twilio_delivery.py --once
@@ -63,7 +77,10 @@ TEST_MESSAGE = "Test: A2P 10DLC registration verification"
 # a little longer before concluding the attempt was inconclusive.
 TERMINAL_STATUSES = {"delivered", "undelivered", "failed"}
 
-DEFAULT_INTERVAL_SEC = 30 * 60  # re-attempt every 30 minutes by default
+DEFAULT_INTERVAL_SEC = 30 * 60  # starting re-attempt interval, 30 minutes
+DEFAULT_MAX_INTERVAL_SEC = 4 * 60 * 60  # backoff never waits longer than 4h between attempts
+DEFAULT_BACKOFF_MULTIPLIER = 2.0  # interval doubles after each failed attempt, up to the max above
+DEFAULT_MAX_ATTEMPTS = 16  # ~ enough attempts, at the backoff schedule above, to cover a couple of days
 POLL_INTERVAL_SEC = 5
 POLL_TIMEOUT_SEC = 60
 
@@ -130,13 +147,28 @@ def main():
         "--interval",
         type=int,
         default=DEFAULT_INTERVAL_SEC,
-        help=f"Seconds to wait between re-attempts (default: {DEFAULT_INTERVAL_SEC})",
+        help=f"Starting seconds to wait between re-attempts (default: {DEFAULT_INTERVAL_SEC})",
+    )
+    parser.add_argument(
+        "--max-interval",
+        type=int,
+        default=DEFAULT_MAX_INTERVAL_SEC,
+        help=f"Cap on the backed-off interval, in seconds (default: {DEFAULT_MAX_INTERVAL_SEC})",
+    )
+    parser.add_argument(
+        "--backoff-multiplier",
+        type=float,
+        default=DEFAULT_BACKOFF_MULTIPLIER,
+        help=f"Multiply the interval by this after each failed attempt, up to --max-interval "
+             f"(default: {DEFAULT_BACKOFF_MULTIPLIER}; use 1 to disable backoff)",
     )
     parser.add_argument(
         "--max-attempts",
         type=int,
-        default=None,
-        help="Give up after this many attempts instead of retrying forever",
+        default=DEFAULT_MAX_ATTEMPTS,
+        help="Give up after this many attempts instead of retrying forever. "
+             f"Each attempt is a real, billed Twilio send, so this defaults to a cost ceiling "
+             f"(default: {DEFAULT_MAX_ATTEMPTS}; pass 0 for unlimited retries)",
     )
     parser.add_argument(
         "--once",
@@ -145,10 +177,23 @@ def main():
     )
     args = parser.parse_args()
 
-    max_attempts = 1 if args.once else args.max_attempts
+    if args.once:
+        max_attempts = 1
+    elif args.max_attempts == 0:
+        max_attempts = None  # explicit opt-in to unlimited retries
+    else:
+        max_attempts = args.max_attempts
 
     logger.info("=" * 70)
     logger.info("Twilio delivery status auto-checker starting...")
+    if max_attempts is None:
+        logger.info("Retry cap: unlimited (--max-attempts 0) — will retry forever until delivered.")
+    else:
+        logger.info(
+            f"Retry cap: {max_attempts} attempt(s), backing off from {args.interval}s "
+            f"up to {args.max_interval}s between attempts (x{args.backoff_multiplier} each time) "
+            "to limit billed Twilio sends while carrier approval is pending."
+        )
     logger.info("=" * 70)
 
     try:
@@ -158,6 +203,7 @@ def main():
         sys.exit(2)
 
     attempt = 0
+    interval = args.interval
     while True:
         attempt += 1
         logger.info(f"--- Attempt {attempt}"
@@ -169,12 +215,14 @@ def main():
         if max_attempts is not None and attempt >= max_attempts:
             logger.error(
                 f"✗ Gave up after {attempt} attempt(s) without confirming delivery. "
-                "Check A2P 10DLC registration status in the Twilio Console."
+                "Check A2P 10DLC registration status in the Twilio Console. "
+                "(Re-run with --max-attempts 0 to retry indefinitely.)"
             )
             sys.exit(1)
 
-        logger.info(f"Will re-check again in {args.interval}s...")
-        time.sleep(args.interval)
+        logger.info(f"Will re-check again in {interval}s...")
+        time.sleep(interval)
+        interval = min(int(interval * args.backoff_multiplier), args.max_interval)
 
 
 if __name__ == "__main__":
