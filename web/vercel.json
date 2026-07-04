@@ -9,6 +9,7 @@
     { "source": "/api/office-stats", "destination": "/api/extras?fn=office-stats" },
     { "source": "/api/sniff-stream", "destination": "/api/extras?fn=sniff-stream" },
     { "source": "/api/weather-briefing", "destination": "/api/extras?fn=weather-briefing" },
+    { "source": "/api/settings", "destination": "/api/extras?fn=settings" },
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
   "crons": [

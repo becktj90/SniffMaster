@@ -24,9 +24,11 @@ import {
   getHistory,
   getAlertState,
   setAlertState,
+  getSettings,
 } from "../lib/store.js";
-import { normalizeReading, baselineGasR, evaluateBreaches } from "../lib/thresholds.js";
+import { normalizeReading, baselineGasR, evaluateBreaches, getEffectiveThresholds } from "../lib/thresholds.js";
 import { sendSms } from "../lib/notify.js";
+import { buildAlertBroSummary } from "../lib/brogpt.js";
 
 // Per-breach cooldown: re-remind an ongoing breach at most this often (ms).
 const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -61,8 +63,17 @@ async function maybeSendAlerts(stored) {
     console.error("alerts: history fetch failed:", err);
   }
 
+  // Owner-adjustable limits (humidity/temp); falls back to defaults on any error.
+  let thresholds;
+  try {
+    thresholds = getEffectiveThresholds(await getSettings());
+  } catch (err) {
+    console.error("alerts: settings fetch failed, using defaults:", err);
+    thresholds = getEffectiveThresholds();
+  }
+
   const base = baselineGasR(priorHistory);
-  const breaches = evaluateBreaches(reading, base);
+  const breaches = evaluateBreaches(reading, base, thresholds);
 
   const state = await getAlertState();
   const prevActive = new Set(state.activeKeys);
@@ -77,8 +88,18 @@ async function maybeSendAlerts(stored) {
 
   if (toNotify.length > 0) {
     // SMS body stays GSM-7-safe (plain ASCII) — see lib/thresholds.js note.
+    // Lead with a short personal-voice ("bro") summary, then the raw breach
+    // lines. The summary degrades to a deterministic line if OpenAI is absent
+    // or slow, so the alert always ships.
+    let broLine = "";
+    try {
+      broLine = await buildAlertBroSummary(toNotify);
+    } catch (err) {
+      console.error("alerts: bro summary failed:", err);
+    }
     const lines = toNotify.map((b) => `- ${b.message}`);
-    const message = `SniffMaster ALERT (${etTimeLabel(reading.receivedAt)})\n${lines.join("\n")}`;
+    const header = `SniffMaster ALERT (${etTimeLabel(reading.receivedAt)})`;
+    const message = [header, broLine, lines.join("\n")].filter(Boolean).join("\n");
     try {
       const result = await sendSms(message);
       if (result.configured && result.sent > 0) {
