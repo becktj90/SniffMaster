@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
 ntfy_sms_forwarder.py — Background service that forwards push notifications from ntfy.sh
-to your phone as SMS text messages via Email-to-SMS gateway.
+to your phone as SMS text messages via Twilio.
 
 This script:
 1. Connects to a specified ntfy topic via Server-Sent Events (SSE)
 2. Listens for incoming JSON notifications
-3. Forwards them to an Email-to-SMS gateway (e.g., vtext.com, txt.att.net)
+3. Forwards them to a phone number via the Twilio SMS API (real SMS network,
+   not an email-to-SMS carrier gateway)
 4. Automatically reconnects on network failures
 5. Loads all configuration from .env (no hardcoded secrets)
+
+Why Twilio instead of an Email-to-SMS gateway: live testing showed AT&T's
+txt.att.net/mms.att.net gateways silently drop mail with no bounce or error —
+the sending SMTP server reports success even though the phone never receives
+anything. Twilio sends over the real SMS network and returns a message SID
+plus a real HTTP error (not silence) when a send fails, so failures are
+actually observable. See README.md for details.
 
 Usage:
     python3 ntfy_sms_forwarder.py
@@ -20,13 +28,14 @@ To run in background (Windows):
     pythonw ntfy_sms_forwarder.py
 """
 
+import base64
 import json
 import logging
 import os
-import smtplib
 import time
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import requests
@@ -58,15 +67,46 @@ load_dotenv(dotenv_path=env_path)
 NTFY_BASE_URL = os.getenv("NTFY_BASE_URL", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 
-# Email-to-SMS gateway configuration
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
+# Twilio configuration (real SMS network, replaces the old email-to-SMS gateway)
+TWILIO_API_BASE = "https://api.twilio.com/2010-04-01"
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+# NOTE: TWILIO_AUTH_TOKEN_V2 is preferred over TWILIO_AUTH_TOKEN. On this
+# environment, the TWILIO_AUTH_TOKEN secret repeatedly got silently truncated
+# to 25 of its 32 characters no matter how it was re-entered, which produced
+# HTTP 401s from Twilio despite the token being correct at the source. Storing
+# the same value under a different key name (TWILIO_AUTH_TOKEN_V2) was not
+# affected by the truncation, so that's the reliable source of truth here —
+# TWILIO_AUTH_TOKEN is kept only as a fallback for a normal, unaffected setup.
+TWILIO_AUTH_TOKEN = (os.getenv("TWILIO_AUTH_TOKEN_V2") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
+# Either a Messaging Service SID (preferred — picks the right sender from a
+# registered pool) or a bare From number (E.164) works. Messaging Service
+# takes priority if both are set.
+TWILIO_MESSAGING_SERVICE_SID = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "").strip()
 
-# SMS gateway address (e.g., "15105551234@vtext.com")
-SMS_GATEWAY_ADDRESS = os.getenv("SMS_GATEWAY_ADDRESS", "").strip()
+
+def _to_e164(raw: str) -> str:
+    """
+    Best-effort normalize a phone number to E.164 (e.g. "+17543379692").
+    Tolerates display formats like "(754) 337-9692" or "1-754-337-9692"
+    so a copy/paste from a dashboard's "friendly name" field still works.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("+"):
+        return "+" + "".join(ch for ch in raw[1:] if ch.isdigit())
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return ""
+    if len(digits) == 10:
+        digits = "1" + digits
+    return "+" + digits
+
+
+TWILIO_FROM = _to_e164(os.getenv("TWILIO_FROM", ""))
+
+# Destination phone number in E.164 format (e.g. +15104324862)
+ALERT_SMS_TO = _to_e164(os.getenv("ALERT_SMS_TO", ""))
 
 # Reconnection settings
 RECONNECT_DELAY_BASE = 5  # Start with 5 seconds
@@ -84,14 +124,16 @@ def validate_config():
 
     if not NTFY_TOPIC:
         errors.append("NTFY_TOPIC is not set in .env")
-    if not SMTP_USERNAME:
-        errors.append("SMTP_USERNAME is not set in .env")
-    if not SMTP_PASSWORD:
-        errors.append("SMTP_PASSWORD is not set in .env")
-    if not SENDER_EMAIL:
-        errors.append("SENDER_EMAIL is not set in .env")
-    if not SMS_GATEWAY_ADDRESS:
-        errors.append("SMS_GATEWAY_ADDRESS is not set in .env")
+    if not TWILIO_ACCOUNT_SID:
+        errors.append("TWILIO_ACCOUNT_SID is not set in .env")
+    if not TWILIO_AUTH_TOKEN:
+        errors.append("TWILIO_AUTH_TOKEN is not set in .env")
+    if not TWILIO_MESSAGING_SERVICE_SID and not TWILIO_FROM:
+        errors.append(
+            "Either TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM must be set in .env"
+        )
+    if not ALERT_SMS_TO:
+        errors.append("ALERT_SMS_TO is not set in .env")
 
     if errors:
         logger.error("Configuration errors:")
@@ -101,8 +143,10 @@ def validate_config():
 
     logger.info("✓ Configuration validated")
     logger.info(f"  ntfy topic: {NTFY_TOPIC}")
-    logger.info(f"  SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
-    logger.info(f"  SMS gateway: {SMS_GATEWAY_ADDRESS}")
+    logger.info(
+        f"  Twilio sender: {TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM}"
+    )
+    logger.info(f"  SMS destination: {ALERT_SMS_TO}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -110,40 +154,61 @@ def validate_config():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def send_sms_via_email(message_body: str, subject: str = "SniffMaster Notification") -> bool:
+def send_sms_via_twilio(message_body: str) -> bool:
     """
-    Send an SMS via Email-to-SMS gateway using SMTP.
+    Send an SMS via the Twilio REST API (real SMS network, not an email
+    gateway). Returns True only when Twilio's API accepts the message and
+    hands back a message SID.
 
     Args:
         message_body: Text content to send
-        subject: Email subject (many gateways ignore this for SMS, but good to have)
 
     Returns:
-        True if sent successfully, False otherwise
+        True if Twilio accepted the message, False otherwise
     """
+    # Keep message body short (SMS character limit)
+    body = message_body[:160] if len(message_body) > 160 else message_body
+
+    url = f"{TWILIO_API_BASE}/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID)}/Messages.json"
+
+    form = {"To": ALERT_SMS_TO, "Body": body}
+    if TWILIO_MESSAGING_SERVICE_SID:
+        form["MessagingServiceSid"] = TWILIO_MESSAGING_SERVICE_SID
+    else:
+        form["From"] = TWILIO_FROM
+
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    auth = base64.b64encode(
+        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode("utf-8")
+    ).decode("ascii")
+
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+
     try:
-        # Create email message
-        msg = MIMEMultipart()
-        msg["From"] = SENDER_EMAIL
-        msg["To"] = SMS_GATEWAY_ADDRESS
-        msg["Subject"] = subject
+        logger.info(f"Sending SMS to {ALERT_SMS_TO} via Twilio...")
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SEC) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            sid = payload.get("sid")
+            if sid:
+                logger.info(f"✓ SMS sent successfully (Twilio SID: {sid})")
+                return True
+            logger.error(f"Twilio response missing SID: {payload}")
+            return False
 
-        # Keep message body short (SMS character limit)
-        body = message_body[: 160] if len(message_body) > 160 else message_body
-        msg.attach(MIMEText(body, "plain"))
-
-        # Send via SMTP
-        logger.info(f"Sending SMS to {SMS_GATEWAY_ADDRESS}...")
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=TIMEOUT_SEC) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
-
-        logger.info("✓ SMS sent successfully")
-        return True
-
-    except smtplib.SMTPException as e:
-        logger.error(f"SMTP error: {e}")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        logger.error(f"Twilio API error: HTTP {e.code} — {detail}")
+        return False
+    except urllib.error.URLError as e:
+        logger.error(f"Failed to reach Twilio API: {e.reason}")
         return False
     except Exception as e:
         logger.error(f"Failed to send SMS: {e}")
@@ -237,8 +302,8 @@ def handle_notification(notification: dict):
 
         logger.info(f"Forwarding notification: {sms_body}")
 
-        # Send via SMS gateway
-        if send_sms_via_email(sms_body, subject=title):
+        # Send via Twilio
+        if send_sms_via_twilio(sms_body):
             logger.info("✓ Notification forwarded successfully")
         else:
             logger.error("✗ Failed to forward notification")
