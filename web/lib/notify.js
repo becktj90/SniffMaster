@@ -44,10 +44,18 @@
 import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
 
 const CLICKSEND_URL = "https://rest.clicksend.com/v3/sms/send";
+const CLICKSEND_MMS_URL = "https://rest.clicksend.com/v3/mms/send";
 // Hard cap per provider request. Recipients are sent in parallel, so this also
 // bounds total send time — the ESP32 is waiting on /api/update's response, and
 // Vercel Hobby functions have a ~10s budget. A hung provider call must not eat it.
 const SEND_TIMEOUT_MS = 5000;
+// MMS carries an image fetch on ClickSend's side (they pull media_file
+// themselves), so it needs more headroom than a plain SMS post.
+const MMS_SEND_TIMEOUT_MS = 9000;
+
+// Public site the report-card image and dashboard link resolve against. Set
+// PUBLIC_BASE_URL if the app ever moves off this domain.
+export const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://sniffmaster-web.vercel.app").trim().replace(/\/+$/, "");
 
 function env(name) {
   const value = process.env[name];
@@ -58,6 +66,13 @@ function env(name) {
 // field even if the env var is missing after a redeploy. Note this number is
 // public in the repo; set ALERT_SMS_TO to override without a code change.
 const DEFAULT_ALERT_SMS_TO = "+15104324862";
+
+// ClickSend sender number (the "From"). Set CLICKSEND_FROM to override.
+const DEFAULT_CLICKSEND_FROM = "+18335304015";
+
+function clickSendFrom() {
+  return env("CLICKSEND_FROM") || DEFAULT_CLICKSEND_FROM;
+}
 
 /** Parse ALERT_SMS_TO into a de-duplicated list of E.164 recipients. */
 export function getRecipients() {
@@ -153,11 +168,46 @@ export async function sendViaSns(text, recipients) {
   return { sent, failures };
 }
 
-export async function sendViaClickSend(text, recipients) {
+function clickSendAuthHeader() {
   const username = env("CLICKSEND_USERNAME");
   const apiKey = env("CLICKSEND_API_KEY");
-  const auth = Buffer.from(`${username}:${apiKey}`).toString("base64");
+  return `Basic ${Buffer.from(`${username}:${apiKey}`).toString("base64")}`;
+}
 
+/**
+ * Shared success check + diagnostic-detail extraction for both ClickSend SMS
+ * and MMS responses — same response shape, same "HTTP 200 but queued_count:0"
+ * failure mode either way.
+ */
+function evaluateClickSendResponse(resp, data) {
+  const msg = data?.data?.messages?.[0];
+  const msgStatus = msg?.status;
+  // queued_count is ClickSend's ground truth: the API can return HTTP 200
+  // with response_code "SUCCESS" (the *request* was well-formed) while
+  // still queuing zero of the messages (the send itself was rejected —
+  // e.g. insufficient account balance, unapproved sender, unsupported media).
+  // Trust that over the per-message status string, which the docs don't
+  // guarantee is present.
+  const queuedCount = Number(data?.data?.queued_count);
+  const totalCount = Number(data?.data?.total_count);
+  const ok = resp.ok && (
+    Number.isFinite(queuedCount) && Number.isFinite(totalCount)
+      ? queuedCount > 0
+      : msgStatus === "SUCCESS" || msgStatus === "QUEUED" || !msgStatus
+  );
+  const detail = JSON.stringify({
+    response_code: data?.response_code,
+    response_msg: data?.response_msg,
+    queued_count: data?.data?.queued_count,
+    total_count: data?.data?.total_count,
+    status: msg?.status,
+    error_code: msg?.error_code,
+    error_text: msg?.error_text,
+  });
+  return { ok, detail };
+}
+
+export async function sendViaClickSend(text, recipients) {
   let sent = 0;
   const failures = [];
 
@@ -167,20 +217,24 @@ export async function sendViaClickSend(text, recipients) {
         const resp = await fetch(CLICKSEND_URL, {
           method: "POST",
           headers: {
-            Authorization: `Basic ${auth}`,
+            Authorization: clickSendAuthHeader(),
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ messages: [{ to, body: text, source: "sniffmaster" }] }),
+          body: JSON.stringify({ messages: [{ to, from: clickSendFrom(), body: text, source: "sniffmaster" }] }),
           signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
         });
 
         const data = await resp.json().catch(() => null);
-        const msgStatus = data?.data?.messages?.[0]?.status;
-        if (resp.ok && (msgStatus === "SUCCESS" || msgStatus === "QUEUED" || !msgStatus)) {
+        const { ok, detail } = data
+          ? evaluateClickSendResponse(resp, data)
+          : { ok: false, detail: await resp.text().catch(() => "") };
+        if (ok) {
           sent += 1;
         } else {
-          const detail = data ? JSON.stringify(data).slice(0, 300) : await resp.text().catch(() => "");
-          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 300) });
+          // Log enough of the payload to see msg.status/error_text — the old
+          // 300-char cap cut the response off mid-body, hiding the actual
+          // rejection reason on every failure.
+          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 500) });
           console.error(`notify: ClickSend send to ${to} failed — HTTP ${resp.status} ${detail}`);
         }
       } catch (err) {
@@ -195,16 +249,71 @@ export async function sendViaClickSend(text, recipients) {
 }
 
 /**
+ * Send an MMS via ClickSend — same account/auth as SMS, different endpoint
+ * and payload shape (adds `media_file`, a URL ClickSend fetches server-side;
+ * carriers expect a raster image, not SVG, so callers should point this at a
+ * PNG/JPEG endpoint).
+ * @param {string} text — message body
+ * @param {string[]} recipients — E.164 numbers
+ * @param {string} mediaUrl — publicly reachable image URL
+ * @param {string} [subject] — MMS subject line (required by some carriers)
+ */
+export async function sendViaClickSendMms(text, recipients, mediaUrl, subject = "SniffMaster Report") {
+  let sent = 0;
+  const failures = [];
+
+  await Promise.all(
+    recipients.map(async (to) => {
+      try {
+        const resp = await fetch(CLICKSEND_MMS_URL, {
+          method: "POST",
+          headers: {
+            Authorization: clickSendAuthHeader(),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messages: [{ to, from: clickSendFrom(), body: text, subject, media_file: mediaUrl, source: "sniffmaster" }],
+          }),
+          signal: AbortSignal.timeout(MMS_SEND_TIMEOUT_MS),
+        });
+
+        const data = await resp.json().catch(() => null);
+        const { ok, detail } = data
+          ? evaluateClickSendResponse(resp, data)
+          : { ok: false, detail: await resp.text().catch(() => "") };
+        if (ok) {
+          sent += 1;
+        } else {
+          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 500) });
+          console.error(`notify: ClickSend MMS to ${to} failed — HTTP ${resp.status} ${detail}`);
+        }
+      } catch (err) {
+        const message = err?.name === "TimeoutError" ? `timeout after ${MMS_SEND_TIMEOUT_MS}ms` : err?.message || String(err);
+        failures.push({ to, error: message });
+        console.error(`notify: ClickSend MMS to ${to} threw — ${message}`);
+      }
+    })
+  );
+
+  return { sent, failures };
+}
+
+/**
  * Publish to an ntfy topic (push notification, not SMS). One POST regardless
  * of recipient count — the topic itself is the destination. Runs in parallel
  * with the SMS chain, so its shorter timeout never extends total send time.
  */
-export async function sendViaNtfy(text) {
+export async function sendViaNtfy(text, opts = {}) {
   const url = env("NTFY_URL") || `https://ntfy.sh/${encodeURIComponent(env("NTFY_TOPIC"))}`;
+  const headers = { Title: "SniffMaster", "Content-Type": "text/plain" };
+  // Visual report card: ntfy renders an image URL passed via Attach as an
+  // inline thumbnail, and opens Click's URL when the notification is tapped.
+  if (opts.imageUrl) headers.Attach = opts.imageUrl;
+  if (opts.clickUrl) headers.Click = opts.clickUrl;
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Title: "SniffMaster", "Content-Type": "text/plain" },
+      headers,
       body: text,
       signal: AbortSignal.timeout(3000),
     });
@@ -223,9 +332,11 @@ export async function sendViaNtfy(text) {
 /**
  * Send an SMS to every configured recipient via the first working provider.
  * @param {string} body — message text (keep it GSM-7-safe ASCII; see thresholds.js)
+ * @param {{imageUrl?:string, clickUrl?:string}} [opts] — visual report card;
+ *   SMS providers here are text-only so this only reaches the ntfy push.
  * @returns {Promise<{configured:boolean, sent:number, failures:Array<{to:string,error:string}>, provider:string|null}>}
  */
-export async function sendSms(body) {
+export async function sendSms(body, opts = {}) {
   const text = String(body || "").trim();
   if (!text) {
     return { configured: isSmsConfigured(), sent: 0, failures: [], provider: null };
@@ -248,9 +359,14 @@ export async function sendSms(body) {
       console.warn("notify: all SNS sends failed" + (isClickSendConfigured() ? " — trying ClickSend" : ""));
     }
     if (isClickSendConfigured()) {
-      const r = await sendViaClickSend(text, recipients);
-      failures.push(...r.failures.map((f) => ({ ...f, provider: "clicksend" })));
-      if (r.sent > 0) return { sent: r.sent, failures, provider: "clicksend" };
+      // Carry the report-card image as an MMS when one's supplied — SNS has
+      // no MMS path in this codebase, but ClickSend does.
+      const r = opts.imageUrl
+        ? await sendViaClickSendMms(text, recipients, opts.imageUrl, opts.subject)
+        : await sendViaClickSend(text, recipients);
+      const provider = opts.imageUrl ? "clicksend-mms" : "clicksend";
+      failures.push(...r.failures.map((f) => ({ ...f, provider })));
+      if (r.sent > 0) return { sent: r.sent, failures, provider };
     }
     return { sent: 0, failures, provider: null };
   };
@@ -259,7 +375,7 @@ export async function sendSms(body) {
   // header note on SMS providers reporting success for undeliverable messages.
   const [sms, ntfy] = await Promise.all([
     smsChain(),
-    isNtfyConfigured() ? sendViaNtfy(text) : Promise.resolve(null),
+    isNtfyConfigured() ? sendViaNtfy(text, opts) : Promise.resolve(null),
   ]);
 
   const allFailures = [

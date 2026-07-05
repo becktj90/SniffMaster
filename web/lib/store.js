@@ -359,16 +359,21 @@ export async function putDailySummary(data) {
 }
 
 /**
- * Flip smsDelivered on the stored latest summary (and its history head) after
- * a successful retry send — WITHOUT re-appending to history the way
- * putDailySummary would.
+ * Set smsDelivered on the stored latest summary (and its history head)
+ * WITHOUT re-appending to history the way putDailySummary would — used both
+ * after a successful retry send (delivered=true) and to record the outcome
+ * of a send that ran after the summary was already stored (see
+ * api/daily-summary.js: the summary is stored before sending so the
+ * report-card image reflects today's numbers by the time a provider fetches
+ * it, then this records how the send went).
+ * @param {boolean} [delivered]
  */
-export async function markDailySummaryDelivered() {
+export async function markDailySummaryDelivered(delivered = true) {
   const redis = getRedis();
   const raw = await redis.get(KEY_DAILY_SUMMARY);
   if (!raw) return null;
   const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
-  entry.smsDelivered = true;
+  entry.smsDelivered = delivered;
   const json = JSON.stringify(entry);
   await redis.set(KEY_DAILY_SUMMARY, json);
   // Best effort: the history head is the same record; keep it consistent. The

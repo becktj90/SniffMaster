@@ -32,7 +32,7 @@ import {
   getEffectiveThresholds,
   getEffectiveEnvironmentType,
 } from "../lib/thresholds.js";
-import { sendSms, isSmsConfigured } from "../lib/notify.js";
+import { sendSms, isSmsConfigured, PUBLIC_BASE_URL } from "../lib/notify.js";
 // Shared SMS-text helpers (single source of truth; also used by the alert path).
 import { sanitizeSmsAscii, extractOutputText } from "../lib/brogpt.js";
 import { getCapeLaunches } from "../lib/launches.js";
@@ -544,8 +544,11 @@ export default async function handler(req, res) {
 
     const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline, outlook);
 
-    const smsResult = await sendSms(smsText);
-    const stored = await putDailySummary({
+    // Store BEFORE sending: /api/report-card reads the latest stored summary,
+    // and both ClickSend (MMS media_file) and ntfy (Attach) fetch that URL
+    // synchronously while handling the send below — sending first would have
+    // them race the write and pick up yesterday's numbers.
+    let stored = await putDailySummary({
       ...summary,
       baseline,
       deltas: buildDeltas(summary, baseline),
@@ -555,10 +558,20 @@ export default async function handler(req, res) {
       reportMode,
       launchLine,
       plainText: summaryToSms(summary, baseline),
-      // false arms the retry path above; null means "nothing to retry" (no
-      // channel configured at all, so a resend attempt would be pointless).
-      smsDelivered: smsResult.configured ? smsResult.sent > 0 : null,
+      smsDelivered: null,
     });
+
+    // Visual report card: text-only SMS providers ignore this, but ClickSend
+    // MMS attaches it and the ntfy push renders it, opening the dashboard on tap.
+    const smsResult = await sendSms(smsText, {
+      imageUrl: `${PUBLIC_BASE_URL}/api/report-card?format=png`,
+      clickUrl: PUBLIC_BASE_URL,
+    });
+    // false arms the retry path above; null means "nothing to retry" (no
+    // channel configured at all, so a resend attempt would be pointless).
+    if (smsResult.configured) {
+      stored = (await markDailySummaryDelivered(smsResult.sent > 0)) || stored;
+    }
 
     return res.status(200).json({
       ...stored,
