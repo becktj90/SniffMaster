@@ -36,7 +36,7 @@ Browser / iPhone PWA         │
 - Temperature, humidity, pressure, gas resistance
 - Outdoor AQI
 - IAQ history chart (up to 48 hours)
-- **Restoration Safety Monitor** — real-time threshold alerts + daily 24h baseline report, with an owner-adjustable **Construction / Office** environment mode that tailors wording, graphics, and which sensor readings are shown (construction focuses on switchgear-drying safety and gas-resistance smoke checks; office swaps in CO2/ventilation and comfort framing)
+- **Work Area Environment Monitor** — real-time threshold alerts + a daily 24h personnel report (stat tiles with change-vs-norm deltas, sparklines, and an LC-36 weather + natural-lighting outlook), with an owner-adjustable **Industrial / Office** environment mode that tailors wording and which sensor readings are highlighted (industrial focuses on crew heat/humidity/air-quality safety plus gas-resistance smoke checks; office frames the same data around occupant comfort and ventilation)
 
 ## Deploy (one-time setup)
 
@@ -160,13 +160,13 @@ Two modes:
 Owner-adjustable alarm limits and the environment mode.
 
 - **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
-- **POST** (requires `X-SniffMaster-Key: $SNIFFMASTER_OWNER_KEY` header): accepts a partial patch of `{ humidityHigh, tempHighC, environmentType }`. `environmentType` must be `"construction"` (default) or `"office"`. Changing it immediately affects: real-time alert wording/graphics on the dashboard, which sensor reading is highlighted (gas-resistance smoke-drop check for construction vs. CO2/ventilation check for office), and the next morning report's tone and stats.
+- **POST** (requires `X-SniffMaster-Key: $SNIFFMASTER_OWNER_KEY` header): accepts a partial patch of `{ humidityHigh, tempHighC, co2High, environmentType }`. `environmentType` must be `"industrial"` (default) or `"office"` (`"construction"` is accepted as a legacy alias and normalized to `"industrial"`). Changing it immediately affects: real-time alert wording on the dashboard, which sensor reading is highlighted, and the next morning report's tone and stats. All three numeric limits are clamped to safe ranges server-side.
 
 Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold — an abnormal-conditions alert includes the same 24h stats block as the morning report, not just the bare breach line, so it reads as a full comprehensive report.
 
 ## SMS alerts (Amazon SNS) — setup
 
-The relay can text you a **daily 6 AM ET room report** and **immediate alerts** when conditions breach restoration-safe limits (humidity > 55%, temp > 40°C, sudden gas-resistance drop, IAQ ≥ 150). With the env vars unset, texting is silently skipped and everything else keeps working.
+The relay can text you a **daily 6 AM ET work-area report** and **immediate alerts** when conditions breach the personnel-safety limits (humidity, temp, CO2 — all owner-adjustable — plus sudden gas-resistance drop and IAQ ≥ 150). With the env vars unset, texting is silently skipped and everything else keeps working.
 
 US SMS pricing is ~$0.00645/message (any free-tier allowance depends on your account; AWS has been phasing the SMS free tier out). Either way, one report + occasional alerts costs pennies per month.
 

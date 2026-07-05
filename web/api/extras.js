@@ -34,6 +34,7 @@ import {
   ENVIRONMENT_TYPES,
   DEFAULT_ENVIRONMENT_TYPE,
   normalizeEnvironmentType,
+  isKnownEnvironmentType,
 } from "../lib/thresholds.js";
 import { getCapeLaunches, getCached as getCachedLaunches, setCache as setCacheLaunches, fetchLaunches } from "../lib/launches.js";
 import { Redis } from "@upstash/redis";
@@ -1150,15 +1151,21 @@ async function settings(req, res) {
     if (!Number.isFinite(v)) return res.status(400).json({ error: "tempHighC must be a number" });
     patch.tempHighC = v;
   }
+  if (body.co2High !== undefined) {
+    const v = Number(body.co2High);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "co2High must be a number" });
+    patch.co2High = v;
+  }
   if (body.environmentType !== undefined) {
-    const v = String(body.environmentType || "").trim().toLowerCase();
-    if (!ENVIRONMENT_TYPES.includes(v)) {
+    // Accept current types plus legacy aliases (e.g. "construction" →
+    // "industrial") so older clients keep working; store the normalized name.
+    if (!isKnownEnvironmentType(body.environmentType)) {
       return res.status(400).json({ error: `environmentType must be one of: ${ENVIRONMENT_TYPES.join(", ")}` });
     }
-    patch.environmentType = v;
+    patch.environmentType = normalizeEnvironmentType(body.environmentType);
   }
   if (!Object.keys(patch).length) {
-    return res.status(400).json({ error: "no adjustable settings supplied (humidityHigh, tempHighC, environmentType)" });
+    return res.status(400).json({ error: "no adjustable settings supplied (humidityHigh, tempHighC, co2High, environmentType)" });
   }
 
   try {

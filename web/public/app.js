@@ -3803,22 +3803,23 @@ function updateHistoryStats(history) {
   $("chart-voc").textContent = `${rhythm.activeSlots} slots from ${rhythm.sampleCount} samples`;
 }
 
-// ── Restoration Safety Monitor ────────────────────────────────────────────
+// ── Work Area Environment Monitor ─────────────────────────────────────────
 // Front-end mirror of lib/thresholds.js — KEEP THESE NUMBERS IN SYNC with the
-// backend. Drives the always-visible alert strip, the 24h baseline panel, and
-// pulsing-red card states for the switchgear-restoration deployment.
+// backend (live values are pulled from /api/settings at runtime). Drives the
+// always-visible alert strip, the daily report panel, and pulsing-red cards.
 const RESTORATION_THRESHOLDS = {
-  HUMIDITY_HIGH: 55, // %RH — condensation risk on open buswork
-  TEMP_HIGH_C: 40, // °C — control failure / overheating
+  HUMIDITY_HIGH: 60, // %RH — muggy for the crew / condensation on equipment
+  TEMP_HIGH_C: 40, // °C — heat-stress risk / control failure
   IAQ_POOR: 150, // BME688 IAQ (higher = worse)
   GAS_DROP_RATIO: 0.6, // gasR ≤ 60% of baseline = ≥40% sudden drop
   GAS_MIN_BASELINE: 1000, // Ohms noise floor for the drop test
-  CO2_HIGH: 1000, // ppm — stuffy/poor ventilation (office mode only)
+  CO2_HIGH: 1000, // ppm — ventilation falling behind occupancy
 };
-// "construction" (default) frames everything around switchgear-drying safety;
-// "office" reframes the same sensor data around occupant comfort/air quality
-// and swaps in CO2 as a headline metric. Mirrors lib/thresholds.js server-side.
-let currentEnvironmentType = "construction";
+// "industrial" (default) frames everything around crew safety in a work area;
+// "office" reframes the same sensor data around occupant comfort/air quality.
+// Mirrors lib/thresholds.js server-side ("construction" is a legacy alias).
+let currentEnvironmentType = "industrial";
+const normalizeEnvClient = (v) => (v === "office" ? "office" : v === "industrial" || v === "construction" ? "industrial" : null);
 // Map each breach key to the metric element it should pulse red.
 const RESTORATION_ALERT_TARGETS = {
   humidity: "v-hum",
@@ -3866,51 +3867,54 @@ function applyRestorationSettings(data) {
   if (Number.isFinite(Number(data.co2High))) {
     RESTORATION_THRESHOLDS.CO2_HIGH = Number(data.co2High);
   }
-  if (data.environmentType === "office" || data.environmentType === "construction") {
-    currentEnvironmentType = data.environmentType;
-  }
-  // Reflect the live value in the control (unless the user is mid-edit).
+  const env = normalizeEnvClient(data.environmentType);
+  if (env) currentEnvironmentType = env;
+  // Reflect the live values in the controls (unless the user is mid-edit).
+  const T = RESTORATION_THRESHOLDS;
   const cur = $("rs-adjust-current");
-  if (cur) cur.textContent = `now ${RESTORATION_THRESHOLDS.HUMIDITY_HIGH}%`;
-  const input = $("rs-humidity-input");
-  if (input && document.activeElement !== input && !input.value) {
-    input.value = String(RESTORATION_THRESHOLDS.HUMIDITY_HIGH);
-  }
+  if (cur) cur.textContent = `H>${T.HUMIDITY_HIGH}% · T>${Math.round((T.TEMP_HIGH_C * 9) / 5 + 32)}°F · CO2>${T.CO2_HIGH}`;
+  const seed = (id, val) => {
+    const input = $(id);
+    if (input && document.activeElement !== input && !input.value) input.value = String(val);
+  };
+  seed("rs-humidity-input", T.HUMIDITY_HIGH);
+  seed("rs-temp-input", Math.round((T.TEMP_HIGH_C * 9) / 5 + 32));
+  seed("rs-co2-input", T.CO2_HIGH);
   updateEnvironmentToggleUI();
   applyEnvironmentLabels();
 }
 
 // Reflect currentEnvironmentType in the segmented toggle buttons.
 function updateEnvironmentToggleUI() {
-  const construction = $("rs-env-construction");
+  const industrial = $("rs-env-industrial");
   const office = $("rs-env-office");
-  if (!construction || !office) return;
+  if (!industrial || !office) return;
   const isOffice = currentEnvironmentType === "office";
-  construction.classList.toggle("is-active", !isOffice);
+  industrial.classList.toggle("is-active", !isOffice);
   office.classList.toggle("is-active", isOffice);
 }
 
-// Swap the card copy/icons between the construction (switchgear-drying) and
-// office (occupant comfort) frames — keep in sync with lib/thresholds.js and
+// Swap the card copy between the industrial (crew work area) and office
+// (occupant comfort) frames — keep in sync with lib/thresholds.js and
 // lib/brogpt.js's env-aware wording server-side.
 function applyEnvironmentLabels() {
   const isOffice = currentEnvironmentType === "office";
   const header = document.querySelector("#card-restoration .card-header span:first-child");
-  if (header) header.textContent = isOffice ? "Office Comfort Monitor" : "Restoration Safety Monitor";
+  if (header) header.textContent = isOffice ? "Office Environment Monitor" : "Work Area Environment Monitor";
   const summaryLine = $("restoration-live");
   if (summaryLine && !summaryLine.dataset.dynamic) {
     summaryLine.textContent = isOffice
-      ? "Watching temperature, humidity, CO2, and air quality for a comfortable office."
-      : "Watching temperature, humidity, and air quality for switchgear-safe limits.";
+      ? "Tracking temperature, humidity, CO2, and air quality for the people in the office."
+      : "Tracking temperature, humidity, CO2, and air quality for personnel in the work area.";
   }
   const toggleLabel = $("rs-adjust-toggle-label");
-  if (toggleLabel) toggleLabel.textContent = isOffice ? "⚙ Adjust CO2 alarm" : "⚙ Adjust humidity alarm";
+  if (toggleLabel) toggleLabel.textContent = "Adjust alarm limits";
   if (lastData) renderRestorationMonitor(lastData);
   if (dailySummaryState.data) renderDailySummary(dailySummaryState.data);
 }
 
 async function saveEnvironmentType(type) {
-  if (type !== "office" && type !== "construction") return;
+  if (type !== "office" && type !== "industrial") return;
   if (type === currentEnvironmentType) return;
   const keyInput = $("rs-owner-key");
   const key = (keyInput?.value || loadOwnerKey() || "").trim();
@@ -3919,9 +3923,9 @@ async function saveEnvironmentType(type) {
     keyInput?.focus();
     return;
   }
-  const construction = $("rs-env-construction");
+  const industrial = $("rs-env-industrial");
   const office = $("rs-env-office");
-  if (construction) construction.disabled = true;
+  if (industrial) industrial.disabled = true;
   if (office) office.disabled = true;
   setAdjustStatus("Saving…", "neutral");
   try {
@@ -3945,7 +3949,7 @@ async function saveEnvironmentType(type) {
     console.error("save environment type failed:", err);
     setAdjustStatus("Save failed. Check your connection and try again.", "warn");
   } finally {
-    if (construction) construction.disabled = false;
+    if (industrial) industrial.disabled = false;
     if (office) office.disabled = false;
   }
 }
@@ -3955,15 +3959,15 @@ function wireRestorationControls() {
   if (restorationControlsWired) return;
   const toggle = $("rs-adjust-toggle");
   const body = $("rs-adjust-body");
-  const saveBtn = $("rs-humidity-save");
-  const input = $("rs-humidity-input");
+  const saveBtn = $("rs-thresholds-save");
+  const humInput = $("rs-humidity-input");
   const keyInput = $("rs-owner-key");
-  const envConstruction = $("rs-env-construction");
+  const envIndustrial = $("rs-env-industrial");
   const envOffice = $("rs-env-office");
-  if (!toggle || !body || !saveBtn || !input) return;
+  if (!toggle || !body || !saveBtn || !humInput) return;
   restorationControlsWired = true;
 
-  if (envConstruction) envConstruction.addEventListener("click", () => saveEnvironmentType("construction"));
+  if (envIndustrial) envIndustrial.addEventListener("click", () => saveEnvironmentType("industrial"));
   if (envOffice) envOffice.addEventListener("click", () => saveEnvironmentType("office"));
   updateEnvironmentToggleUI();
 
@@ -3971,33 +3975,56 @@ function wireRestorationControls() {
     const open = body.classList.toggle("is-hidden") === false;
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
-      if (!input.value) input.value = String(RESTORATION_THRESHOLDS.HUMIDITY_HIGH);
+      const T = RESTORATION_THRESHOLDS;
+      if (!humInput.value) humInput.value = String(T.HUMIDITY_HIGH);
+      const tempInput = $("rs-temp-input");
+      if (tempInput && !tempInput.value) tempInput.value = String(Math.round((T.TEMP_HIGH_C * 9) / 5 + 32));
+      const co2Input = $("rs-co2-input");
+      if (co2Input && !co2Input.value) co2Input.value = String(T.CO2_HIGH);
       if (keyInput && !keyInput.value) keyInput.value = loadOwnerKey();
-      input.focus();
+      humInput.focus();
     }
   });
 
-  saveBtn.addEventListener("click", () => saveHumidityThreshold());
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); saveHumidityThreshold(); }
-  });
+  saveBtn.addEventListener("click", () => saveThresholds());
+  for (const id of ["rs-humidity-input", "rs-temp-input", "rs-co2-input"]) {
+    $(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); saveThresholds(); }
+    });
+  }
 }
 
-async function saveHumidityThreshold() {
-  const input = $("rs-humidity-input");
+// Save all three adjustable alarm limits in one POST. Temp is entered in °F
+// (matches every other reading on the dashboard) but stored in °C server-side.
+async function saveThresholds() {
+  const humInput = $("rs-humidity-input");
+  const tempInput = $("rs-temp-input");
+  const co2Input = $("rs-co2-input");
   const keyInput = $("rs-owner-key");
-  const status = $("rs-adjust-status");
-  const saveBtn = $("rs-humidity-save");
-  if (!input) return;
+  const saveBtn = $("rs-thresholds-save");
 
-  const value = Number(input.value);
-  if (!Number.isFinite(value)) {
-    setAdjustStatus("Enter a number for the humidity limit.", "warn");
-    return;
+  const patch = {};
+  if (humInput && humInput.value !== "") {
+    const v = Number(humInput.value);
+    if (!Number.isFinite(v)) return setAdjustStatus("Humidity limit must be a number.", "warn");
+    patch.humidityHigh = v;
+  }
+  if (tempInput && tempInput.value !== "") {
+    const f = Number(tempInput.value);
+    if (!Number.isFinite(f)) return setAdjustStatus("Temp limit must be a number (°F).", "warn");
+    patch.tempHighC = Math.round((((f - 32) * 5) / 9) * 10) / 10;
+  }
+  if (co2Input && co2Input.value !== "") {
+    const v = Number(co2Input.value);
+    if (!Number.isFinite(v)) return setAdjustStatus("CO2 limit must be a number (ppm).", "warn");
+    patch.co2High = v;
+  }
+  if (!Object.keys(patch).length) {
+    return setAdjustStatus("Enter at least one limit to save.", "warn");
   }
   const key = (keyInput?.value || "").trim();
   if (!key) {
-    setAdjustStatus("Owner key required to change the alarm.", "warn");
+    setAdjustStatus("Owner key required to change the alarms.", "warn");
     keyInput?.focus();
     return;
   }
@@ -4008,7 +4035,7 @@ async function saveHumidityThreshold() {
     const res = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-SniffMaster-Key": key },
-      body: JSON.stringify({ humidityHigh: value }),
+      body: JSON.stringify(patch),
     });
     if (res.status === 401) {
       setAdjustStatus("Owner key rejected. Check the key and try again.", "warn");
@@ -4020,14 +4047,14 @@ async function saveHumidityThreshold() {
     restorationSettingsState.data = data;
     restorationSettingsState.fetchedAt = Date.now();
     applyRestorationSettings(data);
-    const clamped = Number(data.humidityHigh);
-    const note = clamped !== value
-      ? `Saved — clamped to ${clamped}% (allowed ${data.limits?.HUMIDITY_HIGH?.min}–${data.limits?.HUMIDITY_HIGH?.max}%).`
-      : `Saved — humidity alarm now fires above ${clamped}%.`;
-    setAdjustStatus(note, "good");
+    const T = RESTORATION_THRESHOLDS;
+    setAdjustStatus(
+      `Saved — alarms: humidity >${T.HUMIDITY_HIGH}%, temp >${Math.round((T.TEMP_HIGH_C * 9) / 5 + 32)}°F, CO2 >${T.CO2_HIGH} ppm.`,
+      "good"
+    );
     if (lastData) renderRestorationMonitor(lastData);
   } catch (err) {
-    console.error("save humidity threshold failed:", err);
+    console.error("save thresholds failed:", err);
     setAdjustStatus("Save failed. Check your connection and try again.", "warn");
   } finally {
     if (saveBtn) saveBtn.disabled = false;
@@ -4081,15 +4108,16 @@ function evaluateBreachesClient(r, baseGasR) {
     out.push({
       key: "humidity",
       text: isOffice
-        ? `Humidity ${r.humidity.toFixed(0)}% (>${T.HUMIDITY_HIGH}%) — clammy air`
-        : `Humidity ${r.humidity.toFixed(0)}% (>${T.HUMIDITY_HIGH}%) — condensation risk`,
+        ? `Humidity ${r.humidity.toFixed(0)}% (>${T.HUMIDITY_HIGH}%) — clammy for occupants`
+        : `Humidity ${r.humidity.toFixed(0)}% (>${T.HUMIDITY_HIGH}%) — muggy for the crew`,
     });
   }
   if (Number.isFinite(r.tempC) && r.tempC > T.TEMP_HIGH_C) {
-    out.push({ key: "temp", text: `Temp ${r.tempC.toFixed(1)}°C (>${T.TEMP_HIGH_C}°C) — overheating` });
+    const tempF = ((r.tempC * 9) / 5 + 32).toFixed(0);
+    const limitF = Math.round((T.TEMP_HIGH_C * 9) / 5 + 32);
+    out.push({ key: "temp", text: `Temp ${tempF}°F (>${limitF}°F) — heat-stress risk` });
   }
   if (
-    !isOffice &&
     Number.isFinite(r.gasR) &&
     Number.isFinite(baseGasR) &&
     baseGasR >= T.GAS_MIN_BASELINE &&
@@ -4101,8 +4129,9 @@ function evaluateBreachesClient(r, baseGasR) {
   if (Number.isFinite(r.iaq) && r.iaq >= T.IAQ_POOR) {
     out.push({ key: "iaq", text: `IAQ ${r.iaq.toFixed(0)} (>=${T.IAQ_POOR}) — degraded air` });
   }
-  if (isOffice && Number.isFinite(r.co2) && r.co2 >= T.CO2_HIGH) {
-    out.push({ key: "co2", text: `CO2 ${Math.round(r.co2)} ppm (>=${T.CO2_HIGH}) — poor ventilation` });
+  // CO2 matters wherever people are working — both environment modes.
+  if (Number.isFinite(r.co2) && r.co2 >= T.CO2_HIGH) {
+    out.push({ key: "co2", text: `CO2 ${Math.round(r.co2)} ppm (>=${T.CO2_HIGH}) — ventilation falling behind` });
   }
   return out;
 }
@@ -4128,33 +4157,41 @@ function ensureRestorationDom() {
       panel.dataset.view = "dashboard";
       panel.innerHTML = `
         <div class="card-header">
-          <span>Restoration Safety Monitor</span>
+          <span>Work Area Environment Monitor</span>
           <span class="header-pill" id="restoration-pill">Monitoring</span>
         </div>
-        <p class="card-summary" id="restoration-live">Watching temperature, humidity, and air quality for switchgear-safe limits.</p>
+        <p class="card-summary" id="restoration-live">Tracking temperature, humidity, CO2, and air quality for personnel in the work area.</p>
         <div class="restoration-summary" id="restoration-summary">
-          <p class="restoration-empty">Daily 24h baseline will appear after the first morning report.</p>
+          <p class="restoration-empty">Daily 24h report will appear after the first morning report.</p>
         </div>
         <div class="restoration-controls">
           <div class="rs-env-toggle" role="group" aria-label="Environment type">
-            <button type="button" class="rs-env-btn" id="rs-env-construction">Construction</button>
+            <button type="button" class="rs-env-btn" id="rs-env-industrial">Industrial</button>
             <button type="button" class="rs-env-btn" id="rs-env-office">Office</button>
           </div>
           <button type="button" class="rs-adjust-toggle" id="rs-adjust-toggle" aria-expanded="false" aria-controls="rs-adjust-body">
-            <span id="rs-adjust-toggle-label">⚙ Adjust humidity alarm</span>
+            <span id="rs-adjust-toggle-label">Adjust alarm limits</span>
             <span class="rs-adjust-current" id="rs-adjust-current"></span>
           </button>
           <div class="rs-adjust-body is-hidden" id="rs-adjust-body">
             <label class="rs-adjust-field">
-              <span>Alarm when humidity is above</span>
+              <span>Humidity alarm above</span>
               <span class="rs-adjust-input"><input type="number" id="rs-humidity-input" min="40" max="90" step="1" inputmode="numeric" enterkeyhint="done"> %RH</span>
+            </label>
+            <label class="rs-adjust-field">
+              <span>Temperature alarm above</span>
+              <span class="rs-adjust-input"><input type="number" id="rs-temp-input" min="77" max="158" step="1" inputmode="numeric" enterkeyhint="done"> °F</span>
+            </label>
+            <label class="rs-adjust-field">
+              <span>CO2 alarm above</span>
+              <span class="rs-adjust-input"><input type="number" id="rs-co2-input" min="600" max="2000" step="50" inputmode="numeric" enterkeyhint="done"> ppm</span>
             </label>
             <label class="rs-adjust-field">
               <span>Owner key</span>
               <input type="password" id="rs-owner-key" placeholder="Owner key" autocomplete="off">
             </label>
             <div class="rs-adjust-actions">
-              <button type="button" class="rs-save-btn" id="rs-humidity-save">Save alarm limit</button>
+              <button type="button" class="rs-save-btn" id="rs-thresholds-save">Save alarm limits</button>
             </div>
             <p class="rs-adjust-status" id="rs-adjust-status" role="status" aria-live="polite"></p>
           </div>
@@ -4215,7 +4252,10 @@ function renderRestorationMonitor(d) {
       live.textContent = breaches.map((b) => b.text).join(" · ");
       setHeaderPill("restoration-pill", `${breaches.length} alert${breaches.length > 1 ? "s" : ""}`, "danger");
     } else {
-      live.textContent = "All parameters within switchgear-safe limits.";
+      live.textContent =
+        currentEnvironmentType === "office"
+          ? "All parameters within comfortable limits for occupants."
+          : "All parameters within safe working limits for personnel.";
       setHeaderPill("restoration-pill", "All clear", "good");
     }
   }
@@ -4245,49 +4285,147 @@ function ensureDailySummary() {
     });
 }
 
+// Chronological (oldest→newest) values for one metric over the last 24h,
+// pulled from the already-fetched history buffer — no extra requests.
+function sparkValues(pick) {
+  const now = Date.now();
+  return (Array.isArray(historyData) ? historyData : [])
+    .map((h) => normalizeReadingClient(h))
+    .filter((r) => Number.isFinite(r.receivedAt) && now - r.receivedAt <= 86400000)
+    .sort((a, b) => a.receivedAt - b.receivedAt)
+    .map(pick)
+    .filter(Number.isFinite);
+}
+
+// Tiny inline-SVG sparkline — this dashboard is a single static JS file, so
+// no chart libraries.
+function sparklineSvg(values) {
+  if (!Array.isArray(values) || values.length < 2) return "";
+  const w = 120, h = 26, pad = 2;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const step = (w - pad * 2) / (values.length - 1);
+  const pts = values
+    .map((v, i) => `${(pad + i * step).toFixed(1)},${(h - pad - ((v - min) / span) * (h - pad * 2)).toFixed(1)}`)
+    .join(" ");
+  return `<svg class="rs-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+// Change-vs-norm chip. higherIsBad: true (temp/humidity/CO2/IAQ), false
+// (gas resistance — lower means dirtier air), or null (neutral, e.g. pressure).
+function deltaChip(pct, higherIsBad) {
+  if (!Number.isFinite(pct)) return `<span class="rs-delta is-neutral">no baseline yet</span>`;
+  if (Math.abs(pct) < 1) return `<span class="rs-delta is-neutral">&asymp; normal</span>`;
+  const up = pct > 0;
+  const cls = higherIsBad === null ? "is-neutral" : up === higherIsBad ? "is-bad" : "is-good";
+  return `<span class="rs-delta ${cls}">${up ? "&#9650;" : "&#9660;"} ${Math.abs(pct).toFixed(1)}% vs norm</span>`;
+}
+
 function renderDailySummary(s) {
   const wrap = $("restoration-summary");
   if (!wrap) return;
   if (!s || !s.sampleCount) {
-    wrap.innerHTML = `<p class="restoration-empty">Daily 24h baseline will appear after the first morning report (06:00 ET).</p>`;
+    wrap.innerHTML = `<p class="restoration-empty">Daily 24h report will appear after the first morning report (06:00 ET).</p>`;
     return;
   }
-  const stat = (obj, unit, digits = 0) =>
-    obj
-      ? `avg ${num(obj.avg).toFixed(digits)}${unit} <span class="rs-range">(${num(obj.min).toFixed(digits)}–${num(obj.max).toFixed(digits)})</span>`
-      : "—";
-  const gasStat = (obj) => {
-    if (!obj) return "—";
-    const a = num(obj.avg);
-    const label = a >= 1e6 ? `${(a / 1e6).toFixed(2)}MΩ` : a >= 1e3 ? `${(a / 1e3).toFixed(0)}kΩ` : `${Math.round(a)}Ω`;
-    return `avg ${label}`;
-  };
-  const when = num(s.generatedAt) ? fmtStamp(s.generatedAt) : "";
   const esc = (t) => String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   // Stored stats are Celsius; display Fahrenheit to match the morning texts.
   const cToF = (c) => (c * 9) / 5 + 32;
   const tempF = s.temp ? { avg: cToF(num(s.temp.avg)), min: cToF(num(s.temp.min)), max: cToF(num(s.temp.max)) } : null;
   const isOffice = s.environmentType === "office" || currentEnvironmentType === "office";
-  const rows = [
-    ["🌡 Temperature", stat(tempF, "°F", 1)],
-    ["💧 Humidity", stat(s.humidity, "%", 0)],
-    ["◈ Pressure", stat(s.pressure, " hPa", 0)],
-  ];
-  if (isOffice) {
-    rows.push(["🫁 CO2", stat(s.co2, " ppm", 0)]);
-  } else {
-    rows.push(["🔬 Gas resistance", gasStat(s.gas)]);
+  const d = s.deltas || {};
+  const gasFmt = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(2)} MΩ` : v >= 1e3 ? `${(v / 1e3).toFixed(0)} kΩ` : `${Math.round(v)} Ω`);
+
+  const tiles = [
+    tempF && {
+      label: "Temperature", value: `${tempF.avg.toFixed(1)}°F`,
+      range: `${tempF.min.toFixed(0)}–${tempF.max.toFixed(0)}°F`,
+      delta: d.tempF, higherIsBad: true,
+      spark: sparkValues((r) => (Number.isFinite(r.tempC) ? cToF(r.tempC) : NaN)),
+    },
+    s.humidity && {
+      label: "Humidity", value: `${num(s.humidity.avg).toFixed(0)}%`,
+      range: `${num(s.humidity.min).toFixed(0)}–${num(s.humidity.max).toFixed(0)}%`,
+      delta: d.humidity, higherIsBad: true,
+      spark: sparkValues((r) => r.humidity),
+    },
+    s.co2 && {
+      label: "CO2", value: `${num(s.co2.avg).toFixed(0)} ppm`,
+      range: `${num(s.co2.min).toFixed(0)}–${num(s.co2.max).toFixed(0)}`,
+      delta: d.co2, higherIsBad: true,
+      spark: sparkValues((r) => r.co2),
+    },
+    s.iaq && {
+      label: "Air quality (IAQ)", value: num(s.iaq.avg).toFixed(0),
+      range: `${num(s.iaq.min).toFixed(0)}–${num(s.iaq.max).toFixed(0)}`,
+      delta: d.iaq, higherIsBad: true,
+      spark: sparkValues((r) => r.iaq),
+    },
+    !isOffice && s.gas && {
+      label: "Gas resistance", value: gasFmt(num(s.gas.avg)),
+      range: "",
+      delta: d.gas, higherIsBad: false,
+      spark: sparkValues((r) => r.gasR),
+    },
+    s.pressure && {
+      label: "Pressure", value: `${num(s.pressure.avg).toFixed(0)} hPa`,
+      range: `${num(s.pressure.min).toFixed(0)}–${num(s.pressure.max).toFixed(0)}`,
+      delta: d.pressure, higherIsBad: null,
+      spark: [], // pressure isn't in the compact history rows
+    },
+  ].filter(Boolean);
+
+  const tilesHtml = `
+    <div class="rs-tiles">
+      ${tiles
+        .map(
+          (t) => `
+        <div class="rs-tile">
+          <div class="rs-tile-label">${t.label}</div>
+          <div class="rs-tile-value">${t.value}</div>
+          ${t.range ? `<div class="rs-tile-range">${t.range}</div>` : ""}
+          ${deltaChip(t.delta, t.higherIsBad)}
+          ${sparklineSvg(t.spark)}
+        </div>`
+        )
+        .join("")}
+    </div>`;
+
+  // Site outlook strip — weather + natural lighting for the day's work.
+  let outlookHtml = "";
+  const f = s.forecast;
+  if (f && typeof f === "object") {
+    const chips = [];
+    if (Number.isFinite(f.highF) && Number.isFinite(f.lowF)) chips.push(`High ${Math.round(f.highF)}°F / Low ${Math.round(f.lowF)}°F`);
+    if (f.condition && f.condition !== "Unknown") chips.push(esc(f.condition));
+    if (Number.isFinite(f.precipChance)) chips.push(`Rain ${Math.round(f.precipChance)}%`);
+    if (Number.isFinite(f.windMph)) chips.push(`Wind ${Math.round(f.windMph)}${Number.isFinite(f.gustMph) ? `–${Math.round(f.gustMph)}` : ""} mph`);
+    const chipHtml =
+      chips.map((c) => `<span class="rs-ol-chip">${c}</span>`).join("") +
+      (f.thunder ? `<span class="rs-ol-chip is-warn">Thunderstorm risk</span>` : "");
+    const sun = [];
+    if (f.sunrise && f.sunset) sun.push(`Sun ${esc(f.sunrise)}–${esc(f.sunset)}`);
+    if (Number.isFinite(f.daylightHours)) sun.push(`${f.daylightHours}h daylight`);
+    if (f.lightingLabel) sun.push(esc(f.lightingLabel));
+    outlookHtml = `
+      <div class="rs-outlook">
+        <div class="rs-outlook-title">Site outlook · ${esc(f.site || "LC-36")}</div>
+        <div class="rs-outlook-chips">${chipHtml}</div>
+        ${sun.length ? `<div class="rs-outlook-sun">${sun.join(" · ")}</div>` : ""}
+      </div>`;
   }
-  rows.push(["⚗ Air quality (IAQ)", stat(s.iaq, "", 0)]);
+
+  const when = num(s.generatedAt) ? fmtStamp(s.generatedAt) : "";
+  const baselineNote = Number.isFinite(d.baselineDays) && d.baselineDays > 0 ? ` · vs ${d.baselineDays}-day norm` : "";
   wrap.innerHTML = `
     <div class="restoration-verdict ${s.controlsStabilizing ? "is-good" : "is-bad"}">
-      ${s.controlsStabilizing ? "✅" : "❌"} ${s.controlsNote || ""}
+      <span class="rs-verdict-badge">${s.controlsStabilizing ? "OK" : "CHECK"}</span> ${esc(s.controlsNote || "")}
     </div>
-    ${s.reportText ? `<div class="restoration-bro">💬 This morning's text: &ldquo;${esc(s.reportText)}&rdquo;${s.launchLine ? `<br>🚀 ${esc(s.launchLine)}` : ""}</div>` : ""}
-    <div class="restoration-stats">
-      ${rows.map(([k, v]) => `<div class="rs-row"><span class="rs-key">${k}</span><span class="rs-val">${v}</span></div>`).join("")}
-    </div>
-    <div class="restoration-foot">24h baseline · ${s.sampleCount} samples${when ? ` · updated ${when}` : ""}</div>`;
+    ${tilesHtml}
+    ${outlookHtml}
+    ${s.reportText ? `<div class="restoration-bro">Morning report: &ldquo;${esc(s.reportText)}&rdquo;${s.launchLine ? `<br>${esc(s.launchLine)}` : ""}</div>` : ""}
+    <div class="restoration-foot">24h report · ${s.sampleCount} samples${baselineNote}${when ? ` · updated ${when}` : ""}</div>`;
 }
 
 function render(data) {
