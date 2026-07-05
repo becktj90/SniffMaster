@@ -25,6 +25,8 @@ import {
   getAlertState,
   setAlertState,
   getSettings,
+  getDailySummaryHistory,
+  putAlertSnapshot,
 } from "../lib/store.js";
 import {
   normalizeReading,
@@ -34,9 +36,10 @@ import {
   getEffectiveEnvironmentType,
   getEffectiveAlertCooldownMs,
 } from "../lib/thresholds.js";
-import { sendSms } from "../lib/notify.js";
-import { buildAlertBroSummary } from "../lib/brogpt.js";
-import { buildSummary, summaryToSms } from "./daily-summary.js";
+import { sendSms, PUBLIC_BASE_URL } from "../lib/notify.js";
+import { buildAlertBroSummary, sanitizeSmsAscii } from "../lib/brogpt.js";
+import { buildSummary, summaryToSms, buildBaseline } from "./daily-summary.js";
+import { fetchLc36Outlook, outlookToSmsLines } from "../lib/forecast.js";
 
 function etTimeLabel(ts) {
   try {
@@ -100,35 +103,76 @@ async function maybeSendAlerts(stored) {
   });
 
   if (toNotify.length > 0) {
-    // SMS body stays GSM-7-safe (plain ASCII) — see lib/thresholds.js note.
-    // Lead with a short personal-voice ("bro") summary, then the raw breach
-    // lines, then a 24h stats block so an abnormal-condition alert is a full
-    // comprehensive report, not just a bare trip line. Each piece degrades
-    // independently (OpenAI absent/slow, history fetch failure, etc.) so the
-    // alert always ships.
+    // Two messages instead of one long one:
+    //   1. URGENT — header + a personal-voice ("bro") line + the raw breach
+    //      lines. Short and single-segment wherever possible, so the
+    //      "something needs attention now" text always ships fast and clean.
+    //   2. DETAILED ANALYSIS — 24h stats compared against the recent-days
+    //      baseline (same "% vs norm" the morning report shows) plus the
+    //      LC-36 weather/lightning outlook, sent as an MMS with the visual
+    //      report card when ClickSend is configured. Kept separate so a slow
+    //      weather fetch, a long stats block, or an MMS-only provider hiccup
+    //      never delays message 1.
+    // Every piece degrades independently (OpenAI absent/slow, history fetch
+    // failure, weather outage, etc.) so both messages always ship something.
+    const header = `SniffMaster ALERT (${etTimeLabel(reading.receivedAt)})`;
+    const lines = toNotify.map((b) => `- ${b.message}`);
+
     let broLine = "";
     try {
       broLine = await buildAlertBroSummary(toNotify, { environmentType });
     } catch (err) {
       console.error("alerts: bro summary failed:", err);
     }
-    const lines = toNotify.map((b) => `- ${b.message}`);
-    const header = `SniffMaster ALERT (${etTimeLabel(reading.receivedAt)})`;
+    const urgentMessage = sanitizeSmsAscii([header, broLine, lines.join("\n")].filter(Boolean).join("\n"));
 
-    let statsLine = "";
+    let detailMessage = "";
+    let summary = null;
+    let outlook = null;
     try {
-      const fullHistory = await getHistory(288); // up to ~48h @ 10min, filtered to 24h inside buildSummary
-      const summary = buildSummary(fullHistory, thresholds, environmentType);
-      statsLine = summaryToSms(summary);
+      const [fullHistory, prevSummaries, weather] = await Promise.all([
+        getHistory(288), // up to ~48h @ 10min, filtered to 24h inside buildSummary
+        getDailySummaryHistory(14), // prior days' summaries -> % vs norm, same as the morning report
+        fetchLc36Outlook().catch((err) => {
+          console.error("alerts: weather fetch failed:", err?.message || err);
+          return null;
+        }),
+      ]);
+      summary = buildSummary(fullHistory, thresholds, environmentType);
+      outlook = weather;
+      const baseline = buildBaseline(prevSummaries);
+      const statsLine = summaryToSms(summary, baseline, "24h analysis");
+      const outlookLines = outlookToSmsLines(outlook);
+      detailMessage = sanitizeSmsAscii([statsLine, outlookLines].filter(Boolean).join("\n"));
     } catch (err) {
-      console.error("alerts: 24h stats block failed:", err);
+      console.error("alerts: detail message failed:", err);
     }
 
-    const message = [header, broLine, lines.join("\n"), statsLine].filter(Boolean).join("\n");
+    // So /api/report-card's image reflects THIS alert's numbers (not a stale
+    // morning report from hours earlier) when the detail message rides as MMS.
+    if (summary) {
+      try {
+        await putAlertSnapshot({ ...summary, forecast: outlook });
+      } catch (err) {
+        console.error("alerts: snapshot store failed:", err);
+      }
+    }
+
     try {
-      const result = await sendSms(message);
-      if (result.configured && result.sent > 0) {
+      const [urgentResult, detailResult] = await Promise.all([
+        sendSms(urgentMessage),
+        detailMessage
+          ? sendSms(detailMessage, {
+              imageUrl: `${PUBLIC_BASE_URL}/api/report-card?format=png`,
+              clickUrl: PUBLIC_BASE_URL,
+            })
+          : Promise.resolve(null),
+      ]);
+      if (urgentResult.configured && urgentResult.sent > 0) {
         for (const b of toNotify) sentAt[b.key] = now;
+      }
+      if (detailMessage && !(detailResult?.configured && detailResult.sent > 0)) {
+        console.warn("alerts: detail message did not deliver:", JSON.stringify(detailResult?.failures || []));
       }
     } catch (err) {
       console.error("alerts: sendSms failed:", err);

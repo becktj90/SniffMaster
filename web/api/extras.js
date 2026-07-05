@@ -27,6 +27,7 @@ import {
   getSettings,
   putSettings,
   getDailySummary,
+  getAlertSnapshot,
 } from "../lib/store.js";
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import {
@@ -1241,19 +1242,22 @@ async function settings(req, res) {
 }
 
 /**
- * GET /api/report-card — the daily summary rendered as an image, so the
- * morning report and its push notification carry a visual, not just text.
+ * GET /api/report-card — the latest summary rendered as an image, so a
+ * report/alert and its push notification carry a visual, not just text.
+ * Picks whichever is newer between the morning report and the last
+ * real-time alert's own snapshot, so an alert's MMS shows the alert's own
+ * numbers rather than a stale morning report from hours earlier.
  * ?format=png renders a raster PNG (for MMS media_file, which carriers
  * expect over SVG); default is SVG for ntfy Attach / dashboard <img> use.
- * Public and read-only (no secrets in the image); cached briefly since the
- * daily summary itself only regenerates a couple times a day.
+ * Public and read-only (no secrets in the image); cached briefly.
  */
 async function reportCard(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Cache-Control", "public, max-age=300");
   if (req.method === "OPTIONS") return res.status(204).end();
   try {
-    const summary = await getDailySummary();
+    const [daily, alert] = await Promise.all([getDailySummary(), getAlertSnapshot()]);
+    const summary = num(alert?.generatedAt) > num(daily?.generatedAt) ? alert : daily;
     if (req.query?.format === "png") {
       const png = renderReportCardPng(summary || {});
       res.setHeader("Content-Type", "image/png");

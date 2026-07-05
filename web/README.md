@@ -162,7 +162,11 @@ Adjustable alarm limits and the environment mode.
 - **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, `iaqPoor`, `gasDropPct`, `alertCooldownMin`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
 - **POST**: no auth required — this is a personal single-tenant dashboard, so anyone with the URL can retune alarms from the "Adjust alarm limits" panel. Accepts a partial patch of `{ humidityHigh, tempHighC, co2High, iaqPoor, gasDropPct, alertCooldownMin, environmentType }`. `environmentType` must be `"industrial"` (default) or `"office"` (`"construction"` is accepted as a legacy alias and normalized to `"industrial"`). Changing it immediately affects: real-time alert wording on the dashboard, which sensor reading is highlighted, and the next morning report's tone and stats. Every numeric field is clamped to a safe range server-side (see `THRESHOLD_LIMITS`/`ALERT_COOLDOWN_LIMITS` in `lib/thresholds.js`) so a bad or malicious value can never fully disable monitoring.
 
-Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold — an abnormal-conditions alert includes the same 24h stats block as the morning report, not just the bare breach line, so it reads as a full comprehensive report.
+Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold. Each breach sends **two messages**, independent of each other so a slow piece never delays the other:
+1. **Urgent** — the breach line(s) plus a short personal-voice summary. Kept short and sent as plain SMS.
+2. **Detailed analysis** — 24h stats compared against the recent-days baseline (the same "% vs norm" the morning report shows), plus the LC-36 weather/lightning outlook. Sent as an MMS with the visual report-card image when ClickSend is configured (falls back to a second plain SMS otherwise).
+
+Sending two messages per breach roughly doubles ClickSend usage/cost compared to the single-message alert this replaced — worth knowing if you're watching account balance.
 
 ## SMS alerts (Amazon SNS) — setup
 

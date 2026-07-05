@@ -49,6 +49,7 @@ const KEY_COMMAND_SEQ = "sniffmaster:command_seq";
 const KEY_BLE_OCCUPANCY = "sniffmaster:ble_occupancy";
 const KEY_BLE_OCCUPANCY_HISTORY = "sniffmaster:ble_occupancy_history";
 const KEY_ALERT_STATE = "sniffmaster:alert_state";
+const KEY_ALERT_SNAPSHOT = "sniffmaster:alert_snapshot";
 const KEY_DAILY_SUMMARY = "sniffmaster:daily_summary";
 const KEY_DAILY_SUMMARY_HISTORY = "sniffmaster:daily_summary_history";
 const KEY_SETTINGS = "sniffmaster:settings";
@@ -320,6 +321,28 @@ export async function setAlertState(state) {
   };
   await redis.set(KEY_ALERT_STATE, JSON.stringify(entry));
   return entry;
+}
+
+/**
+ * Latest real-time-alert summary (24h stats + baseline + weather outlook,
+ * same shape as a daily summary) — a single slot, no history, distinct from
+ * putDailySummary/getDailySummary (the morning cron's record, which has its
+ * own resend-guard/lock semantics this must not disturb). /api/report-card
+ * reads whichever of the two is newer, so an alert's visual reflects the
+ * alert's own numbers instead of a stale morning report.
+ */
+export async function putAlertSnapshot(data) {
+  const redis = getRedis();
+  const entry = { ...data, generatedAt: data?.generatedAt || Date.now() };
+  await redis.set(KEY_ALERT_SNAPSHOT, JSON.stringify(entry));
+  return entry;
+}
+
+export async function getAlertSnapshot() {
+  const redis = getRedis();
+  const raw = await redis.get(KEY_ALERT_SNAPSHOT);
+  if (!raw) return null;
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
 
 /**

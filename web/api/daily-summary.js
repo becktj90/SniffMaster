@@ -92,8 +92,13 @@ function halfDelta(values) {
   return mean(newer) - mean(older);
 }
 
+// ASCII-only placeholder: an em-dash here would need sanitizeSmsAscii to run
+// downstream to become "-", and not every caller of fmt() (the real-time
+// alert's stats block, in particular) does that — ship ASCII directly so a
+// missed sanitize pass degrades to a readable "n/a" instead of a silently
+// stripped blank.
 function fmt(n, digits = 0) {
-  return Number.isFinite(n) ? n.toFixed(digits) : "—";
+  return Number.isFinite(n) ? n.toFixed(digits) : "n/a";
 }
 
 // Report text speaks Fahrenheit; internals (stats, thresholds, stored
@@ -242,7 +247,7 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "indus
   };
 }
 
-function summaryToSms(s, baseline = null) {
+function summaryToSms(s, baseline = null, headerLabel = "AM report") {
   const dateLabel = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     month: "short",
@@ -250,7 +255,7 @@ function summaryToSms(s, baseline = null) {
   }).format(new Date(s.generatedAt));
 
   if (!s.sampleCount) {
-    return `SniffMaster AM report (${dateLabel})\nNo telemetry received in the last 24h - check the device power/Wi-Fi.`;
+    return `SniffMaster ${headerLabel} (${dateLabel})\nNo telemetry received in the last 24h - check the device power/Wi-Fi.`;
   }
 
   // ASCII only (GSM-7): no degree signs, ohm symbols, dashes, or emoji.
@@ -259,7 +264,7 @@ function summaryToSms(s, baseline = null) {
     const d = pctDiff(cur, base);
     return d ? `, ${d}` : "";
   };
-  const lines = [`SniffMaster AM report (${dateLabel})`];
+  const lines = [`SniffMaster ${headerLabel} (${dateLabel})`];
   if (s.temp)
     lines.push(
       `Temp: ${fmt(cToF(s.temp.avg), 1)}F (${fmt(cToF(s.temp.min), 1)} to ${fmt(cToF(s.temp.max), 1)})${tag(cToF(s.temp.avg), baseline?.tempF)}`
@@ -448,8 +453,19 @@ async function composeReportSms(s, launches, baseline = null, outlook = null) {
   return { smsText, reportText, reportMode, launchLine };
 }
 
-// Exported for unit testing; the Vercel runtime only invokes the default export.
-export { buildSummary, summaryToSms, composeReportSms, reportFallbackText, sanitizeSmsAscii, launchesTodayLine };
+// Exported for unit testing and reuse by the real-time alert path
+// (api/update.js), which wants the same "% vs recent-days norm" comparison
+// the daily report shows; the Vercel runtime only invokes the default export.
+export {
+  buildSummary,
+  summaryToSms,
+  composeReportSms,
+  reportFallbackText,
+  sanitizeSmsAscii,
+  launchesTodayLine,
+  buildBaseline,
+  buildDeltas,
+};
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
