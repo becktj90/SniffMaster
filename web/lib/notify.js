@@ -57,6 +57,16 @@ const MMS_SEND_TIMEOUT_MS = 9000;
 // PUBLIC_BASE_URL if the app ever moves off this domain.
 export const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://sniffmaster-web.vercel.app").trim().replace(/\/+$/, "");
 
+// A real .png path, not a query param: a live MMS attempt with
+// ?format=png as media_file got "HTTP 400 Invalid input" back from
+// ClickSend (isolated: the identical from/to/source fields work fine on
+// the plain-SMS endpoint, so the MMS-only fields are the culprit) — the
+// leading hypothesis is that ClickSend validates media_file by a
+// recognizable image extension in the URL path, which a query param
+// doesn't have. This path-based alias is the fix attempt; verify against
+// the live endpoint before trusting it.
+export const REPORT_CARD_PNG_URL = `${PUBLIC_BASE_URL}/api/report-card.png`;
+
 function env(name) {
   const value = process.env[name];
   return typeof value === "string" ? value.trim() : "";

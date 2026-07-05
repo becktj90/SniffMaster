@@ -45,7 +45,7 @@ import {
   sendViaClickSend,
   sendViaClickSendMms,
   sendViaNtfy,
-  PUBLIC_BASE_URL,
+  REPORT_CARD_PNG_URL,
 } from "../lib/notify.js";
 import { getDailySummary } from "../lib/store.js";
 
@@ -111,7 +111,7 @@ export default async function handler(req, res) {
       // risk, and today's Cape launches baked in) over a placeholder string.
       const latest = await getDailySummary().catch(() => null);
       const body = latest?.smsText || `${testMessage} (no stored daily report yet — this is placeholder text.)`;
-      const mediaUrl = `${PUBLIC_BASE_URL}/api/report-card?format=png`;
+      const mediaUrl = REPORT_CARD_PNG_URL;
       const { sent, failures } = await sendViaClickSendMms(body, recipients, mediaUrl, "SniffMaster Report");
       result = { sent, failures: failures.map((f) => ({ ...f, provider: "clicksend-mms" })), provider: "clicksend-mms" };
       response.test = { sent: result.sent, failures: result.failures, provider: result.provider, timestamp: Date.now(), message: body, mediaUrl };
