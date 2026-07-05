@@ -12,6 +12,7 @@
     { "source": "/api/weather-briefing", "destination": "/api/extras?fn=weather-briefing" },
     { "source": "/api/settings", "destination": "/api/extras?fn=settings" },
     { "source": "/api/report-card", "destination": "/api/extras?fn=report-card" },
+    { "source": "/api/report-card.png", "destination": "/api/extras?fn=report-card&format=png" },
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
   "crons": [

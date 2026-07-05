@@ -36,7 +36,7 @@ import {
   getEffectiveEnvironmentType,
   getEffectiveAlertCooldownMs,
 } from "../lib/thresholds.js";
-import { sendSms, PUBLIC_BASE_URL } from "../lib/notify.js";
+import { sendSms, PUBLIC_BASE_URL, REPORT_CARD_PNG_URL } from "../lib/notify.js";
 import { buildAlertBroSummary, sanitizeSmsAscii } from "../lib/brogpt.js";
 import { buildSummary, buildBaseline, buildDeltas } from "./daily-summary.js";
 import { fetchLc36Outlook } from "../lib/forecast.js";
@@ -151,7 +151,7 @@ async function maybeSendAlerts(stored) {
 
     try {
       const result = await sendSms(message, {
-        imageUrl: `${PUBLIC_BASE_URL}/api/report-card?format=png`,
+        imageUrl: REPORT_CARD_PNG_URL,
         clickUrl: `${PUBLIC_BASE_URL}/report`,
       });
       if (result.configured && result.sent > 0) {

@@ -33,7 +33,7 @@ import {
   getEffectiveThresholds,
   getEffectiveEnvironmentType,
 } from "../lib/thresholds.js";
-import { sendSms, isSmsConfigured, PUBLIC_BASE_URL } from "../lib/notify.js";
+import { sendSms, isSmsConfigured, PUBLIC_BASE_URL, REPORT_CARD_PNG_URL } from "../lib/notify.js";
 // Shared SMS-text helpers (single source of truth; also used by the alert path).
 import { sanitizeSmsAscii, extractOutputText } from "../lib/brogpt.js";
 import { getCapeLaunches } from "../lib/launches.js";
@@ -648,7 +648,7 @@ export default async function handler(req, res) {
     // Visual report card: text-only SMS providers ignore this, but ClickSend
     // MMS attaches it and the ntfy push renders it, opening the dashboard on tap.
     const smsResult = await sendSms(smsText, {
-      imageUrl: `${PUBLIC_BASE_URL}/api/report-card?format=png`,
+      imageUrl: REPORT_CARD_PNG_URL,
       clickUrl: PUBLIC_BASE_URL,
     });
     // false arms the retry path above; null means "nothing to retry" (no
