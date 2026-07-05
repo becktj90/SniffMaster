@@ -111,10 +111,15 @@ export default async function handler(req, res) {
       // risk, and today's Cape launches baked in) over a placeholder string.
       const latest = await getDailySummary().catch(() => null);
       const body = latest?.smsText || `${testMessage} (no stored daily report yet — this is placeholder text.)`;
-      const mediaUrl = REPORT_CARD_PNG_URL;
-      const { sent, failures } = await sendViaClickSendMms(body, recipients, mediaUrl, "SniffMaster Report");
+      // Diagnostic overrides (isolating ClickSend's "Invalid input" 400):
+      //   ?mediaUrl=<url>  — swap the image URL (e.g. a known-good external host)
+      //   ?subject=<text>  — override the subject line
+      //   ?noSubject=true  — omit subject entirely
+      const mediaUrl = req.query?.mediaUrl || REPORT_CARD_PNG_URL;
+      const subject = req.query?.noSubject === "true" ? undefined : (req.query?.subject ?? "SniffMaster Report");
+      const { sent, failures } = await sendViaClickSendMms(body, recipients, mediaUrl, subject);
       result = { sent, failures: failures.map((f) => ({ ...f, provider: "clicksend-mms" })), provider: "clicksend-mms" };
-      response.test = { sent: result.sent, failures: result.failures, provider: result.provider, timestamp: Date.now(), message: body, mediaUrl };
+      response.test = { sent: result.sent, failures: result.failures, provider: result.provider, timestamp: Date.now(), message: body, mediaUrl, subject };
       const status = result.sent > 0 ? 200 : 500;
       return res.status(status).json(response);
     } else if (forceProvider === "clicksend") {
