@@ -1,23 +1,24 @@
 /**
- * GET /api/test-sms — test SMS configuration (AWS SNS and Twilio)
+ * GET /api/test-sms — test SMS configuration (AWS SNS and ClickSend)
  *
  * This endpoint checks if SMS is properly configured and optionally sends a test message.
  * Query parameters:
- *   ?send=true       — actually send a test SMS
- *   ?send=false      — just report configuration status (default)
- *   ?provider=sns    — force the send through one provider, skipping the
- *   ?provider=twilio   normal SNS → Twilio → ntfy fallback order (diagnostic
- *   ?provider=ntfy     use only — lets you confirm one provider actually
- *                       delivers even when another reports success but the
- *                       text never arrives, e.g. an unverified number in the
- *                       SNS SMS sandbox: Publish returns a MessageId with no
- *                       error, but the carrier never receives it).
+ *   ?send=true         — actually send a test SMS
+ *   ?send=false        — just report configuration status (default)
+ *   ?provider=sns       — force the send through one provider, skipping the
+ *   ?provider=clicksend   normal SNS → ClickSend → ntfy fallback order
+ *   ?provider=ntfy        (diagnostic use only — lets you confirm one
+ *                          provider actually delivers even when another
+ *                          reports success but the text never arrives, e.g.
+ *                          an unverified number in the SNS SMS sandbox:
+ *                          Publish returns a MessageId with no error, but
+ *                          the carrier never receives it).
  *
  * Response:
  * {
  *   configured: boolean,
  *   snsConfigured: boolean,
- *   twilioConfigured: boolean,
+ *   clickSendConfigured: boolean,
  *   recipients: string[],
  *   test: {
  *     sent: number,
@@ -31,12 +32,12 @@
 import {
   isSmsConfigured,
   isSnsConfigured,
-  isTwilioConfigured,
+  isClickSendConfigured,
   isNtfyConfigured,
   getRecipients,
   sendSms,
   sendViaSns,
-  sendViaTwilio,
+  sendViaClickSend,
   sendViaNtfy,
 } from "../lib/notify.js";
 
@@ -57,7 +58,7 @@ export default async function handler(req, res) {
   const response = {
     configured: isSmsConfigured(),
     snsConfigured: isSnsConfigured(),
-    twilioConfigured: isTwilioConfigured(),
+    clickSendConfigured: isClickSendConfigured(),
     ntfyConfigured: isNtfyConfigured(),
     recipients,
     test: null,
@@ -71,14 +72,14 @@ export default async function handler(req, res) {
   if (!response.configured) {
     return res.status(400).json({
       ...response,
-      error: "SMS is not configured. Set SNS_AWS_* or TWILIO_* environment variables.",
+      error: "SMS is not configured. Set SNS_AWS_* or CLICKSEND_* environment variables.",
     });
   }
 
   const requested = String(req.query?.provider || "");
-  const forceProvider = ["twilio", "sns", "ntfy"].includes(requested) ? requested : null;
-  if (forceProvider === "twilio" && !isTwilioConfigured()) {
-    return res.status(400).json({ ...response, error: "Twilio is not configured." });
+  const forceProvider = ["clicksend", "sns", "ntfy"].includes(requested) ? requested : null;
+  if (forceProvider === "clicksend" && !isClickSendConfigured()) {
+    return res.status(400).json({ ...response, error: "ClickSend is not configured." });
   }
   if (forceProvider === "sns" && !isSnsConfigured()) {
     return res.status(400).json({ ...response, error: "AWS SNS is not configured." });
@@ -92,9 +93,9 @@ export default async function handler(req, res) {
     const testMessage = `SniffMaster SMS Test - ${timestamp}. If you received this, SMS is working!`;
 
     let result;
-    if (forceProvider === "twilio") {
-      const { sent, failures } = await sendViaTwilio(testMessage, recipients);
-      result = { sent, failures: failures.map((f) => ({ ...f, provider: "twilio" })), provider: "twilio" };
+    if (forceProvider === "clicksend") {
+      const { sent, failures } = await sendViaClickSend(testMessage, recipients);
+      result = { sent, failures: failures.map((f) => ({ ...f, provider: "clicksend" })), provider: "clicksend" };
     } else if (forceProvider === "sns") {
       const { sent, failures } = await sendViaSns(testMessage, recipients);
       result = { sent, failures: failures.map((f) => ({ ...f, provider: "sns" })), provider: "sns" };

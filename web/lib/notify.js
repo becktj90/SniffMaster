@@ -1,18 +1,24 @@
 /**
- * notify.js — SMS helper for SniffMaster alerts (AWS SNS primary, Twilio fallback).
+ * notify.js — SMS helper for SniffMaster alerts (AWS SNS primary, ClickSend fallback).
  *
  * Channels:
  *   SMS chain (first success wins): AWS SNS (SNS_AWS_* env vars), then
- *   Twilio (TWILIO_* env vars).
+ *   ClickSend (CLICKSEND_* env vars).
  *
  *   ntfy — free push notification (https://ntfy.sh), configured via
  *   NTFY_TOPIC (or NTFY_URL for a self-hosted server). ALWAYS sent in
- *   parallel with the SMS chain, not as a fallback: both SNS (sandbox) and
- *   Twilio (pre-A2P/toll-free registration) will happily return success for
- *   messages the carrier then drops silently, so an SMS provider's "sent" is
- *   not proof of delivery. The push needs no carrier registration and is the
- *   one channel we can actually trust; when real SMS also lands, the owner
- *   simply gets the message twice (remove NTFY_TOPIC to stop that).
+ *   parallel with the SMS chain, not as a fallback: SNS (sandbox) will happily
+ *   return success for messages the carrier then drops silently, so an SMS
+ *   provider's "sent" is not proof of delivery. The push needs no carrier
+ *   registration and is the one channel we can actually trust; when real SMS
+ *   also lands, the owner simply gets the message twice (remove NTFY_TOPIC to
+ *   stop that).
+ *
+ * Twilio support has been removed: Twilio's US SMS requires A2P 10DLC brand
+ * registration through The Campaign Registry before real messages deliver —
+ * on a Trial account this is stuck behind an auto-generated "Mock Brand" that
+ * never delivers. ClickSend needs no per-sender brand registration for
+ * low-volume personal alerts, so it is the sole SMS fallback now.
  *
  * ⚠ Env naming: Vercel functions run on AWS Lambda, which RESERVES the standard
  * AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION names and injects its
@@ -25,10 +31,7 @@
  *   SNS_AWS_REGION             — optional, defaults to us-east-1
  *   ALERT_SMS_TO               — recipient number(s), comma-separated (E.164)
  *
- *   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN — optional fallback, plus one of:
- *   TWILIO_MESSAGING_SERVICE_SID — preferred: an MG... Messaging Service whose
- *                                  sender pool holds your registered number
- *   TWILIO_FROM                  — or a bare from-number (E.164)
+ *   CLICKSEND_USERNAME / CLICKSEND_API_KEY — ClickSend account credentials.
  *
  * (For local dev outside Vercel, the standard AWS_* names also work as a
  * fallback source for the SNS credentials.)
@@ -40,7 +43,7 @@
 
 import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
 
-const TWILIO_BASE = "https://api.twilio.com/2010-04-01";
+const CLICKSEND_URL = "https://rest.clicksend.com/v3/sms/send";
 // Hard cap per provider request. Recipients are sent in parallel, so this also
 // bounds total send time — the ESP32 is waiting on /api/update's response, and
 // Vercel Hobby functions have a ~10s budget. A hung provider call must not eat it.
@@ -93,13 +96,8 @@ export function isSnsConfigured() {
   return Boolean(accessKeyId && secretAccessKey && getRecipients().length > 0);
 }
 
-export function isTwilioConfigured() {
-  return Boolean(
-    env("TWILIO_ACCOUNT_SID") &&
-      env("TWILIO_AUTH_TOKEN") &&
-      (env("TWILIO_MESSAGING_SERVICE_SID") || env("TWILIO_FROM")) &&
-      getRecipients().length > 0
-  );
+export function isClickSendConfigured() {
+  return Boolean(env("CLICKSEND_USERNAME") && env("CLICKSEND_API_KEY") && getRecipients().length > 0);
 }
 
 export function isNtfyConfigured() {
@@ -108,7 +106,7 @@ export function isNtfyConfigured() {
 
 /** True when at least one delivery channel (SMS or push) is fully configured. */
 export function isSmsConfigured() {
-  return isSnsConfigured() || isTwilioConfigured() || isNtfyConfigured();
+  return isSnsConfigured() || isClickSendConfigured() || isNtfyConfigured();
 }
 
 export async function sendViaSns(text, recipients) {
@@ -155,13 +153,10 @@ export async function sendViaSns(text, recipients) {
   return { sent, failures };
 }
 
-export async function sendViaTwilio(text, recipients) {
-  const sid = env("TWILIO_ACCOUNT_SID");
-  const token = env("TWILIO_AUTH_TOKEN");
-  const messagingServiceSid = env("TWILIO_MESSAGING_SERVICE_SID");
-  const from = env("TWILIO_FROM");
-  const auth = Buffer.from(`${sid}:${token}`).toString("base64");
-  const url = `${TWILIO_BASE}/Accounts/${encodeURIComponent(sid)}/Messages.json`;
+export async function sendViaClickSend(text, recipients) {
+  const username = env("CLICKSEND_USERNAME");
+  const apiKey = env("CLICKSEND_API_KEY");
+  const auth = Buffer.from(`${username}:${apiKey}`).toString("base64");
 
   let sent = 0;
   const failures = [];
@@ -169,35 +164,29 @@ export async function sendViaTwilio(text, recipients) {
   await Promise.all(
     recipients.map(async (to) => {
       try {
-        // A Messaging Service (MG...) is Twilio's recommended sender for
-        // A2P/toll-free-registered traffic: it picks the right number from its
-        // sender pool. A bare From number still works for unregistered routes.
-        const params = new URLSearchParams(
-          messagingServiceSid
-            ? { To: to, MessagingServiceSid: messagingServiceSid, Body: text }
-            : { To: to, From: from, Body: text }
-        );
-        const resp = await fetch(url, {
+        const resp = await fetch(CLICKSEND_URL, {
           method: "POST",
           headers: {
             Authorization: `Basic ${auth}`,
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type": "application/json",
           },
-          body: params.toString(),
+          body: JSON.stringify({ messages: [{ to, body: text, source: "sniffmaster" }] }),
           signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
         });
 
-        if (resp.ok) {
+        const data = await resp.json().catch(() => null);
+        const msgStatus = data?.data?.messages?.[0]?.status;
+        if (resp.ok && (msgStatus === "SUCCESS" || msgStatus === "QUEUED" || !msgStatus)) {
           sent += 1;
         } else {
-          const detail = await resp.text().catch(() => "");
+          const detail = data ? JSON.stringify(data).slice(0, 300) : await resp.text().catch(() => "");
           failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 300) });
-          console.error(`notify: Twilio send to ${to} failed — HTTP ${resp.status} ${detail}`);
+          console.error(`notify: ClickSend send to ${to} failed — HTTP ${resp.status} ${detail}`);
         }
       } catch (err) {
         const message = err?.name === "TimeoutError" ? `timeout after ${SEND_TIMEOUT_MS}ms` : err?.message || String(err);
         failures.push({ to, error: message });
-        console.error(`notify: Twilio send to ${to} threw — ${message}`);
+        console.error(`notify: ClickSend send to ${to} threw — ${message}`);
       }
     })
   );
@@ -249,19 +238,19 @@ export async function sendSms(body) {
 
   const recipients = getRecipients();
 
-  // SNS → Twilio, first API-level success wins.
+  // SNS → ClickSend, first API-level success wins.
   const smsChain = async () => {
     const failures = [];
     if (isSnsConfigured()) {
       const r = await sendViaSns(text, recipients);
       failures.push(...r.failures.map((f) => ({ ...f, provider: "sns" })));
       if (r.sent > 0) return { sent: r.sent, failures, provider: "sns" };
-      console.warn("notify: all SNS sends failed" + (isTwilioConfigured() ? " — trying Twilio" : ""));
+      console.warn("notify: all SNS sends failed" + (isClickSendConfigured() ? " — trying ClickSend" : ""));
     }
-    if (isTwilioConfigured()) {
-      const r = await sendViaTwilio(text, recipients);
-      failures.push(...r.failures.map((f) => ({ ...f, provider: "twilio" })));
-      if (r.sent > 0) return { sent: r.sent, failures, provider: "twilio" };
+    if (isClickSendConfigured()) {
+      const r = await sendViaClickSend(text, recipients);
+      failures.push(...r.failures.map((f) => ({ ...f, provider: "clicksend" })));
+      if (r.sent > 0) return { sent: r.sent, failures, provider: "clicksend" };
     }
     return { sent: 0, failures, provider: null };
   };

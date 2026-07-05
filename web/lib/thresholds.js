@@ -28,7 +28,20 @@ export const THRESHOLDS = {
   IAQ_POOR: 150, // BME688 IAQ index (higher = worse)
   GAS_DROP_RATIO: 0.6, // gasR at/under 60% of baseline = ≥40% sudden drop
   GAS_MIN_BASELINE: 1000, // ignore drop test below this baseline (noise floor, Ohms)
+  CO2_HIGH: 1000, // ppm — ASHRAE-style indoor-air-quality guidance for occupied office space
 };
+
+// Environment presets tailor which readings matter and how they're framed.
+// "construction" (default) watches a temporary enclosure drying out
+// electrical equipment; "office" watches a normally-occupied workspace where
+// CO2/ventilation for people matters more than switchgear condensation.
+export const ENVIRONMENT_TYPES = ["construction", "office"];
+export const DEFAULT_ENVIRONMENT_TYPE = "construction";
+
+export function normalizeEnvironmentType(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return ENVIRONMENT_TYPES.includes(v) ? v : DEFAULT_ENVIRONMENT_TYPE;
+}
 
 // Guardrails for owner-supplied overrides — a fat-fingered value must never
 // disable safety monitoring (e.g. humidity set to 500 would never alarm).
@@ -60,6 +73,12 @@ export function getEffectiveThresholds(overrides) {
     t.TEMP_HIGH_C = clampNum(temp, THRESHOLD_LIMITS.TEMP_HIGH_C.min, THRESHOLD_LIMITS.TEMP_HIGH_C.max);
   }
   return t;
+}
+
+/** Resolve the effective environment type ("construction"/"office") from stored settings. */
+export function getEffectiveEnvironmentType(overrides) {
+  const o = overrides && typeof overrides === "object" ? overrides : {};
+  return normalizeEnvironmentType(o.environmentType);
 }
 
 function num(value, fallback = NaN) {
@@ -98,10 +117,11 @@ export function normalizeReading(snapshot) {
   if (!Number.isFinite(gasR)) gasR = num(s.gasResistance);
 
   const iaq = num(s.iaq);
+  const co2 = num(s.co2);
 
   const receivedAt = num(s.receivedAt, Date.now());
 
-  return { tempC, humidity, pressHpa, gasR, iaq, receivedAt };
+  return { tempC, humidity, pressHpa, gasR, iaq, co2, receivedAt };
 }
 
 /**
@@ -134,19 +154,26 @@ export function baselineGasR(history) {
  * @param {number} [baseGasR] — baseline gas resistance for the sudden-drop test
  * @param {typeof THRESHOLDS} [thresholds] — effective limits (see
  *        getEffectiveThresholds); defaults to the built-in THRESHOLDS.
+ * @param {"construction"|"office"} [environmentType] — tailors wording and
+ *        which extra checks apply (office adds a CO2/ventilation check).
  * @returns {Array<{key:string, level:"warn"|"crit", label:string, message:string}>}
  */
-export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS) {
+export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, environmentType = DEFAULT_ENVIRONMENT_TYPE) {
   const breaches = [];
   const r = reading || {};
   const T = thresholds || THRESHOLDS;
+  const env = normalizeEnvironmentType(environmentType);
+  const isOffice = env === "office";
+  const place = isOffice ? "the office" : "the enclosure";
 
   if (Number.isFinite(r.humidity) && r.humidity > T.HUMIDITY_HIGH) {
     breaches.push({
       key: "humidity",
       level: "crit",
       label: "High humidity",
-      message: `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - condensation risk on switchgear buswork.`,
+      message: isOffice
+        ? `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - uncomfortable/moisture risk in ${place}.`
+        : `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - condensation risk on switchgear buswork.`,
     });
   }
 
@@ -171,7 +198,9 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS) {
       key: "gas",
       level: "crit",
       label: "Air-quality spike",
-      message: `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)} vs ${Math.round(base)} ohm baseline) - possible smoke/fumes/contamination.`,
+      message: isOffice
+        ? `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)} vs ${Math.round(base)} ohm baseline) - possible odor/contamination source in ${place}.`
+        : `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)} vs ${Math.round(base)} ohm baseline) - possible smoke/fumes/contamination.`,
     });
   }
 
@@ -180,7 +209,18 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS) {
       key: "iaq",
       level: "warn",
       label: "Poor air quality",
-      message: `IAQ ${r.iaq.toFixed(0)} (limit ${T.IAQ_POOR}) - degraded air quality in the enclosure.`,
+      message: `IAQ ${r.iaq.toFixed(0)} (limit ${T.IAQ_POOR}) - degraded air quality in ${place}.`,
+    });
+  }
+
+  // CO2/ventilation only matters for occupied office space, not an unoccupied
+  // construction enclosure — skip it there to avoid noise on an irrelevant metric.
+  if (isOffice && Number.isFinite(r.co2) && r.co2 >= T.CO2_HIGH) {
+    breaches.push({
+      key: "co2",
+      level: r.co2 >= T.CO2_HIGH * 1.4 ? "crit" : "warn",
+      label: "High CO2",
+      message: `CO2 ${Math.round(r.co2)} ppm (limit ${T.CO2_HIGH} ppm) - ventilation is falling behind occupancy.`,
     });
   }
 

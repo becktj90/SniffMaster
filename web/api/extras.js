@@ -27,7 +27,14 @@ import {
   getSettings,
   putSettings,
 } from "../lib/store.js";
-import { getEffectiveThresholds, THRESHOLDS, THRESHOLD_LIMITS } from "../lib/thresholds.js";
+import {
+  getEffectiveThresholds,
+  THRESHOLDS,
+  THRESHOLD_LIMITS,
+  ENVIRONMENT_TYPES,
+  DEFAULT_ENVIRONMENT_TYPE,
+  normalizeEnvironmentType,
+} from "../lib/thresholds.js";
 import { getCapeLaunches, getCached as getCachedLaunches, setCache as setCacheLaunches, fetchLaunches } from "../lib/launches.js";
 import { Redis } from "@upstash/redis";
 
@@ -1093,8 +1100,16 @@ function effectiveSettingsPayload(overrides) {
   return {
     humidityHigh: t.HUMIDITY_HIGH,
     tempHighC: t.TEMP_HIGH_C,
+    co2High: t.CO2_HIGH,
+    environmentType: normalizeEnvironmentType(overrides?.environmentType),
     updatedAt: Number(overrides?.updatedAt) || null,
-    defaults: { humidityHigh: THRESHOLDS.HUMIDITY_HIGH, tempHighC: THRESHOLDS.TEMP_HIGH_C },
+    defaults: {
+      humidityHigh: THRESHOLDS.HUMIDITY_HIGH,
+      tempHighC: THRESHOLDS.TEMP_HIGH_C,
+      co2High: THRESHOLDS.CO2_HIGH,
+      environmentType: DEFAULT_ENVIRONMENT_TYPE,
+    },
+    environmentTypes: ENVIRONMENT_TYPES,
     limits: THRESHOLD_LIMITS,
   };
 }
@@ -1135,8 +1150,15 @@ async function settings(req, res) {
     if (!Number.isFinite(v)) return res.status(400).json({ error: "tempHighC must be a number" });
     patch.tempHighC = v;
   }
+  if (body.environmentType !== undefined) {
+    const v = String(body.environmentType || "").trim().toLowerCase();
+    if (!ENVIRONMENT_TYPES.includes(v)) {
+      return res.status(400).json({ error: `environmentType must be one of: ${ENVIRONMENT_TYPES.join(", ")}` });
+    }
+    patch.environmentType = v;
+  }
   if (!Object.keys(patch).length) {
-    return res.status(400).json({ error: "no adjustable settings supplied (humidityHigh, tempHighC)" });
+    return res.status(400).json({ error: "no adjustable settings supplied (humidityHigh, tempHighC, environmentType)" });
   }
 
   try {
