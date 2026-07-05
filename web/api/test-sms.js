@@ -13,6 +13,11 @@
  *                          an unverified number in the SNS SMS sandbox:
  *                          Publish returns a MessageId with no error, but
  *                          the carrier never receives it).
+ *   ?mms=true           — send an MMS via ClickSend instead of plain SMS:
+ *                          the report-card PNG attached, body text is the
+ *                          latest stored daily report (weather/lightning
+ *                          risk/Cape launches included) if one exists, else
+ *                          a generic test message. Ignores ?provider.
  *
  * Response:
  * {
@@ -38,8 +43,11 @@ import {
   sendSms,
   sendViaSns,
   sendViaClickSend,
+  sendViaClickSendMms,
   sendViaNtfy,
+  PUBLIC_BASE_URL,
 } from "../lib/notify.js";
+import { getDailySummary } from "../lib/store.js";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -88,12 +96,28 @@ export default async function handler(req, res) {
     return res.status(400).json({ ...response, error: "ntfy is not configured. Set NTFY_TOPIC (or NTFY_URL)." });
   }
 
+  const wantsMms = req.query?.mms === "true";
+  if (wantsMms && !isClickSendConfigured()) {
+    return res.status(400).json({ ...response, error: "ClickSend is not configured (MMS requires it)." });
+  }
+
   try {
     const timestamp = new Date().toISOString();
     const testMessage = `SniffMaster SMS Test - ${timestamp}. If you received this, SMS is working!`;
 
     let result;
-    if (forceProvider === "clicksend") {
+    if (wantsMms) {
+      // Prefer the latest real daily report (already has weather, lightning
+      // risk, and today's Cape launches baked in) over a placeholder string.
+      const latest = await getDailySummary().catch(() => null);
+      const body = latest?.smsText || `${testMessage} (no stored daily report yet — this is placeholder text.)`;
+      const mediaUrl = `${PUBLIC_BASE_URL}/api/report-card?format=png`;
+      const { sent, failures } = await sendViaClickSendMms(body, recipients, mediaUrl, "SniffMaster Report");
+      result = { sent, failures: failures.map((f) => ({ ...f, provider: "clicksend-mms" })), provider: "clicksend-mms" };
+      response.test = { sent: result.sent, failures: result.failures, provider: result.provider, timestamp: Date.now(), message: body, mediaUrl };
+      const status = result.sent > 0 ? 200 : 500;
+      return res.status(status).json(response);
+    } else if (forceProvider === "clicksend") {
       const { sent, failures } = await sendViaClickSend(testMessage, recipients);
       result = { sent, failures: failures.map((f) => ({ ...f, provider: "clicksend" })), provider: "clicksend" };
     } else if (forceProvider === "sns") {
