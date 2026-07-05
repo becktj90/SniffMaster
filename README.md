@@ -8,7 +8,7 @@ Monorepo for the SniffMaster Pro embedded firmware, hosted web dashboard, and su
 - `web/` — Vercel-hosted dashboard and API relay
 - `docs/` — architecture notes and stabilization roadmap
 - `tools/` — future data/ML utilities
-- `ntfy_sms_forwarder.py` — standalone background script that forwards ntfy.sh push notifications to a phone as SMS via the Twilio API (independent of the web dashboard's own SNS/Twilio/ntfy alert pipeline)
+- `ntfy_sms_forwarder.py` — standalone background script that forwards ntfy.sh push notifications to a phone as SMS via the Brevo API (independent of the web dashboard's own SNS/Brevo/ntfy alert pipeline)
 - `systemd/` — optional systemd user unit to keep the ntfy forwarder running across reboots/crashes
 - `scripts/ntfy_watchdog.sh` — cron-friendly alternative to systemd for keeping the ntfy forwarder alive
 
@@ -34,23 +34,23 @@ Monorepo for the SniffMaster Pro embedded firmware, hosted web dashboard, and su
 ### ntfy SMS forwarder
 
 `ntfy_sms_forwarder.py` (repo root) listens on a ntfy.sh topic over SSE and
-forwards each notification as an SMS via the [Twilio](https://www.twilio.com/)
-API, which sends over the real SMS network (not an email gateway). It
-reconnects automatically with exponential backoff and never hardcodes
-secrets — all config comes from a root-level `.env`.
+forwards each notification as an SMS via the [Brevo](https://www.brevo.com/)
+transactional SMS API, which sends over the real SMS network (not an email
+gateway). It reconnects automatically with exponential backoff and never
+hardcodes secrets — all config comes from a root-level `.env`.
 
 **Setup:**
 
 1. `pip install -r requirements.txt`
 2. A root `.env` already exists (copied from `.env.example`) with
    `NTFY_BASE_URL`, `NTFY_TOPIC`, and `ALERT_SMS_TO` pre-filled. Fill in the
-   Twilio credentials in `.env` (from the
-   [Twilio Console](https://console.twilio.com)):
-   - `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` — API credentials
-   - `TWILIO_MESSAGING_SERVICE_SID` — preferred sender: a Messaging Service
-     whose sender pool holds your registered Twilio number
-   - `TWILIO_FROM` — or, instead of a Messaging Service, a bare Twilio
-     phone number in E.164 format (e.g. `+15555550100`)
+   Brevo credentials in `.env` (from your
+   [Brevo dashboard](https://app.brevo.com) → Settings → SMTP & API → API Keys):
+   - `BREVO_API_KEY` — transactional API key
+   - `BREVO_SMS_SENDER` — sender name/number shown to the recipient (max 15
+     chars: up to 11 if alphanumeric, up to 15 if a real numeric phone
+     number). Some countries require this sender to be pre-approved in the
+     Brevo dashboard (Transactional → SMS → Senders) before sends succeed.
 3. Run it in the foreground to verify it connects: `python3 ntfy_sms_forwarder.py`
 
 **Running it in the background** (matches the usage notes in the script's own docstring):
@@ -124,11 +124,10 @@ intentionally out of scope here — they're just enough supervision to make
 sure the forwarder comes back after a reboot or crash without someone
 noticing missed alerts first.
 
-**Switched off AT&T's email-to-SMS gateway in favor of Twilio — one manual
-registration step still required before texts are actually delivered.**
+**History: AT&T email-to-SMS gateway → Twilio → Brevo.**
 
 Live end-to-end testing (with real Gmail App Password credentials) confirmed
-that the previous email-to-SMS approach was unusable: Gmail's SMTP server
+that the original email-to-SMS approach was unusable: Gmail's SMTP server
 accepted every message (`✓ SMS sent successfully` in the logs), but no text
 ever arrived on the destination phone (510-432-4862, confirmed AT&T), across
 three separate attempts against both `txt.att.net` and `mms.att.net`. There
@@ -139,58 +138,42 @@ email-to-SMS gateways and frequently blocks mail from unfamiliar/bulk senders
 (including standard Gmail SMTP) with zero feedback. **SMTP acceptance was
 never proof of SMS delivery for AT&T numbers.**
 
-The forwarder now sends via the [Twilio](https://www.twilio.com/) SMS API
-instead (`TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_MESSAGING_SERVICE_SID`
-or `TWILIO_FROM` / `ALERT_SMS_TO` in `.env` — see Setup above), which sends
-over the real SMS network rather than an email gateway and returns a message
-SID on success and a real HTTP error on failure — so send failures are now
-actually observable in `ntfy_forwarder.log` instead of failing silently like
-the old gateway did.
+The forwarder then moved to Twilio's SMS API, which sends over the real SMS
+network rather than an email gateway — but hit its own carrier-side wall: a
+live test showed Twilio's API accepting the message while the carrier marked
+it `undelivered` with error 30034, because U.S. carriers require long-code
+numbers to complete **A2P 10DLC registration** (a spam/abuse prevention
+program) before delivering application-to-person texts. That's a one-time
+business-verification step done in the Twilio Console — not something this
+script can complete on your behalf.
 
-**⚠️ One-time setup still needed: A2P 10DLC registration.** A live test after
-switching to Twilio showed the API accepting the message, but the carrier
-then marked it `undelivered` with error code
-[30034](https://www.twilio.com/docs/api/errors/30034) — U.S. carriers require
-long-code phone numbers to complete **A2P 10DLC registration** (a spam/abuse
-prevention program) before they'll deliver application-to-person texts, and
-this project's Twilio number (`+17543379692`) hasn't completed it yet. This
-is a one-time business verification step (brand + campaign registration) done
-directly in the Twilio Console — it needs business details the forwarder
-script has no business handling automatically:
+**The forwarder now sends via [Brevo](https://www.brevo.com/)'s
+transactional SMS API instead** (`BREVO_API_KEY` / `BREVO_SMS_SENDER` /
+`ALERT_SMS_TO` in `.env` — see Setup above). Like Twilio, Brevo returns a
+real HTTP error on failure — not a silent SMTP "success" — so send failures
+are observable in `ntfy_forwarder.log`. One difference to know about: Brevo's
+API does not expose a per-message delivery-status lookup the way Twilio's
+`GET /Messages/{sid}` does, so `send_sms_via_brevo()` logs acceptance
+(the `reference`, segment count, and remaining credits) and stops there. If
+a text never arrives, check **Transactional → SMS → Logs** in the Brevo
+dashboard for the actual carrier status — some countries also require the
+sender name/number to be pre-approved there (Transactional → SMS → Senders)
+before sends succeed at all.
 
-1. Go to [Messaging → Regulatory Compliance → A2P 10DLC](https://console.twilio.com/us1/develop/sms/regulatory-compliance/a2p-10dlc) in the Twilio Console.
-2. Register a brand (your business/organization info).
-3. Register a campaign for this use case (e.g. "low-volume alerts/notifications").
-4. Attach the campaign to `+17543379692` (or whichever number `TWILIO_FROM` points to).
-
-Approval is often near-instant for low-volume/verified brands, but can take
-up to a couple of days for full vetting. Once approved, re-run the forwarder
-(or the quick test below) — no code changes are needed on this end.
-
-**Quick way to verify delivery once registration is approved:**
+**Quick way to verify a send:**
 
 ```bash
 python3 -c "
 import ntfy_sms_forwarder as f
 f.validate_config()
-print('Send succeeded:', f.send_sms_via_twilio('Test: A2P 10DLC registration verification'))
+print('Send succeeded:', bool(f.send_sms_via_brevo('Test: Brevo forwarder verification')))
 "
 ```
 
-The Twilio message SID is printed in the log line right above (e.g.
-`✓ SMS sent successfully (Twilio SID: SM...)`), and `send_sms_via_twilio`
-prints `True`/`False` for whether Twilio *accepted* the send. Check the
-message status directly with Twilio's API if you want to confirm the
-carrier actually delivered it (replace `<SID>` with the SID from the log):
-
-```bash
-curl -s -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
-  "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_ACCOUNT_SID/Messages/<SID>.json" \
-  | python3 -m json.tool
-```
-
-A `status` of `delivered` (not `undelivered`/`failed`) confirms the phone
-actually received it.
+The Brevo reference is printed in the log line right above (e.g.
+`✓ Brevo accepted the message (reference: ..., smsCount: 1,
+remainingCredits: 42)`). Check the Brevo dashboard's Transactional → SMS →
+Logs to confirm the carrier actually delivered it.
 
 ## Recommended git branches
 
