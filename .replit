@@ -49,3 +49,4 @@ timeoutMs = 120000
 NTFY_BASE_URL = "https://ntfy.sh"
 NTFY_TOPIC = "sniffmaster-pro-alerts-7f3k2"
 ALERT_SMS_TO = "+15104324862"
+UPSTASH_REDIS_REST_URL = "https://infinite-quetzal-79938.upstash.io"
