@@ -151,9 +151,12 @@ Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Me
 
 ### GET /api/daily-summary
 
-Two modes:
+Three modes:
 - **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
 - **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window. The report is tailored (wording, which sensors are highlighted) by the current `environmentType` — see `/api/settings` below.
+- **`?manual=true`** (no `CRON_SECRET` needed — the "Send test report now" button on the dashboard): forces a real, fresh send the same way `?force=true` does, but since anyone with the dashboard URL can trigger it and each send costs real money via ClickSend, it's rate-limited server-side to once every 5 minutes (independent of the 6-hour cron resend guard) rather than gated behind a secret.
+
+Report wording isn't static: it factors in how many consecutive days a problem has persisted (or that it just cleared) via `computeProblemStreak()`, and the OpenAI-written narrative is given the same day-over-day % comparisons the stats block shows, so two different underlying situations don't read the same.
 
 ### GET/POST /api/settings
 

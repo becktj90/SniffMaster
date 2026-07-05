@@ -4014,6 +4014,49 @@ function wireRestorationControls() {
       if (e.key === "Enter") { e.preventDefault(); saveThresholds(); }
     });
   }
+
+  const testReportBtn = $("rs-test-report-btn");
+  if (testReportBtn) testReportBtn.addEventListener("click", () => sendTestReport());
+}
+
+// Fires a real report send on demand (rate-limited server-side to once every
+// few minutes — see MANUAL_TEST_COOLDOWN_SEC in api/daily-summary.js — since
+// each send costs real money via ClickSend, unlike the settings changes above).
+async function sendTestReport() {
+  const btn = $("rs-test-report-btn");
+  const status = $("rs-test-report-status");
+  const setStatus = (text, tone) => {
+    if (!status) return;
+    status.textContent = text || "";
+    status.className = `rs-adjust-status${tone ? ` is-${tone}` : ""}`;
+  };
+  if (btn) btn.disabled = true;
+  setStatus("Sending test report...", "neutral");
+  try {
+    const res = await fetch("/api/daily-summary?manual=true", { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 429) {
+      setStatus(data.error || "Rate-limited - try again in a few minutes.", "warn");
+      return;
+    }
+    if (!res.ok) throw new Error(`daily-summary ${res.status}`);
+    const sent = Number(data?.sms?.sent) || 0;
+    const provider = data?.sms?.provider || data?.provider;
+    setStatus(
+      sent > 0
+        ? `Sent via ${provider || "configured channel"}.`
+        : "Report generated, but no channel delivered it - check SMS/ntfy configuration.",
+      sent > 0 ? "good" : "warn"
+    );
+    dailySummaryState.data = data;
+    dailySummaryState.fetchedAt = Date.now();
+    renderDailySummary(data);
+  } catch (err) {
+    console.error("send test report failed:", err);
+    setStatus("Failed to send. Check your connection and try again.", "warn");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // Save every adjustable alarm limit in one POST. Temp is entered in °F
@@ -4234,6 +4277,10 @@ function ensureRestorationDom() {
             </div>
             <p class="rs-adjust-status" id="rs-adjust-status" role="status" aria-live="polite"></p>
           </div>
+          <div class="rs-adjust-actions">
+            <button type="button" class="rs-save-btn" id="rs-test-report-btn">Send test report now</button>
+          </div>
+          <p class="rs-adjust-status" id="rs-test-report-status" role="status" aria-live="polite"></p>
         </div>`;
       // Honor the current tab's visibility rules on injection.
       panel.classList.toggle("is-hidden", (typeof activeView === "string" ? activeView : "dashboard") !== "dashboard");

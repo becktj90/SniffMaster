@@ -96,11 +96,16 @@ async function maybeSendAlerts(stored) {
   const sentAt = { ...state.sentAt };
   const now = Date.now();
 
-  const toNotify = breaches.filter((b) => {
-    const isNew = !prevActive.has(b.key);
-    const cooledDown = !sentAt[b.key] || now - sentAt[b.key] > cooldownMs;
-    return isNew || cooledDown;
-  });
+  // isNew rides along on each breach (not just the filter decision) so the
+  // alert wording can say "still going" vs "just tripped" instead of reading
+  // identically whether this is the first minute of a breach or the fifth
+  // re-notify after cooldown.
+  const toNotify = breaches
+    .map((b) => ({ ...b, isNew: !prevActive.has(b.key) }))
+    .filter((b) => {
+      const cooledDown = !sentAt[b.key] || now - sentAt[b.key] > cooldownMs;
+      return b.isNew || cooledDown;
+    });
 
   if (toNotify.length > 0) {
     // Two messages instead of one long one:

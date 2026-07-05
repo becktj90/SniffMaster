@@ -364,6 +364,26 @@ export async function acquireDailySummaryLock(ttlSeconds) {
 }
 
 /**
+ * Rate-limit for the unauthenticated "send me a test report now" trigger
+ * (see api/daily-summary.js's ?manual=true path). Distinct key/lock from
+ * acquireDailySummaryLock — that one guards the cron's own dedup window (up
+ * to 6h) and would otherwise block a manual test for hours; this one is a
+ * short, tight cooldown whose only job is capping how often an
+ * unauthenticated caller can trigger a real (costs-money) send.
+ * @param {number} ttlSeconds
+ * @returns {Promise<boolean>} true if this caller won the lock
+ */
+export async function acquireManualReportLock(ttlSeconds) {
+  const redis = getRedis();
+  const result = await redis.set(
+    "sniffmaster:manual_report_lock",
+    String(Date.now()),
+    { nx: true, ex: Math.max(30, Math.floor(ttlSeconds)) }
+  );
+  return result === "OK";
+}
+
+/**
  * Store a daily summary snapshot (the morning 24h report) so the dashboard
  * panel and follow-up runs can read it. Overwrites latest + appends to history.
  */
