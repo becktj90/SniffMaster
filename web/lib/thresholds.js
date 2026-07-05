@@ -6,12 +6,13 @@
  * `gas_resistance`, and `pressure`. Everything here reads BOTH conventions and
  * normalizes to canonical units (temperature in °C) before comparing.
  *
- * Thresholds target electrical-equipment restoration in a temporary enclosure:
- *   - Humidity > 60 %RH  → condensation risk on open switchgear buswork
- *   - Temperature > 40 °C → environmental-control failure / localized overheating
- *   - Sudden gas-resistance drop OR poor IAQ → smoke / fumes / construction fumes
+ * Thresholds target conditions for personnel working in the monitored room:
+ *   - Humidity > 60 %RH  → heat-stress/comfort risk and condensation on equipment
+ *   - Temperature > 40 °C → heat-stress risk / environmental-control failure
+ *   - Sudden gas-resistance drop OR poor IAQ → smoke / fumes exposure
+ *   - CO2 above limit → ventilation falling behind occupancy
  *
- * The humidity/temperature limits are OWNER-ADJUSTABLE at runtime: the settings
+ * The humidity/temperature/CO2 limits are OWNER-ADJUSTABLE at runtime: the settings
  * endpoint stores overrides in Redis, and callers merge them via
  * getEffectiveThresholds() before evaluating. THRESHOLDS below are the built-in
  * defaults / fallback.
@@ -32,15 +33,26 @@ export const THRESHOLDS = {
 };
 
 // Environment presets tailor which readings matter and how they're framed.
-// "construction" (default) watches a temporary enclosure drying out
-// electrical equipment; "office" watches a normally-occupied workspace where
-// CO2/ventilation for people matters more than switchgear condensation.
-export const ENVIRONMENT_TYPES = ["construction", "office"];
-export const DEFAULT_ENVIRONMENT_TYPE = "construction";
+// "industrial" (default) watches an active work area with equipment and crews
+// (condensation, heat, fumes); "office" watches a normally-occupied workspace
+// where CO2/ventilation and comfort for people matter most.
+export const ENVIRONMENT_TYPES = ["industrial", "office"];
+export const DEFAULT_ENVIRONMENT_TYPE = "industrial";
+
+// Legacy aliases from older stored settings — normalize silently so existing
+// Redis blobs keep working without a migration.
+const ENVIRONMENT_ALIASES = { construction: "industrial" };
 
 export function normalizeEnvironmentType(value) {
   const v = String(value || "").trim().toLowerCase();
-  return ENVIRONMENT_TYPES.includes(v) ? v : DEFAULT_ENVIRONMENT_TYPE;
+  const mapped = ENVIRONMENT_ALIASES[v] || v;
+  return ENVIRONMENT_TYPES.includes(mapped) ? mapped : DEFAULT_ENVIRONMENT_TYPE;
+}
+
+/** True when the value is a current environment type or a known legacy alias. */
+export function isKnownEnvironmentType(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return ENVIRONMENT_TYPES.includes(ENVIRONMENT_ALIASES[v] || v);
 }
 
 // Guardrails for owner-supplied overrides — a fat-fingered value must never
@@ -48,6 +60,7 @@ export function normalizeEnvironmentType(value) {
 export const THRESHOLD_LIMITS = {
   HUMIDITY_HIGH: { min: 40, max: 90 },
   TEMP_HIGH_C: { min: 25, max: 70 },
+  CO2_HIGH: { min: 600, max: 2000 },
 };
 
 function clampNum(value, min, max) {
@@ -72,10 +85,14 @@ export function getEffectiveThresholds(overrides) {
   if (Number.isFinite(temp)) {
     t.TEMP_HIGH_C = clampNum(temp, THRESHOLD_LIMITS.TEMP_HIGH_C.min, THRESHOLD_LIMITS.TEMP_HIGH_C.max);
   }
+  const co2 = Number(o.co2High);
+  if (Number.isFinite(co2)) {
+    t.CO2_HIGH = clampNum(co2, THRESHOLD_LIMITS.CO2_HIGH.min, THRESHOLD_LIMITS.CO2_HIGH.max);
+  }
   return t;
 }
 
-/** Resolve the effective environment type ("construction"/"office") from stored settings. */
+/** Resolve the effective environment type ("industrial"/"office") from stored settings. */
 export function getEffectiveEnvironmentType(overrides) {
   const o = overrides && typeof overrides === "object" ? overrides : {};
   return normalizeEnvironmentType(o.environmentType);
@@ -154,8 +171,8 @@ export function baselineGasR(history) {
  * @param {number} [baseGasR] — baseline gas resistance for the sudden-drop test
  * @param {typeof THRESHOLDS} [thresholds] — effective limits (see
  *        getEffectiveThresholds); defaults to the built-in THRESHOLDS.
- * @param {"construction"|"office"} [environmentType] — tailors wording and
- *        which extra checks apply (office adds a CO2/ventilation check).
+ * @param {"industrial"|"office"} [environmentType] — tailors wording for the
+ *        space (industrial work area vs occupied office).
  * @returns {Array<{key:string, level:"warn"|"crit", label:string, message:string}>}
  */
 export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, environmentType = DEFAULT_ENVIRONMENT_TYPE) {
@@ -164,7 +181,7 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
   const T = thresholds || THRESHOLDS;
   const env = normalizeEnvironmentType(environmentType);
   const isOffice = env === "office";
-  const place = isOffice ? "the office" : "the enclosure";
+  const place = isOffice ? "the office" : "the work area";
 
   if (Number.isFinite(r.humidity) && r.humidity > T.HUMIDITY_HIGH) {
     breaches.push({
@@ -173,7 +190,7 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
       label: "High humidity",
       message: isOffice
         ? `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - uncomfortable/moisture risk in ${place}.`
-        : `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - condensation risk on switchgear buswork.`,
+        : `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - muggy conditions for the crew and condensation risk on equipment.`,
     });
   }
 
@@ -182,7 +199,7 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
       key: "temp",
       level: "crit",
       label: "High temperature",
-      message: `Temp ${r.tempC.toFixed(1)}C (limit ${T.TEMP_HIGH_C}C) - check environmental controls / overheating.`,
+      message: `Temp ${r.tempC.toFixed(1)}C (limit ${T.TEMP_HIGH_C}C) - heat stress risk; check cooling before extended work in ${place}.`,
     });
   }
 
@@ -200,7 +217,7 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
       label: "Air-quality spike",
       message: isOffice
         ? `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)} vs ${Math.round(base)} ohm baseline) - possible odor/contamination source in ${place}.`
-        : `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)} vs ${Math.round(base)} ohm baseline) - possible smoke/fumes/contamination.`,
+        : `Gas resistance dropped ${dropPct}% (${Math.round(r.gasR)} vs ${Math.round(base)} ohm baseline) - possible smoke/fumes; crew should verify air is safe.`,
     });
   }
 
@@ -213,14 +230,14 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
     });
   }
 
-  // CO2/ventilation only matters for occupied office space, not an unoccupied
-  // construction enclosure — skip it there to avoid noise on an irrelevant metric.
-  if (isOffice && Number.isFinite(r.co2) && r.co2 >= T.CO2_HIGH) {
+  // CO2/ventilation matters wherever people are working — office or an
+  // industrial work area with a crew inside.
+  if (Number.isFinite(r.co2) && r.co2 >= T.CO2_HIGH) {
     breaches.push({
       key: "co2",
       level: r.co2 >= T.CO2_HIGH * 1.4 ? "crit" : "warn",
       label: "High CO2",
-      message: `CO2 ${Math.round(r.co2)} ppm (limit ${T.CO2_HIGH} ppm) - ventilation is falling behind occupancy.`,
+      message: `CO2 ${Math.round(r.co2)} ppm (limit ${T.CO2_HIGH} ppm) - ventilation is falling behind occupancy in ${place}.`,
     });
   }
 

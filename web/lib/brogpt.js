@@ -49,7 +49,7 @@ export function extractOutputText(responseJson) {
  * to a deterministic line, so the alert always ships.
  *
  * @param {Array<{key:string,label:string,message:string}>} breaches
- * @param {{ timeoutMs?:number, maxChars?:number, environmentType?:"construction"|"office" }} [opts]
+ * @param {{ timeoutMs?:number, maxChars?:number, environmentType?:"industrial"|"office" }} [opts]
  * @returns {Promise<string>}
  */
 export async function buildAlertBroSummary(breaches, opts = {}) {
@@ -57,7 +57,7 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   if (!list.length) return "";
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 4000;
   const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 200;
-  const environmentType = opts.environmentType === "office" ? "office" : "construction";
+  const environmentType = opts.environmentType === "office" ? "office" : "industrial";
 
   const fallback = alertFallbackText(list, environmentType);
 
@@ -67,7 +67,7 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   const model = `${process.env.OPENAI_REPORT_MODEL || "gpt-5.4-nano"}`.trim();
   const contextLine = environmentType === "office"
     ? "Context: a sensor watches an occupied office space, tracking comfort (temp/humidity) and air quality/ventilation (CO2, IAQ) for the people working there."
-    : "Context: a sensor watches a temporary enclosure protecting electrical switchgear drying out after an incident; AC and dehumidifiers run to keep it safe.";
+    : "Context: a sensor watches an industrial work area where a crew is working around equipment; conditions matter for both the people (heat stress, air quality, ventilation) and the hardware (condensation).";
   const prompt = [
     "Write ONE short line for an SMS alert from an environmental monitor to its owner.",
     contextLine,
@@ -97,7 +97,7 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
 }
 
 /** Deterministic personal-voice line keyed to which alarms are active. */
-export function alertFallbackText(breaches, environmentType = "construction") {
+export function alertFallbackText(breaches, environmentType = "industrial") {
   const keys = new Set((breaches || []).map((b) => b.key));
   const isOffice = environmentType === "office";
 
@@ -121,16 +121,19 @@ export function alertFallbackText(breaches, environmentType = "construction") {
   }
 
   if (keys.has("humidity") && (keys.has("gas") || keys.has("iaq"))) {
-    return "Heads up - the enclosure is both damp and showing bad air right now. Worth getting eyes on the dehumidifiers and checking for fumes.";
+    return "Heads up - the work area is both damp and showing bad air right now. Worth checking ventilation and looking for a fume source before the crew keeps working.";
   }
   if (keys.has("humidity")) {
-    return "Heads up - humidity in the enclosure just crossed the safe line. Condensation risk on the buswork; check the dehumidifiers.";
+    return "Heads up - humidity in the work area just crossed the limit. Muggy for the crew and condensation risk on equipment; check the dehumidifiers.";
   }
   if (keys.has("temp")) {
-    return "Heads up - it is running hot in the enclosure. Check the AC and look for anything overheating.";
+    return "Heads up - it is running hot in the work area. Heat stress risk for the crew; check the cooling.";
+  }
+  if (keys.has("co2")) {
+    return "Heads up - CO2 in the work area just crossed the line. Ventilation is falling behind; worth airing the space out.";
   }
   if (keys.has("gas") || keys.has("iaq")) {
-    return "Heads up - air quality in the enclosure just went off. Possible smoke or fumes; worth checking it out.";
+    return "Heads up - air quality in the work area just went off. Possible smoke or fumes; have the crew verify the air is safe.";
   }
-  return "Heads up - the enclosure just tripped a safety alarm. Worth a look when you can.";
+  return "Heads up - the work area just tripped an environmental alarm. Worth a look when you can.";
 }

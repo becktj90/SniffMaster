@@ -117,7 +117,7 @@ async function maybeSendAlerts(stored) {
     let statsLine = "";
     try {
       const fullHistory = await getHistory(288); // up to ~48h @ 10min, filtered to 24h inside buildSummary
-      const summary = buildSummary(fullHistory, thresholds);
+      const summary = buildSummary(fullHistory, thresholds, environmentType);
       statsLine = summaryToSms(summary);
     } catch (err) {
       console.error("alerts: 24h stats block failed:", err);

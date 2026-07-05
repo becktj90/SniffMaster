@@ -36,6 +36,7 @@ import { sendSms, isSmsConfigured } from "../lib/notify.js";
 // Shared SMS-text helpers (single source of truth; also used by the alert path).
 import { sanitizeSmsAscii, extractOutputText } from "../lib/brogpt.js";
 import { getCapeLaunches } from "../lib/launches.js";
+import { fetchLc36Outlook, outlookToSmsLines } from "../lib/forecast.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
@@ -135,6 +136,28 @@ function buildBaseline(prevSummaries, now = Date.now()) {
     pressure: mean((d) => d?.pressure?.avg),
     gas: mean((d) => d?.gas?.avg),
     iaq: mean((d) => d?.iaq?.avg),
+    co2: mean((d) => d?.co2?.avg),
+  };
+}
+
+/**
+ * Server-side change-vs-norm per metric (numeric %, 1 decimal), so the
+ * dashboard renders deltas straight from the stored summary without
+ * recomputing baselines client-side. null = no comparable baseline.
+ */
+function buildDeltas(s, baseline) {
+  const pct = (cur, base) => {
+    if (!Number.isFinite(cur) || !Number.isFinite(base) || base === 0) return null;
+    return Number((((cur - base) / Math.abs(base)) * 100).toFixed(1));
+  };
+  return {
+    baselineDays: baseline?.days || 0,
+    tempF: pct(s.temp ? cToF(s.temp.avg) : NaN, baseline?.tempF),
+    humidity: pct(s.humidity?.avg, baseline?.humidity),
+    pressure: pct(s.pressure?.avg, baseline?.pressure),
+    gas: pct(s.gas?.avg, baseline?.gas),
+    iaq: pct(s.iaq?.avg, baseline?.iaq),
+    co2: pct(s.co2?.avg, baseline?.co2),
   };
 }
 
@@ -147,7 +170,7 @@ function gasLabel(ohms) {
   return `${Math.round(ohms)} ohm`;
 }
 
-function buildSummary(history, thresholds = THRESHOLDS, environmentType = "construction") {
+function buildSummary(history, thresholds = THRESHOLDS, environmentType = "industrial") {
   const T = thresholds || THRESHOLDS;
   const isOffice = environmentType === "office";
   const now = Date.now();
@@ -162,19 +185,19 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "const
   const pressure = stats(readings.map((r) => r.pressHpa));
   const gas = stats(readings.map((r) => r.gasR));
   const iaq = stats(readings.map((r) => r.iaq));
-  const co2 = isOffice ? stats(readings.map((r) => r.co2)) : null;
+  // CO2 matters wherever people work — tracked in both environment modes.
+  const co2 = stats(readings.map((r) => r.co2));
 
   const humidityDelta = halfDelta(readings.map((r) => r.humidity));
   const tempDelta = halfDelta(readings.map((r) => r.tempC));
 
-  // "Controls stabilizing?" — humidity and temperature within safe band and
-  // not trending upward means the AC + dehumidifiers are holding the space.
-  // Office mode also folds in CO2/ventilation since occupant comfort (not
-  // switchgear condensation) is the point there.
+  // "Controls stabilizing?" — humidity, temperature, and CO2 within safe band
+  // and humidity not trending upward means the environmental controls are
+  // keeping the space workable for the people in it.
   // Uses the same owner-adjustable limits as the real-time alerts.
   const humidityInBand = !humidity || humidity.avg <= T.HUMIDITY_HIGH;
   const tempInBand = !temp || temp.avg <= T.TEMP_HIGH_C;
-  const co2InBand = !isOffice || !co2 || co2.avg <= T.CO2_HIGH;
+  const co2InBand = !co2 || co2.avg <= T.CO2_HIGH;
   const humidityFalling = humidityDelta === null || humidityDelta <= 1; // ≤ +1% drift
   const controlsStabilizing = Boolean(humidityInBand && tempInBand && co2InBand && humidityFalling);
 
@@ -188,7 +211,7 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "const
         : "";
     controlsNote = isOffice
       ? `HVAC holding comfortable conditions${trend}.`
-      : `AC + dehumidifiers stabilizing the space${trend}.`;
+      : `Cooling + dehumidifiers holding workable conditions${trend}.`;
   } else {
     const reasons = [];
     if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% above the ${T.HUMIDITY_HIGH}% limit`);
@@ -210,7 +233,7 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "const
     gas,
     iaq,
     co2,
-    environmentType: isOffice ? "office" : "construction",
+    environmentType: isOffice ? "office" : "industrial",
     humidityDelta,
     tempDelta,
     controlsStabilizing,
@@ -296,16 +319,16 @@ function reportFallbackText(s) {
     if (isOffice) {
       return `Good morning! Overnight report from the office: everything stayed comfortable.${trend}`;
     }
-    const restorationTrend =
+    const crewTrend =
       Number.isFinite(s.humidityDelta) && s.humidityDelta < -0.5
-        ? ` Humidity eased down ${Math.abs(s.humidityDelta).toFixed(0)}% overnight - the dehumidifiers are doing their job.`
-        : " The AC and dehumidifiers are holding steady.";
-    return `Good morning! Overnight report from the enclosure: everything stayed in the safe zone.${restorationTrend} The switchgear is staying dry.`;
+        ? ` Humidity eased down ${Math.abs(s.humidityDelta).toFixed(0)}% overnight.`
+        : " Cooling and dehumidifiers are holding steady.";
+    return `Good morning! Overnight report from the work area: conditions stayed in the safe zone for the crew.${crewTrend}`;
   }
   if (isOffice) {
     return `Morning - heads up on the office. ${s.controlsNote} Worth checking the HVAC today.`;
   }
-  return `Morning - heads up on the enclosure. ${s.controlsNote} Worth checking the AC and dehumidifiers today before condensation becomes a problem.`;
+  return `Morning - heads up on the work area. ${s.controlsNote} Worth checking the cooling and ventilation before the crew settles in.`;
 }
 
 /** ET calendar date (YYYY-MM-DD) for a timestamp, for "today" comparisons. */
@@ -355,11 +378,11 @@ async function generateReportText(s) {
   const isOffice = s.environmentType === "office";
 
   const contextLine = isOffice
-    ? "Context: a sensor watches an office space, tracking air quality and comfort for the people working there. HVAC keeps CO2, humidity, and temp in a comfortable range (CO2 under 1000 ppm, humidity under 55%, temp under 104F)."
-    : "Context: a sensor watches a temporary enclosure protecting electrical switchgear that is drying out after an incident. AC and dehumidifiers run to keep it safe (humidity must stay under 55%, temp under 104F).";
+    ? "Context: a sensor watches an office space, tracking air quality and comfort for the people working there. HVAC keeps CO2, humidity, and temp in a comfortable range."
+    : "Context: a sensor watches an industrial work area where a crew works around equipment. What matters is whether conditions are safe and workable for the people: heat stress, humidity, air quality, and ventilation (CO2).";
   const verdictLine = isOffice
     ? "Clearly state whether the office stayed comfortable overnight (HVAC and air quality); if there is a problem, say it plainly and what to check."
-    : "Clearly state whether the AC and dehumidifiers kept the space safe overnight; if there is a problem, say it plainly and what to check.";
+    : "Clearly state whether conditions stayed safe and workable for the crew overnight; if there is a problem, say it plainly and what to check.";
 
   const prompt = [
     "Write a short, warm good-morning SMS from an environmental monitor to its owner.",
@@ -396,13 +419,14 @@ async function generateReportText(s) {
 }
 
 /**
- * Compose the morning SMS: personal report + readable stats block + today's
- * Cape launches. Never throws; every piece degrades independently.
+ * Compose the morning SMS: personal report + readable stats block + LC-36
+ * weather/lighting outlook + today's Cape launches. Never throws; every piece
+ * degrades independently.
  */
-async function composeReportSms(s, launches, baseline = null) {
+async function composeReportSms(s, launches, baseline = null, outlook = null) {
   if (!s.sampleCount) {
     const dark =
-      "Good morning - heads up: the enclosure sensor went quiet overnight (no data in 24h). Check the device power and WiFi when you get a chance.";
+      "Good morning - heads up: the site sensor went quiet overnight (no data in 24h). Check the device power and WiFi when you get a chance.";
     return { smsText: dark, reportText: dark, reportMode: "deterministic" };
   }
 
@@ -417,7 +441,10 @@ async function composeReportSms(s, launches, baseline = null) {
   if (!reportText) reportText = reportFallbackText(s);
 
   const launchLine = launchesTodayLine(launches);
-  const smsText = sanitizeSmsAscii([reportText, statsBlock(s, baseline), launchLine].filter(Boolean).join("\n"));
+  const outlookLines = outlookToSmsLines(outlook);
+  const smsText = sanitizeSmsAscii(
+    [reportText, statsBlock(s, baseline), outlookLines, launchLine].filter(Boolean).join("\n")
+  );
   return { smsText, reportText, reportMode, launchLine };
 }
 
@@ -499,19 +526,30 @@ export default async function handler(req, res) {
     const environmentType = getEffectiveEnvironmentType(storedSettings);
     const summary = buildSummary(history, thresholds, environmentType);
 
-    // Launch schedule is decoration — never let it block the report.
+    // Launch schedule and site outlook are enrichment — never let either
+    // block the report. fetchLc36Outlook returns null on failure by design.
     let launches = null;
+    let outlook = null;
     try {
-      launches = await getCapeLaunches();
+      [launches, outlook] = await Promise.all([
+        getCapeLaunches().catch((err) => {
+          console.error("daily-summary: launches fetch failed:", err?.message || err);
+          return null;
+        }),
+        fetchLc36Outlook(),
+      ]);
     } catch (err) {
-      console.error("daily-summary: launches fetch failed:", err?.message || err);
+      console.error("daily-summary: enrichment fetch failed:", err?.message || err);
     }
 
-    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline);
+    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline, outlook);
 
     const smsResult = await sendSms(smsText);
     const stored = await putDailySummary({
       ...summary,
+      baseline,
+      deltas: buildDeltas(summary, baseline),
+      forecast: outlook,
       smsText,
       reportText,
       reportMode,
