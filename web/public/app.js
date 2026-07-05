@@ -1996,7 +1996,12 @@ function renderOccupancyCard(payload) {
   if (countEl) {
     if (isCo2Source) {
       const co2 = payload.co2Reading || 0;
-      if (co2 > 0) {
+      if (payload.confound) {
+        // Cooking/smoke/solvent etc. also raise CO2/VOC readings, so a people
+        // estimate here would just be dressing up a false number — say why
+        // instead of guessing a headcount.
+        countEl.textContent = `CO₂ elevated, but likely from ${payload.confound.label.toLowerCase()} (${payload.confound.conf}% confidence) — not a reliable occupancy signal right now.`;
+      } else if (co2 > 0) {
         const estAbove = Math.max(0, co2 - 400);
         // ~50 ppm noise floor to avoid showing "1 person" from minor fluctuation;
         // ~80 ppm rise per person is a rough occupancy-physiology rule of thumb.

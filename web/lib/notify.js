@@ -175,12 +175,28 @@ export async function sendViaClickSend(text, recipients) {
         });
 
         const data = await resp.json().catch(() => null);
-        const msgStatus = data?.data?.messages?.[0]?.status;
-        if (resp.ok && (msgStatus === "SUCCESS" || msgStatus === "QUEUED" || !msgStatus)) {
+        const msg = data?.data?.messages?.[0];
+        const msgStatus = msg?.status;
+        // queued_count is ClickSend's ground truth: the API can return HTTP 200
+        // with response_code "SUCCESS" (the *request* was well-formed) while
+        // still queuing zero of the messages (the send itself was rejected —
+        // e.g. insufficient account balance, unapproved sender). Trust that
+        // over the per-message status string, which the docs don't guarantee.
+        const queuedCount = Number(data?.data?.queued_count);
+        const totalCount = Number(data?.data?.total_count);
+        const queuedOk = Number.isFinite(queuedCount) && Number.isFinite(totalCount)
+          ? queuedCount > 0
+          : msgStatus === "SUCCESS" || msgStatus === "QUEUED" || !msgStatus;
+        if (resp.ok && queuedOk) {
           sent += 1;
         } else {
-          const detail = data ? JSON.stringify(data).slice(0, 300) : await resp.text().catch(() => "");
-          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 300) });
+          // Log enough of the payload to see msg.status/error_text — the old
+          // 300-char cap cut the response off mid-body, hiding the actual
+          // rejection reason on every failure.
+          const detail = data
+            ? JSON.stringify({ response_code: data?.response_code, response_msg: data?.response_msg, queued_count: data?.data?.queued_count, total_count: data?.data?.total_count, status: msg?.status, error_code: msg?.error_code, error_text: msg?.error_text })
+            : await resp.text().catch(() => "");
+          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 500) });
           console.error(`notify: ClickSend send to ${to} failed — HTTP ${resp.status} ${detail}`);
         }
       } catch (err) {
@@ -199,12 +215,17 @@ export async function sendViaClickSend(text, recipients) {
  * of recipient count — the topic itself is the destination. Runs in parallel
  * with the SMS chain, so its shorter timeout never extends total send time.
  */
-export async function sendViaNtfy(text) {
+export async function sendViaNtfy(text, opts = {}) {
   const url = env("NTFY_URL") || `https://ntfy.sh/${encodeURIComponent(env("NTFY_TOPIC"))}`;
+  const headers = { Title: "SniffMaster", "Content-Type": "text/plain" };
+  // Visual report card: ntfy renders an image URL passed via Attach as an
+  // inline thumbnail, and opens Click's URL when the notification is tapped.
+  if (opts.imageUrl) headers.Attach = opts.imageUrl;
+  if (opts.clickUrl) headers.Click = opts.clickUrl;
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Title: "SniffMaster", "Content-Type": "text/plain" },
+      headers,
       body: text,
       signal: AbortSignal.timeout(3000),
     });
@@ -223,9 +244,11 @@ export async function sendViaNtfy(text) {
 /**
  * Send an SMS to every configured recipient via the first working provider.
  * @param {string} body — message text (keep it GSM-7-safe ASCII; see thresholds.js)
+ * @param {{imageUrl?:string, clickUrl?:string}} [opts] — visual report card;
+ *   SMS providers here are text-only so this only reaches the ntfy push.
  * @returns {Promise<{configured:boolean, sent:number, failures:Array<{to:string,error:string}>, provider:string|null}>}
  */
-export async function sendSms(body) {
+export async function sendSms(body, opts = {}) {
   const text = String(body || "").trim();
   if (!text) {
     return { configured: isSmsConfigured(), sent: 0, failures: [], provider: null };
@@ -259,7 +282,7 @@ export async function sendSms(body) {
   // header note on SMS providers reporting success for undeliverable messages.
   const [sms, ntfy] = await Promise.all([
     smsChain(),
-    isNtfyConfigured() ? sendViaNtfy(text) : Promise.resolve(null),
+    isNtfyConfigured() ? sendViaNtfy(text, opts) : Promise.resolve(null),
   ]);
 
   const allFailures = [

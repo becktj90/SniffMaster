@@ -26,7 +26,9 @@ import {
   getLatestSniff,
   getSettings,
   putSettings,
+  getDailySummary,
 } from "../lib/store.js";
+import { buildReportCardSvg } from "../lib/reportCard.js";
 import {
   getEffectiveThresholds,
   THRESHOLDS,
@@ -346,7 +348,10 @@ function densityLabel(index) {
   return "Packed";
 }
 
-function densityNote(index, source) {
+function densityNote(index, source, confound) {
+  if (confound) {
+    return `CO₂ is elevated, but the dominant odor (${confound.label}, ${confound.conf}%) is a likely non-occupancy source — treat this density reading as unreliable until that clears.`;
+  }
   const co2ctx = source === "co2" ? " (derived from CO₂ reading)" : "";
   if (index <= 5)  return `No elevated CO₂ detected. The space appears unoccupied or very well-ventilated${co2ctx}.`;
   if (index <= 25) return `CO₂ is only slightly above ambient. Light occupancy or excellent ventilation${co2ctx}.`;
@@ -374,6 +379,23 @@ function co2ToOccupancyIndex(co2) {
   return clamp(Math.round((co2 - CO2_BASELINE_PPM) / CO2_PPM_PER_INDEX), 0, 100);
 }
 
+// The CO2 fallback assumes elevated CO2 = people breathing. That assumption
+// breaks when the classifier's dominant odor is a combustion/chemical/food
+// source (e.g. cooking) rather than body odor — those VOCs push CO2 up too,
+// so a stove left on in an empty room would otherwise read as "12 people".
+// Only "Sweat/BO" and "Fart" are genuinely presence-linked; everything else
+// in ODOR_NAMES (mirrored from app.js) confounds the CO2-based estimate.
+const PRESENCE_LINKED_ODORS = new Set(["Sweat/BO", "Fart"]);
+const CONFOUND_CONFIDENCE_MIN = 40; // matches app.js's "confident" bar
+
+function occupancyConfound(snapshot) {
+  const label = snapshot?.primary;
+  const conf = num(snapshot?.primaryConf, NaN);
+  if (!label || label === "Clean Air" || PRESENCE_LINKED_ODORS.has(label)) return null;
+  if (!Number.isFinite(conf) || conf < CONFOUND_CONFIDENCE_MIN) return null;
+  return { label, conf: Math.round(conf) };
+}
+
 function buildCo2History(sensorHistory) {
   if (!Array.isArray(sensorHistory)) return [];
   return sensorHistory
@@ -385,7 +407,7 @@ function buildCo2History(sensorHistory) {
     }));
 }
 
-function occupancyFallbackBriefing(index, deviceCount, trend, snapshot, source) {
+function occupancyFallbackBriefing(index, deviceCount, trend, snapshot, source, confound) {
   const label = densityLabel(index);
   const trendStr = trend.direction === "rising"
     ? "and occupancy is climbing"
@@ -394,6 +416,9 @@ function occupancyFallbackBriefing(index, deviceCount, trend, snapshot, source) 
       : "with stable occupancy";
   const co2 = num(snapshot?.co2);
   if (source === "co2" && co2 > 0) {
+    if (confound) {
+      return `CO₂ is elevated at ${Math.round(co2)} ppm, but the dominant odor right now is ${confound.label} (${confound.conf}% confidence) — that's a likely non-occupancy source, so this reading probably overstates how many people are actually present.`;
+    }
     return `${label} occupancy (index ${index}) estimated from CO₂ at ${Math.round(co2)} ppm ${trendStr}. CO₂ is a reliable proxy for room occupancy — elevated readings indicate more people or reduced ventilation.`;
   }
   const co2Line = co2 > 900
@@ -404,7 +429,7 @@ function occupancyFallbackBriefing(index, deviceCount, trend, snapshot, source) 
   return `${label} occupancy (index ${index}) with ${deviceCount} BLE device${deviceCount !== 1 ? "s" : ""} detected ${trendStr}.${co2Line}`;
 }
 
-async function generateOpenAiBriefing(occupancyData, snapshot, trend, fallback, source) {
+async function generateOpenAiBriefing(occupancyData, snapshot, trend, fallback, source, confound) {
   const apiKey = `${process.env.OPENAI_API_KEY || ""}`.trim();
   if (!apiKey) return null;
 
@@ -419,7 +444,9 @@ async function generateOpenAiBriefing(occupancyData, snapshot, trend, fallback, 
   const trendStr = trend.direction;
 
   const sourceNote = source === "co2"
-    ? `Occupancy is estimated from CO₂ (${Math.round(co2)} ppm). CO₂ above ~400 ppm ambient indicates people are present.`
+    ? confound
+      ? `Occupancy is estimated from CO₂ (${Math.round(co2)} ppm), but the dominant detected odor is ${confound.label} (${confound.conf}% confidence) — a non-occupancy source that also raises CO2/VOC readings, so this estimate is likely overstated. Say so plainly rather than giving a confident people count.`
+      : `Occupancy is estimated from CO₂ (${Math.round(co2)} ppm). CO₂ above ~400 ppm ambient indicates people are present.`
     : `${devices} BLE device(s) detected.${Number.isFinite(avgRssi) ? ` Average signal: ${Math.round(avgRssi)} dBm.` : ""}`;
 
   const prompt = [
@@ -513,15 +540,19 @@ async function occupancyBriefing(req, res) {
       return res.status(204).end();
     }
 
+    // Only meaningful for the CO2 fallback — BLE-derived counts don't ride on
+    // the odor classifier at all.
+    const confound = source === "co2" ? occupancyConfound(snapshot) : null;
+
     const trend   = deriveTrend(history.length >= 2 ? history : []);
-    const fallback = occupancyFallbackBriefing(index, devices, trend, snapshot, source);
+    const fallback = occupancyFallbackBriefing(index, devices, trend, snapshot, source, confound);
 
     let briefing = fallback;
     let mode = "deterministic";
 
     try {
       const occupancyData = { occupancyIndex: index, deviceCount: devices, avgRssi };
-      const aiBriefing = await generateOpenAiBriefing(occupancyData, snapshot, trend, fallback, source);
+      const aiBriefing = await generateOpenAiBriefing(occupancyData, snapshot, trend, fallback, source, confound);
       if (aiBriefing) {
         briefing = aiBriefing;
         mode = "openai";
@@ -538,8 +569,9 @@ async function occupancyBriefing(req, res) {
       seenRecently:    source === "ble" ? Boolean(snapshot?.bleSeenRecently) : true,
       enabled:         true,
       densityLabel:    densityLabel(index),
-      densityNote:     densityNote(index, source),
+      densityNote:     densityNote(index, source, confound),
       source,
+      confound,
       co2Reading:      co2 > 0 ? Math.round(co2) : null,
       trend,
       history:         history.slice(0, 48).map((h) => ({
@@ -1177,6 +1209,27 @@ async function settings(req, res) {
   }
 }
 
+/**
+ * GET /api/report-card — the daily summary rendered as an SVG image, so the
+ * morning report and its push notification carry a visual, not just text.
+ * Public and read-only (no secrets in the image); cached briefly since the
+ * daily summary itself only regenerates a couple times a day.
+ */
+async function reportCard(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "public, max-age=300");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  try {
+    const summary = await getDailySummary();
+    const svg = buildReportCardSvg(summary || {});
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    return res.status(200).end(svg);
+  } catch (err) {
+    console.error("report-card error:", err);
+    return res.status(500).json({ error: "report-card error" });
+  }
+}
+
 // ── dispatcher ───────────────────────────────────────────────────────────
 const ROUTES = {
   apod,
@@ -1187,6 +1240,7 @@ const ROUTES = {
   "sniff-stream": sniffStream,
   "weather-briefing": weatherBriefing,
   settings,
+  "report-card": reportCard,
 };
 
 export default async function handler(req, res) {
