@@ -36,7 +36,7 @@ Browser / iPhone PWA         │
 - Temperature, humidity, pressure, gas resistance
 - Outdoor AQI
 - IAQ history chart (up to 48 hours)
-- **Restoration Safety Monitor** — real-time threshold alerts + daily 24h baseline report
+- **Restoration Safety Monitor** — real-time threshold alerts + daily 24h baseline report, with an owner-adjustable **Construction / Office** environment mode that tailors wording, graphics, and which sensor readings are shown (construction focuses on switchgear-drying safety and gas-resistance smoke checks; office swaps in CO2/ventilation and comfort framing)
 
 ## Deploy (one-time setup)
 
@@ -153,7 +153,16 @@ Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Me
 
 Two modes:
 - **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
-- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window.
+- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window. The report is tailored (wording, which sensors are highlighted) by the current `environmentType` — see `/api/settings` below.
+
+### GET/POST /api/settings
+
+Owner-adjustable alarm limits and the environment mode.
+
+- **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
+- **POST** (requires `X-SniffMaster-Key: $SNIFFMASTER_OWNER_KEY` header): accepts a partial patch of `{ humidityHigh, tempHighC, environmentType }`. `environmentType` must be `"construction"` (default) or `"office"`. Changing it immediately affects: real-time alert wording/graphics on the dashboard, which sensor reading is highlighted (gas-resistance smoke-drop check for construction vs. CO2/ventilation check for office), and the next morning report's tone and stats.
+
+Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold — an abnormal-conditions alert includes the same 24h stats block as the morning report, not just the bare breach line, so it reads as a full comprehensive report.
 
 ## SMS alerts (Amazon SNS) — setup
 
@@ -207,7 +216,7 @@ openssl rand -hex 16
 # Output: 3a7f2c8b1e4d9a5f6c2b8e1a3f7d4c9b
 ```
 
-Optional: `OPENAI_API_KEY` gives the daily report a naturally written, personal tone (same key that powers the weather briefing); without it a built-in template is used — either way the text reads like a friendly site report, includes the 24h numbers, and lists any Cape Canaveral launches scheduled that day. Twilio (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM`) can be set as an automatic fallback provider.
+Optional: `OPENAI_API_KEY` gives the daily report a naturally written, personal tone (same key that powers the weather briefing); without it a built-in template is used — either way the text reads like a friendly site report, includes the 24h numbers, and lists any Cape Canaveral launches scheduled that day. ClickSend (`CLICKSEND_USERNAME`/`CLICKSEND_API_KEY`) can be set as an automatic fallback provider.
 
 ### Step 4: Redeploy
 

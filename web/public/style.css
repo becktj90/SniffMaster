@@ -5087,3 +5087,35 @@ body *::after {
 .rs-adjust-status.is-good { color: var(--mint); }
 .rs-adjust-status.is-warn { color: var(--amber, #ffb300); }
 .rs-adjust-status.is-neutral { color: var(--muted-strong); }
+
+.rs-env-toggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel, rgba(255, 255, 255, 0.04));
+}
+.rs-env-btn {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-strong);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.rs-env-btn:hover {
+  color: var(--text);
+}
+.rs-env-btn.is-active {
+  background: rgba(0, 242, 255, 0.16);
+  color: var(--text);
+}
+.rs-env-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

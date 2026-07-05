@@ -26,7 +26,12 @@ import {
   markDailySummaryDelivered,
   getSettings,
 } from "../lib/store.js";
-import { normalizeReading, THRESHOLDS, getEffectiveThresholds } from "../lib/thresholds.js";
+import {
+  normalizeReading,
+  THRESHOLDS,
+  getEffectiveThresholds,
+  getEffectiveEnvironmentType,
+} from "../lib/thresholds.js";
 import { sendSms, isSmsConfigured } from "../lib/notify.js";
 // Shared SMS-text helpers (single source of truth; also used by the alert path).
 import { sanitizeSmsAscii, extractOutputText } from "../lib/brogpt.js";
@@ -142,8 +147,9 @@ function gasLabel(ohms) {
   return `${Math.round(ohms)} ohm`;
 }
 
-function buildSummary(history, thresholds = THRESHOLDS) {
+function buildSummary(history, thresholds = THRESHOLDS, environmentType = "construction") {
   const T = thresholds || THRESHOLDS;
+  const isOffice = environmentType === "office";
   const now = Date.now();
   const window = history.filter((h) => {
     const r = normalizeReading(h);
@@ -156,17 +162,21 @@ function buildSummary(history, thresholds = THRESHOLDS) {
   const pressure = stats(readings.map((r) => r.pressHpa));
   const gas = stats(readings.map((r) => r.gasR));
   const iaq = stats(readings.map((r) => r.iaq));
+  const co2 = isOffice ? stats(readings.map((r) => r.co2)) : null;
 
   const humidityDelta = halfDelta(readings.map((r) => r.humidity));
   const tempDelta = halfDelta(readings.map((r) => r.tempC));
 
   // "Controls stabilizing?" — humidity and temperature within safe band and
   // not trending upward means the AC + dehumidifiers are holding the space.
+  // Office mode also folds in CO2/ventilation since occupant comfort (not
+  // switchgear condensation) is the point there.
   // Uses the same owner-adjustable limits as the real-time alerts.
   const humidityInBand = !humidity || humidity.avg <= T.HUMIDITY_HIGH;
   const tempInBand = !temp || temp.avg <= T.TEMP_HIGH_C;
+  const co2InBand = !isOffice || !co2 || co2.avg <= T.CO2_HIGH;
   const humidityFalling = humidityDelta === null || humidityDelta <= 1; // ≤ +1% drift
-  const controlsStabilizing = Boolean(humidityInBand && tempInBand && humidityFalling);
+  const controlsStabilizing = Boolean(humidityInBand && tempInBand && co2InBand && humidityFalling);
 
   // Note text is shared by the SMS and the dashboard panel — keep it ASCII
   // (GSM-7-safe) so the text message stays cheap and carrier-proof.
@@ -176,14 +186,19 @@ function buildSummary(history, thresholds = THRESHOLDS) {
       Number.isFinite(humidityDelta) && humidityDelta < -0.5
         ? ` (humidity down ${Math.abs(humidityDelta).toFixed(0)}% over the window)`
         : "";
-    controlsNote = `AC + dehumidifiers stabilizing the space${trend}.`;
+    controlsNote = isOffice
+      ? `HVAC holding comfortable conditions${trend}.`
+      : `AC + dehumidifiers stabilizing the space${trend}.`;
   } else {
     const reasons = [];
     if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% above the ${T.HUMIDITY_HIGH}% limit`);
     if (!tempInBand) reasons.push(`temp avg ${fmt(cToF(temp.avg), 1)}F above the ${fmt(cToF(T.TEMP_HIGH_C))}F limit`);
-    if (humidityInBand && tempInBand && !humidityFalling)
+    if (!co2InBand) reasons.push(`CO2 avg ${fmt(co2.avg)} ppm above the ${T.CO2_HIGH} ppm limit`);
+    if (humidityInBand && tempInBand && co2InBand && !humidityFalling)
       reasons.push(`humidity rising (+${fmt(humidityDelta, 1)}%)`);
-    controlsNote = `Environmental controls not keeping up: ${reasons.join("; ")}.`;
+    controlsNote = isOffice
+      ? `HVAC not keeping up: ${reasons.join("; ")}.`
+      : `Environmental controls not keeping up: ${reasons.join("; ")}.`;
   }
 
   return {
@@ -194,6 +209,8 @@ function buildSummary(history, thresholds = THRESHOLDS) {
     pressure,
     gas,
     iaq,
+    co2,
+    environmentType: isOffice ? "office" : "construction",
     humidityDelta,
     tempDelta,
     controlsStabilizing,
@@ -230,6 +247,7 @@ function summaryToSms(s, baseline = null) {
   const air = [];
   if (s.gas) air.push(`gas ${gasLabel(s.gas.avg)}${tag(s.gas.avg, baseline?.gas)}`);
   if (s.iaq) air.push(`IAQ ${fmt(s.iaq.avg)}${tag(s.iaq.avg, baseline?.iaq)}`);
+  if (s.co2) air.push(`CO2 ${fmt(s.co2.avg)} ppm${tag(s.co2.avg, baseline?.co2)}`);
   if (air.length) lines.push(`Air: ${air.join("; ")}`);
   if (baseline?.days) lines.push(`(% = change vs ${baseline.days}-day avg)`);
   lines.push(`${s.controlsStabilizing ? "OK:" : "PROBLEM:"} ${s.controlsNote}`);
@@ -261,6 +279,7 @@ function statsBlock(s, baseline = null) {
   const air = [];
   if (s.gas) air.push(`Gas ${gasLabel(s.gas.avg)}${tag(s.gas.avg, baseline?.gas)}`);
   if (s.iaq) air.push(`IAQ ${fmt(s.iaq.avg)}${tag(s.iaq.avg, baseline?.iaq)}`);
+  if (s.co2) air.push(`CO2 ${fmt(s.co2.avg)} ppm${tag(s.co2.avg, baseline?.co2)}`);
   if (air.length) lines.push(air.join(", "));
   if (!lines.length) return "";
   const header = baseline?.days ? `24h averages (% = vs ${baseline.days}-day avg):` : "24h averages:";
@@ -268,12 +287,23 @@ function statsBlock(s, baseline = null) {
 }
 
 function reportFallbackText(s) {
+  const isOffice = s.environmentType === "office";
   if (s.controlsStabilizing) {
     const trend =
       Number.isFinite(s.humidityDelta) && s.humidityDelta < -0.5
+        ? ` Humidity eased down ${Math.abs(s.humidityDelta).toFixed(0)}% overnight - conditions are comfortable.`
+        : " The HVAC is holding steady.";
+    if (isOffice) {
+      return `Good morning! Overnight report from the office: everything stayed comfortable.${trend}`;
+    }
+    const restorationTrend =
+      Number.isFinite(s.humidityDelta) && s.humidityDelta < -0.5
         ? ` Humidity eased down ${Math.abs(s.humidityDelta).toFixed(0)}% overnight - the dehumidifiers are doing their job.`
         : " The AC and dehumidifiers are holding steady.";
-    return `Good morning! Overnight report from the enclosure: everything stayed in the safe zone.${trend} The switchgear is staying dry.`;
+    return `Good morning! Overnight report from the enclosure: everything stayed in the safe zone.${restorationTrend} The switchgear is staying dry.`;
+  }
+  if (isOffice) {
+    return `Morning - heads up on the office. ${s.controlsNote} Worth checking the HVAC today.`;
   }
   return `Morning - heads up on the enclosure. ${s.controlsNote} Worth checking the AC and dehumidifiers today before condensation becomes a problem.`;
 }
@@ -322,14 +352,22 @@ async function generateReportText(s) {
   const apiKey = (process.env.OPENAI_API_KEY || "").trim();
   if (!apiKey) return null;
   const model = `${process.env.OPENAI_REPORT_MODEL || "gpt-5.4-nano"}`.trim();
+  const isOffice = s.environmentType === "office";
+
+  const contextLine = isOffice
+    ? "Context: a sensor watches an office space, tracking air quality and comfort for the people working there. HVAC keeps CO2, humidity, and temp in a comfortable range (CO2 under 1000 ppm, humidity under 55%, temp under 104F)."
+    : "Context: a sensor watches a temporary enclosure protecting electrical switchgear that is drying out after an incident. AC and dehumidifiers run to keep it safe (humidity must stay under 55%, temp under 104F).";
+  const verdictLine = isOffice
+    ? "Clearly state whether the office stayed comfortable overnight (HVAC and air quality); if there is a problem, say it plainly and what to check."
+    : "Clearly state whether the AC and dehumidifiers kept the space safe overnight; if there is a problem, say it plainly and what to check.";
 
   const prompt = [
     "Write a short, warm good-morning SMS from an environmental monitor to its owner.",
-    "Context: a sensor watches a temporary enclosure protecting electrical switchgear that is drying out after an incident. AC and dehumidifiers run to keep it safe (humidity must stay under 55%, temp under 104F).",
+    contextLine,
     "Requirements: 2-3 sentences, max 300 characters, plain ASCII only (no emoji, no degree symbols). Use Fahrenheit for any temperature you mention.",
     "Tone: a nice personal daily report - friendly and direct, like a trusted site tech texting their boss.",
     "Never mention AI, GPT, chatbots, models, or that this message is generated - it is simply the morning report.",
-    "Clearly state whether the AC and dehumidifiers kept the space safe overnight; if there is a problem, say it plainly and what to check.",
+    verdictLine,
     "",
     `24h data: ${JSON.stringify({
       tempF_avg: s.temp ? Number(cToF(s.temp.avg).toFixed(1)) : null,
@@ -337,6 +375,7 @@ async function generateReportText(s) {
       humidity_max: s.humidity ? Number(s.humidity.max.toFixed(0)) : null,
       humidity_trend: Number.isFinite(s.humidityDelta) ? Number(s.humidityDelta.toFixed(1)) : null,
       iaq_avg: s.iaq ? Number(s.iaq.avg.toFixed(0)) : null,
+      co2_avg: s.co2 ? Number(s.co2.avg.toFixed(0)) : null,
       controls_stabilizing: s.controlsStabilizing,
       verdict: s.controlsNote,
     })}`,
@@ -457,7 +496,8 @@ export default async function handler(req, res) {
     ]);
     const baseline = buildBaseline(prevSummaries);
     const thresholds = getEffectiveThresholds(storedSettings);
-    const summary = buildSummary(history, thresholds);
+    const environmentType = getEffectiveEnvironmentType(storedSettings);
+    const summary = buildSummary(history, thresholds, environmentType);
 
     // Launch schedule is decoration — never let it block the report.
     let launches = null;
