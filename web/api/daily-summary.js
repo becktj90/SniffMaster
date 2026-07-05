@@ -42,6 +42,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
 const RESEND_GUARD_MS = 6 * 60 * 60 * 1000;
 
+// Public site the report card image + dashboard link resolve against. Set
+// PUBLIC_BASE_URL if the app ever moves off this domain (mirrors the
+// DEFAULT_ALERT_SMS_TO fallback pattern in lib/notify.js).
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://sniffmaster-web.vercel.app").trim().replace(/\/+$/, "");
+
 function timingSafeMatch(supplied, expected) {
   const a = Buffer.from(String(supplied));
   const b = Buffer.from(String(expected));
@@ -544,7 +549,12 @@ export default async function handler(req, res) {
 
     const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline, outlook);
 
-    const smsResult = await sendSms(smsText);
+    // Visual report card: text-only SMS providers ignore this, but the ntfy
+    // push renders it as an attached image and opens the dashboard on tap.
+    const smsResult = await sendSms(smsText, {
+      imageUrl: `${PUBLIC_BASE_URL}/api/report-card`,
+      clickUrl: PUBLIC_BASE_URL,
+    });
     const stored = await putDailySummary({
       ...summary,
       baseline,
