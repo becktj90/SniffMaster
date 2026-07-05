@@ -139,49 +139,57 @@ email-to-SMS gateways and frequently blocks mail from unfamiliar/bulk senders
 (including standard Gmail SMTP) with zero feedback. **SMTP acceptance was
 never proof of SMS delivery for AT&T numbers.**
 
-The forwarder now sends via the [Twilio](https://www.twilio.com/) SMS API
-instead (`TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_MESSAGING_SERVICE_SID`
-or `TWILIO_FROM` / `ALERT_SMS_TO` in `.env` — see Setup above), which sends
-over the real SMS network rather than an email gateway and returns a message
-SID on success and a real HTTP error on failure — so send failures are now
-actually observable in `ntfy_forwarder.log` instead of failing silently like
-the old gateway did.
+The forwarder sends real SMS via a pluggable `SMS_PROVIDER` (see Setup above):
+**ClickSend by default**, or [Twilio](https://www.twilio.com/) if you set
+`SMS_PROVIDER=twilio`. Both send over the real SMS network rather than an
+email gateway and return a message ID on success plus a real HTTP error on
+failure — so send failures are now actually observable in
+`ntfy_forwarder.log` instead of failing silently like the old gateway did.
 
-**⚠️ One-time setup still needed: A2P 10DLC registration.** A live test after
-switching to Twilio showed the API accepting the message, but the carrier
-then marked it `undelivered` with error code
-[30034](https://www.twilio.com/docs/api/errors/30034) — U.S. carriers require
-long-code phone numbers to complete **A2P 10DLC registration** (a spam/abuse
-prevention program) before they'll deliver application-to-person texts, and
-this project's Twilio number (`+17543379692`) hasn't completed it yet. This
-is a one-time business verification step (brand + campaign registration) done
-directly in the Twilio Console — it needs business details the forwarder
-script has no business handling automatically:
+**Why ClickSend is the default.** Twilio requires U.S. long-code numbers to
+complete **A2P 10DLC registration** (a carrier spam/abuse prevention program)
+before it will actually deliver application-to-person texts — a live test
+showed Twilio's API accepting the message while the carrier silently marked
+it `undelivered` with error code
+[30034](https://www.twilio.com/docs/api/errors/30034). Worse, on a Twilio
+Trial account this registration is stuck behind an auto-generated **"Mock
+Brand"** in Trust Hub, which never actually delivers — the account has to be
+upgraded to paid, then a *real* brand registered, before 10DLC clears at all.
+ClickSend does not require this per-sender brand registration step for
+low-volume personal alerts, so texts send immediately with just an API
+username/key (`CLICKSEND_USERNAME` / `CLICKSEND_API_KEY` in `.env`).
 
-1. Go to [Messaging → Regulatory Compliance → A2P 10DLC](https://console.twilio.com/us1/develop/sms/regulatory-compliance/a2p-10dlc) in the Twilio Console.
-2. Register a brand (your business/organization info).
-3. Register a campaign for this use case (e.g. "low-volume alerts/notifications").
-4. Attach the campaign to `+17543379692` (or whichever number `TWILIO_FROM` points to).
+**If you still want to use Twilio** (`SMS_PROVIDER=twilio`), you'll need to
+complete A2P 10DLC registration first:
+
+1. Upgrade the Twilio account from Trial to a paid account (required — Trial
+   accounts only get a non-functional Mock Brand).
+2. Go to [Messaging → Regulatory Compliance → A2P 10DLC](https://console.twilio.com/us1/develop/sms/regulatory-compliance/a2p-10dlc) in the Twilio Console.
+3. Register a real brand (your business/individual info).
+4. Register a campaign for this use case (e.g. "low-volume alerts/notifications").
+5. Attach the campaign to `+17543379692` (or whichever number `TWILIO_FROM` points to).
 
 Approval is often near-instant for low-volume/verified brands, but can take
 up to a couple of days for full vetting. Once approved, re-run the forwarder
 (or the quick test below) — no code changes are needed on this end.
 
-**Quick way to verify delivery once registration is approved:**
+**Quick way to verify delivery:**
 
 ```bash
 python3 -c "
 import ntfy_sms_forwarder as f
 f.validate_config()
-print('Send succeeded:', f.send_sms_via_twilio('Test: A2P 10DLC registration verification'))
+print('Send succeeded:', f.send_sms('Test: SMS delivery verification'))
 "
 ```
 
-The Twilio message SID is printed in the log line right above (e.g.
-`✓ SMS sent successfully (Twilio SID: SM...)`), and `send_sms_via_twilio`
-prints `True`/`False` for whether Twilio *accepted* the send. Check the
-message status directly with Twilio's API if you want to confirm the
-carrier actually delivered it (replace `<SID>` with the SID from the log):
+This uses whichever provider `SMS_PROVIDER` selects. The message ID is
+printed in the log line right above (e.g.
+`✓ SMS sent successfully (ClickSend message_id: ...)` or
+`... (Twilio SID: SM...)`), and `send_sms` prints `True`/`False` for whether
+the provider *accepted* the send. If using Twilio, check the message status
+directly with Twilio's API to confirm the carrier actually delivered it
+(replace `<SID>` with the SID from the log):
 
 ```bash
 curl -s -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \

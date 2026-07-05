@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 """
 ntfy_sms_forwarder.py — Background service that forwards push notifications from ntfy.sh
-to your phone as SMS text messages via Twilio.
+to your phone as SMS text messages via ClickSend (default) or Twilio.
 
 This script:
 1. Connects to a specified ntfy topic via Server-Sent Events (SSE)
 2. Listens for incoming JSON notifications
-3. Forwards them to a phone number via the Twilio SMS API (real SMS network,
-   not an email-to-SMS carrier gateway)
+3. Forwards them to a phone number via the SMS_PROVIDER's API (real SMS
+   network, not an email-to-SMS carrier gateway)
 4. Automatically reconnects on network failures
 5. Loads all configuration from .env (no hardcoded secrets)
 
-Why Twilio instead of an Email-to-SMS gateway: live testing showed AT&T's
+Why not an Email-to-SMS gateway: live testing showed AT&T's
 txt.att.net/mms.att.net gateways silently drop mail with no bounce or error —
 the sending SMTP server reports success even though the phone never receives
-anything. Twilio sends over the real SMS network and returns a message SID
-plus a real HTTP error (not silence) when a send fails, so failures are
-actually observable. See README.md for details.
+anything. Real SMS APIs return a message ID plus a real HTTP error (not
+silence) when a send fails, so failures are actually observable. See
+README.md for details.
+
+Why ClickSend instead of Twilio: Twilio's US SMS requires A2P 10DLC brand
+registration through The Campaign Registry before real messages will
+deliver — on a Twilio Trial account this is stuck behind an auto-generated
+"Mock Brand" that never actually delivers, and even on a paid account real
+registration can take hours to days to approve. ClickSend does not require
+this per-sender brand registration step for low-volume personal alerts, so
+it can send immediately. Set SMS_PROVIDER=twilio in .env to switch back if
+you complete Twilio's registration and prefer it.
 
 Usage:
     python3 ntfy_sms_forwarder.py
@@ -66,6 +75,19 @@ load_dotenv(dotenv_path=env_path)
 # ntfy configuration
 NTFY_BASE_URL = os.getenv("NTFY_BASE_URL", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
+
+# Which SMS API to send through: "clicksend" (default) or "twilio".
+SMS_PROVIDER = os.getenv("SMS_PROVIDER", "clicksend").strip().lower()
+
+# ClickSend configuration (default provider — no A2P 10DLC brand
+# registration required for low-volume personal alerts).
+CLICKSEND_API_BASE = "https://rest.clicksend.com/v3"
+CLICKSEND_USERNAME = os.getenv("CLICKSEND_USERNAME", "").strip()
+CLICKSEND_API_KEY = os.getenv("CLICKSEND_API_KEY", "").strip()
+# Optional custom sender ID/number. Many countries (incl. US) don't allow a
+# custom alphanumeric sender for two-way numbers; leave blank to let
+# ClickSend pick a default shared number automatically.
+CLICKSEND_FROM = os.getenv("CLICKSEND_FROM", "").strip()
 
 # Twilio configuration (real SMS network, replaces the old email-to-SMS gateway)
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01"
@@ -124,14 +146,26 @@ def validate_config():
 
     if not NTFY_TOPIC:
         errors.append("NTFY_TOPIC is not set in .env")
-    if not TWILIO_ACCOUNT_SID:
-        errors.append("TWILIO_ACCOUNT_SID is not set in .env")
-    if not TWILIO_AUTH_TOKEN:
-        errors.append("TWILIO_AUTH_TOKEN is not set in .env")
-    if not TWILIO_MESSAGING_SERVICE_SID and not TWILIO_FROM:
+
+    if SMS_PROVIDER not in ("clicksend", "twilio"):
         errors.append(
-            "Either TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM must be set in .env"
+            f"SMS_PROVIDER must be 'clicksend' or 'twilio', got: {SMS_PROVIDER!r}"
         )
+    elif SMS_PROVIDER == "clicksend":
+        if not CLICKSEND_USERNAME:
+            errors.append("CLICKSEND_USERNAME is not set in .env")
+        if not CLICKSEND_API_KEY:
+            errors.append("CLICKSEND_API_KEY is not set in .env")
+    elif SMS_PROVIDER == "twilio":
+        if not TWILIO_ACCOUNT_SID:
+            errors.append("TWILIO_ACCOUNT_SID is not set in .env")
+        if not TWILIO_AUTH_TOKEN:
+            errors.append("TWILIO_AUTH_TOKEN is not set in .env")
+        if not TWILIO_MESSAGING_SERVICE_SID and not TWILIO_FROM:
+            errors.append(
+                "Either TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM must be set in .env"
+            )
+
     if not ALERT_SMS_TO:
         errors.append("ALERT_SMS_TO is not set in .env")
 
@@ -143,9 +177,13 @@ def validate_config():
 
     logger.info("✓ Configuration validated")
     logger.info(f"  ntfy topic: {NTFY_TOPIC}")
-    logger.info(
-        f"  Twilio sender: {TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM}"
-    )
+    logger.info(f"  SMS provider: {SMS_PROVIDER}")
+    if SMS_PROVIDER == "twilio":
+        logger.info(
+            f"  Twilio sender: {TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM}"
+        )
+    else:
+        logger.info(f"  ClickSend sender: {CLICKSEND_FROM or '(default shared number)'}")
     logger.info(f"  SMS destination: {ALERT_SMS_TO}")
 
 
@@ -276,6 +314,87 @@ def send_sms_via_twilio(message_body: str) -> bool:
     return send_sms_via_twilio_raw(message_body)["accepted"]
 
 
+def send_sms_via_clicksend_raw(message_body: str):
+    """
+    Send an SMS via the ClickSend REST API and return full details.
+
+    Returns:
+        dict with keys:
+          - accepted (bool): True if ClickSend queued the message successfully
+          - message_id (str | None): ClickSend message ID, if accepted
+          - error (str | None): error detail, if not accepted
+    """
+    body = message_body[:160] if len(message_body) > 160 else message_body
+
+    url = f"{CLICKSEND_API_BASE}/sms/send"
+
+    message = {"to": ALERT_SMS_TO, "body": body}
+    if CLICKSEND_FROM:
+        message["from"] = CLICKSEND_FROM
+
+    payload = json.dumps({"messages": [message]}).encode("utf-8")
+
+    auth = base64.b64encode(
+        f"{CLICKSEND_USERNAME}:{CLICKSEND_API_KEY}".encode("utf-8")
+    ).decode("ascii")
+
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        logger.info(f"Sending SMS to {ALERT_SMS_TO} via ClickSend...")
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SEC) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            messages = (result.get("data") or {}).get("messages") or []
+            if not messages:
+                logger.error(f"ClickSend response missing message data: {result}")
+                return {"accepted": False, "message_id": None, "error": f"no message data in response: {result}"}
+
+            first = messages[0]
+            status = (first.get("status") or "").upper()
+            message_id = first.get("message_id")
+            # ClickSend returns status "SUCCESS" when the message is queued.
+            if status == "SUCCESS":
+                logger.info(f"✓ SMS sent successfully (ClickSend message_id: {message_id})")
+                return {"accepted": True, "message_id": message_id, "error": None}
+            error_text = first.get("status") or "unknown error"
+            logger.error(f"ClickSend rejected message: {first}")
+            return {"accepted": False, "message_id": message_id, "error": error_text}
+
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        logger.error(f"ClickSend API error: HTTP {e.code} — {detail}")
+        return {"accepted": False, "message_id": None, "error": f"HTTP {e.code} — {detail}"}
+    except urllib.error.URLError as e:
+        logger.error(f"Failed to reach ClickSend API: {e.reason}")
+        return {"accepted": False, "message_id": None, "error": f"unreachable: {e.reason}"}
+    except Exception as e:
+        logger.error(f"Failed to send SMS: {e}")
+        return {"accepted": False, "message_id": None, "error": str(e)}
+
+
+def send_sms_via_clicksend(message_body: str) -> bool:
+    """Bool-returning wrapper around send_sms_via_clicksend_raw()."""
+    return send_sms_via_clicksend_raw(message_body)["accepted"]
+
+
+def send_sms(message_body: str) -> bool:
+    """
+    Send an SMS via whichever provider SMS_PROVIDER selects
+    ("clicksend" by default, or "twilio").
+    """
+    if SMS_PROVIDER == "twilio":
+        return send_sms_via_twilio(message_body)
+    return send_sms_via_clicksend(message_body)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ntfy STREAMING
 # ═══════════════════════════════════════════════════════════════════════════
@@ -363,8 +482,8 @@ def handle_notification(notification: dict):
 
         logger.info(f"Forwarding notification: {sms_body}")
 
-        # Send via Twilio
-        if send_sms_via_twilio(sms_body):
+        # Send via the configured SMS provider (ClickSend by default)
+        if send_sms(sms_body):
             logger.info("✓ Notification forwarded successfully")
         else:
             logger.error("✗ Failed to forward notification")
