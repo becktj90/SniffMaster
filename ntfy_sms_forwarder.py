@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
 ntfy_sms_forwarder.py — Background service that forwards push notifications from ntfy.sh
-to your phone as SMS text messages via Twilio.
+to your phone as SMS text messages via Brevo.
 
 This is the SMS half of the SniffMaster alert pipeline. The Vercel web app
 publishes every alert and the daily report to an ntfy topic (it does NOT send
-its own Twilio SMS — Twilio credentials live here, in this forwarder, so there
+its own Brevo SMS — Brevo credentials live here, in this forwarder, so there
 is exactly one SMS sender and no duplicate texts). This script:
 
 1. Connects to that ntfy topic via a streaming JSON subscription
-2. Forwards each notification to your phone via the Twilio SMS API (the real
-   SMS network, not an email-to-SMS carrier gateway)
-3. Verifies delivery with Twilio (a message SID is NOT proof of delivery — see
-   below) and logs the real carrier status, including the A2P-registration
-   block (error 30034)
-4. Reconnects automatically on network failure, catching up on anything
+2. Forwards each notification to your phone via the Brevo transactional SMS
+   API (the real SMS network, not an email-to-SMS carrier gateway)
+3. Reconnects automatically on network failure, catching up on anything
    published during the outage without re-texting duplicates
 
 INTEGRATION — the one thing that must be true:
@@ -22,15 +19,22 @@ INTEGRATION — the one thing that must be true:
     (its Vercel env var). Same topic string = the dashboard's pushes arrive
     here and become SMS. A mismatch means silence with no error.
 
-Why Twilio instead of an email-to-SMS gateway: live testing showed AT&T's
+Why not an email-to-SMS gateway: live testing showed AT&T's
 txt.att.net/mms.att.net gateways silently drop mail with no bounce or error —
 the sending SMTP server reports success even though the phone never receives
-anything. Twilio sends over the real SMS network and returns a message SID
-plus a real HTTP error when a send fails. But note: a Twilio SID still is not
-proof of delivery for US numbers — the carrier can mark it `undelivered` with
-error 30034 if the sending number hasn't completed A2P 10DLC registration.
-This script polls the message status so that block is visible in the log
-instead of looking like success. See README.md for details.
+anything. A real SMS API sends over the actual SMS network and returns a
+real HTTP error when a send fails.
+
+Note on Brevo specifically: a 201/`reference` from send_sms_via_brevo() means
+Brevo ACCEPTED the message for sending — not that the carrier delivered it.
+Unlike Twilio (which offers a simple GET-by-message-id status endpoint),
+Brevo's transactional SMS API does not expose a per-message delivery-status
+lookup; delivery confirmation is via the `webUrl` webhook callback (needs a
+publicly reachable endpoint, out of scope for this simple script) or by
+checking Transactional -> SMS -> Logs in the Brevo dashboard. So this script
+logs acceptance (and Brevo's credit/segment counts) and stops there — if a
+text never arrives, check the Brevo dashboard logs for the real carrier
+status rather than assuming this script's "accepted" means "delivered."
 
 Usage:
     python3 ntfy_sms_forwarder.py
@@ -42,14 +46,10 @@ To run in background (Windows):
     pythonw ntfy_sms_forwarder.py
 """
 
-import base64
 import json
 import logging
 import os
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -82,21 +82,17 @@ load_dotenv(dotenv_path=env_path)
 NTFY_BASE_URL = os.getenv("NTFY_BASE_URL", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 
-# Twilio configuration (real SMS network, replaces the old email-to-SMS gateway)
-TWILIO_API_BASE = "https://api.twilio.com/2010-04-01"
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-# NOTE: TWILIO_AUTH_TOKEN_V2 is preferred over TWILIO_AUTH_TOKEN. On this
-# environment, the TWILIO_AUTH_TOKEN secret repeatedly got silently truncated
-# to 25 of its 32 characters no matter how it was re-entered, which produced
-# HTTP 401s from Twilio despite the token being correct at the source. Storing
-# the same value under a different key name (TWILIO_AUTH_TOKEN_V2) was not
-# affected by the truncation, so that's the reliable source of truth here —
-# TWILIO_AUTH_TOKEN is kept only as a fallback for a normal, unaffected setup.
-TWILIO_AUTH_TOKEN = (os.getenv("TWILIO_AUTH_TOKEN_V2") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
-# Either a Messaging Service SID (preferred — picks the right sender from a
-# registered pool) or a bare From number (E.164) works. Messaging Service
-# takes priority if both are set.
-TWILIO_MESSAGING_SERVICE_SID = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "").strip()
+# Brevo configuration (real SMS network, replaces the old email-to-SMS gateway).
+# Verified against Brevo's official server SDK (sib-api-v3-sdk 7.6.0): POST
+# /transactionalSMS/sms, auth via the `api-key` header, body
+# {sender, recipient, content, type}.
+BREVO_API_BASE = "https://api.brevo.com/v3"
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+# Sender name/number shown to the recipient. Max 15 chars: up to 11 if
+# alphanumeric, up to 15 if numeric (a real phone number). Some countries
+# require this sender to be pre-approved in the Brevo dashboard
+# (Transactional -> SMS -> Senders) before sends will succeed.
+BREVO_SMS_SENDER = os.getenv("BREVO_SMS_SENDER", "").strip()
 
 
 def _to_e164(raw: str) -> str:
@@ -118,10 +114,18 @@ def _to_e164(raw: str) -> str:
     return "+" + digits
 
 
-TWILIO_FROM = _to_e164(os.getenv("TWILIO_FROM", ""))
-
 # Destination phone number in E.164 format (e.g. +15104324862)
 ALERT_SMS_TO = _to_e164(os.getenv("ALERT_SMS_TO", ""))
+
+
+def _to_brevo_recipient(e164: str) -> str:
+    """
+    Brevo's `recipient` field is documented as "mobile number with the
+    country code" — every real-world example is digits only, no leading
+    "+". Convert from our internal E.164 form at the call site only.
+    """
+    return "".join(ch for ch in (e164 or "") if ch.isdigit())
+
 
 # Reconnection settings
 RECONNECT_DELAY_BASE = 5  # Start with 5 seconds
@@ -132,21 +136,16 @@ RECONNECT_DELAY_MAX = 300  # Max 5 minutes
 # risking dropped messages. 75s comfortably clears the keepalive.
 CONNECT_TIMEOUT_SEC = 10
 READ_TIMEOUT_SEC = 75
-# Plain request timeout for one-shot Twilio calls (send + status poll).
-TWILIO_TIMEOUT_SEC = 30
+# Plain request timeout for the one-shot Brevo send call.
+BREVO_TIMEOUT_SEC = 30
 
-# Twilio accepts up to 1600 chars in one API call and segments it into
-# concatenated SMS parts automatically. The morning report (personal note +
-# stats + LC-36 weather + launches) runs several hundred chars, so the old
-# 160-char hard cap silently dropped everything past the first line.
+# Brevo segments content over 160 chars into multiple concatenated SMS parts
+# automatically (same behavior class as other SMS APIs). The morning report
+# (personal note + stats + LC-36 weather + launches) runs several hundred
+# chars, so a naive 160-char hard cap would silently drop everything past the
+# first line. No documented hard ceiling was found; 1600 is a generous safety
+# cap carried over from the previous provider to bound worst-case cost.
 SMS_MAX_CHARS = 1600
-
-# Delivery-status verification: how many times to re-check the message after
-# sending, and how long to wait between checks. A SID comes back immediately
-# but the carrier status (delivered / undelivered+30034) lands a few seconds
-# later, so poll briefly. Kept short so it never stalls the listener for long.
-STATUS_POLL_ATTEMPTS = 4
-STATUS_POLL_DELAY_SEC = 2
 
 # ═══════════════════════════════════════════════════════════════════════════
 # VALIDATION
@@ -159,14 +158,10 @@ def validate_config():
 
     if not NTFY_TOPIC:
         errors.append("NTFY_TOPIC is not set in .env")
-    if not TWILIO_ACCOUNT_SID:
-        errors.append("TWILIO_ACCOUNT_SID is not set in .env")
-    if not TWILIO_AUTH_TOKEN:
-        errors.append("TWILIO_AUTH_TOKEN is not set in .env")
-    if not TWILIO_MESSAGING_SERVICE_SID and not TWILIO_FROM:
-        errors.append(
-            "Either TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM must be set in .env"
-        )
+    if not BREVO_API_KEY:
+        errors.append("BREVO_API_KEY is not set in .env")
+    if not BREVO_SMS_SENDER:
+        errors.append("BREVO_SMS_SENDER is not set in .env")
     if not ALERT_SMS_TO:
         errors.append("ALERT_SMS_TO is not set in .env")
 
@@ -178,9 +173,7 @@ def validate_config():
 
     logger.info("✓ Configuration validated")
     logger.info(f"  ntfy topic: {NTFY_TOPIC}")
-    logger.info(
-        f"  Twilio sender: {TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM}"
-    )
+    logger.info(f"  Brevo sender: {BREVO_SMS_SENDER}")
     logger.info(f"  SMS destination: {ALERT_SMS_TO}")
 
 
@@ -189,127 +182,57 @@ def validate_config():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _twilio_auth_header() -> str:
-    token = base64.b64encode(
-        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode("utf-8")
-    ).decode("ascii")
-    return f"Basic {token}"
-
-
-def send_sms_via_twilio(message_body: str):
+def send_sms_via_brevo(message_body: str):
     """
-    Send an SMS via the Twilio REST API (real SMS network, not an email
-    gateway). Returns the Twilio message SID on acceptance, or None on failure.
+    Send an SMS via the Brevo transactional SMS API (real SMS network, not an
+    email gateway). Returns the response's `reference` string on acceptance,
+    or None on failure.
 
-    A returned SID means Twilio ACCEPTED the message for sending — not that the
-    carrier delivered it. Delivery is confirmed separately by
-    poll_delivery_status().
+    A returned reference means Brevo ACCEPTED the message for sending — not
+    that the carrier delivered it. Brevo does not expose a per-message
+    delivery-status lookup (unlike Twilio's GET-by-SID); check Transactional
+    -> SMS -> Logs in the Brevo dashboard to confirm actual carrier delivery.
     """
-    # Twilio segments long bodies into concatenated SMS automatically; only
-    # guard against an absurdly long body (10 segments) to bound cost.
     body = message_body if len(message_body) <= SMS_MAX_CHARS else message_body[:SMS_MAX_CHARS]
+    recipient = _to_brevo_recipient(ALERT_SMS_TO)
 
-    url = f"{TWILIO_API_BASE}/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID)}/Messages.json"
-
-    form = {"To": ALERT_SMS_TO, "Body": body}
-    if TWILIO_MESSAGING_SERVICE_SID:
-        form["MessagingServiceSid"] = TWILIO_MESSAGING_SERVICE_SID
-    else:
-        form["From"] = TWILIO_FROM
-
-    data = urllib.parse.urlencode(form).encode("utf-8")
-
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": _twilio_auth_header(),
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
+    url = f"{BREVO_API_BASE}/transactionalSMS/sms"
+    payload = {
+        "sender": BREVO_SMS_SENDER,
+        "recipient": recipient,
+        "content": body,
+        "type": "transactional",
+    }
 
     try:
-        logger.info(f"Sending SMS to {ALERT_SMS_TO} via Twilio ({len(body)} chars)...")
-        with urllib.request.urlopen(request, timeout=TWILIO_TIMEOUT_SEC) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            sid = payload.get("sid")
-            if sid:
-                logger.info(f"✓ Twilio accepted the message (SID: {sid}, status: {payload.get('status')})")
-                return sid
-            logger.error(f"Twilio response missing SID: {payload}")
-            return None
-
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        logger.error(f"Twilio API error: HTTP {e.code} — {detail}")
+        logger.info(f"Sending SMS to {ALERT_SMS_TO} via Brevo ({len(body)} chars)...")
+        response = requests.post(
+            url,
+            json=payload,
+            headers={
+                "api-key": BREVO_API_KEY,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=BREVO_TIMEOUT_SEC,
+        )
+        if response.ok:
+            data = response.json()
+            reference = data.get("reference")
+            logger.info(
+                f"✓ Brevo accepted the message (reference: {reference}, "
+                f"smsCount: {data.get('smsCount')}, "
+                f"remainingCredits: {data.get('remainingCredits')})"
+            )
+            return reference or True
+        logger.error(f"Brevo API error: HTTP {response.status_code} — {response.text}")
         return None
-    except urllib.error.URLError as e:
-        logger.error(f"Failed to reach Twilio API: {e.reason}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to reach Brevo API: {e}")
         return None
     except Exception as e:
         logger.error(f"Failed to send SMS: {e}")
         return None
-
-
-def poll_delivery_status(sid: str) -> str:
-    """
-    Poll Twilio for the real carrier delivery status of a sent message.
-
-    A SID from send_sms_via_twilio() only means "accepted"; the carrier verdict
-    (delivered / undelivered / failed) and any error_code arrive a few seconds
-    later. This surfaces the common US block — error 30034, sending number not
-    A2P-10DLC-registered — which otherwise looks exactly like success.
-
-    Returns the last observed status string (best-effort; never raises).
-    """
-    if not sid:
-        return "unknown"
-    url = (
-        f"{TWILIO_API_BASE}/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID)}"
-        f"/Messages/{urllib.parse.quote(sid)}.json"
-    )
-    request = urllib.request.Request(
-        url, method="GET", headers={"Authorization": _twilio_auth_header()}
-    )
-
-    last_status = "unknown"
-    for attempt in range(STATUS_POLL_ATTEMPTS):
-        time.sleep(STATUS_POLL_DELAY_SEC)
-        try:
-            with urllib.request.urlopen(request, timeout=TWILIO_TIMEOUT_SEC) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001 - status check must never crash the loop
-            logger.warning(f"Could not check delivery status for {sid}: {e}")
-            return last_status
-
-        last_status = payload.get("status", "unknown")
-        error_code = payload.get("error_code")
-
-        if last_status == "delivered":
-            logger.info(f"✓ Carrier confirmed delivery (SID: {sid})")
-            return last_status
-        if last_status in ("undelivered", "failed"):
-            if str(error_code) == "30034":
-                logger.error(
-                    f"✗ Carrier BLOCKED the SMS (SID: {sid}, error 30034): the "
-                    f"sending number is not A2P 10DLC registered. This is a "
-                    f"one-time Twilio Console step (Messaging → Regulatory "
-                    f"Compliance → A2P 10DLC), not a code fix."
-                )
-            else:
-                logger.error(
-                    f"✗ Carrier did not deliver the SMS (SID: {sid}, status: "
-                    f"{last_status}, error_code: {error_code})"
-                )
-            return last_status
-
-    # Still queued/sending/sent after the poll window — accepted, delivery pending.
-    logger.info(
-        f"… Delivery still pending for {sid} (status: {last_status}). Twilio "
-        f"accepted it; the carrier receipt may land shortly."
-    )
-    return last_status
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -464,12 +387,9 @@ def handle_notification(notification: dict):
         preview = sms_body.replace("\n", " ")
         logger.info(f"Forwarding notification: {preview[:120]}")
 
-        sid = send_sms_via_twilio(sms_body)
-        if sid:
-            # Confirm the carrier actually took it (surfaces the 30034 A2P block).
-            poll_delivery_status(sid)
-        else:
-            logger.error("✗ Failed to forward notification (Twilio did not accept it)")
+        reference = send_sms_via_brevo(sms_body)
+        if not reference:
+            logger.error("✗ Failed to forward notification (Brevo did not accept it)")
 
         return event_time
 

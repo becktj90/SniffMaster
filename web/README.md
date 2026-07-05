@@ -153,11 +153,11 @@ Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Me
 
 Two modes:
 - **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
-- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron, or `?force=true` to preview on demand): computes the 24h min/avg/max baseline, fetches LC-36 outdoor conditions/lightning risk/daylight (Open-Meteo) and the day's NWS forecast icon, sends the morning report through the SNS/Twilio/ntfy delivery chain (see below), stores it, and returns the JSON. An atomic Redis lock plus a same-morning retry sweep guarantee reliable, at-most-once-per-6-hours delivery.
+- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron, or `?force=true` to preview on demand): computes the 24h min/avg/max baseline, fetches LC-36 outdoor conditions/lightning risk/daylight (Open-Meteo) and the day's NWS forecast icon, sends the morning report through the SNS/Brevo/ntfy delivery chain (see below), stores it, and returns the JSON. An atomic Redis lock plus a same-morning retry sweep guarantee reliable, at-most-once-per-6-hours delivery.
 
 ## SMS + push alerts — setup
 
-The relay can text/push you a **daily 6 AM ET room report** (indoor baseline + LC-36 outdoor weather, lightning risk, and daylight window, with the day's NWS forecast icon attached) and **immediate alerts** when conditions breach the alarm limits (humidity and temp are owner-adjustable from the dashboard's Restoration card — defaults 60%RH / 40°C — plus sudden gas-resistance drop and IAQ ≥ 150). Delivery tries AWS SNS, then Twilio, and always also pushes via ntfy in parallel (see `.env.example`) since either SMS provider can report success for a message the carrier silently drops. With no channel configured, sending is silently skipped and everything else keeps working.
+The relay can text/push you a **daily 6 AM ET room report** (indoor baseline + LC-36 outdoor weather, lightning risk, and daylight window, with the day's NWS forecast icon attached) and **immediate alerts** when conditions breach the alarm limits (humidity and temp are owner-adjustable from the dashboard's Restoration card — defaults 60%RH / 40°C — plus sudden gas-resistance drop and IAQ ≥ 150). Delivery tries AWS SNS, then Brevo, and always also pushes via ntfy in parallel (see `.env.example`) since either SMS provider can report success for a message the carrier silently drops. With no channel configured, sending is silently skipped and everything else keeps working.
 
 US SMS pricing is ~$0.00645/message (any free-tier allowance depends on your account; AWS has been phasing the SMS free tier out). Either way, one report + occasional alerts costs pennies per month.
 
@@ -207,7 +207,7 @@ openssl rand -hex 16
 # Output: 3a7f2c8b1e4d9a5f6c2b8e1a3f7d4c9b
 ```
 
-Optional: `OPENAI_API_KEY` gives the daily report a naturally written, personal tone (same key that powers the weather briefing); without it a built-in template is used — either way the text reads like a friendly site report, includes the 24h numbers, and lists any Cape Canaveral launches scheduled that day. Twilio (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM`) can be set as an automatic fallback provider.
+Optional: `OPENAI_API_KEY` gives the daily report a naturally written, personal tone (same key that powers the weather briefing); without it a built-in template is used — either way the text reads like a friendly site report, includes the 24h numbers, and lists any Cape Canaveral launches scheduled that day. Brevo (`BREVO_API_KEY`/`BREVO_SMS_SENDER`) can be set as an automatic fallback provider.
 
 ### Step 4: Redeploy
 

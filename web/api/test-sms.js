@@ -1,12 +1,12 @@
 /**
- * GET /api/test-sms — test SMS configuration (AWS SNS and Twilio)
+ * GET /api/test-sms — test SMS configuration (AWS SNS and Brevo)
  *
  * This endpoint checks if SMS is properly configured and optionally sends a test message.
  * Query parameters:
  *   ?send=true       — actually send a test SMS
  *   ?send=false      — just report configuration status (default)
  *   ?provider=sns    — force the send through one provider, skipping the
- *   ?provider=twilio   normal SNS → Twilio → ntfy fallback order (diagnostic
+ *   ?provider=brevo    normal SNS → Brevo → ntfy fallback order (diagnostic
  *   ?provider=ntfy     use only — lets you confirm one provider actually
  *                       delivers even when another reports success but the
  *                       text never arrives, e.g. an unverified number in the
@@ -17,7 +17,7 @@
  * {
  *   configured: boolean,
  *   snsConfigured: boolean,
- *   twilioConfigured: boolean,
+ *   brevoConfigured: boolean,
  *   recipients: string[],
  *   test: {
  *     sent: number,
@@ -31,12 +31,12 @@
 import {
   isSmsConfigured,
   isSnsConfigured,
-  isTwilioConfigured,
+  isBrevoConfigured,
   isNtfyConfigured,
   getRecipients,
   sendSms,
   sendViaSns,
-  sendViaTwilio,
+  sendViaBrevo,
   sendViaNtfy,
 } from "../lib/notify.js";
 
@@ -57,7 +57,7 @@ export default async function handler(req, res) {
   const response = {
     configured: isSmsConfigured(),
     snsConfigured: isSnsConfigured(),
-    twilioConfigured: isTwilioConfigured(),
+    brevoConfigured: isBrevoConfigured(),
     ntfyConfigured: isNtfyConfigured(),
     recipients,
     test: null,
@@ -71,14 +71,14 @@ export default async function handler(req, res) {
   if (!response.configured) {
     return res.status(400).json({
       ...response,
-      error: "SMS is not configured. Set SNS_AWS_* or TWILIO_* environment variables.",
+      error: "SMS is not configured. Set SNS_AWS_* or BREVO_* environment variables.",
     });
   }
 
   const requested = String(req.query?.provider || "");
-  const forceProvider = ["twilio", "sns", "ntfy"].includes(requested) ? requested : null;
-  if (forceProvider === "twilio" && !isTwilioConfigured()) {
-    return res.status(400).json({ ...response, error: "Twilio is not configured." });
+  const forceProvider = ["brevo", "sns", "ntfy"].includes(requested) ? requested : null;
+  if (forceProvider === "brevo" && !isBrevoConfigured()) {
+    return res.status(400).json({ ...response, error: "Brevo is not configured." });
   }
   if (forceProvider === "sns" && !isSnsConfigured()) {
     return res.status(400).json({ ...response, error: "AWS SNS is not configured." });
@@ -92,9 +92,9 @@ export default async function handler(req, res) {
     const testMessage = `SniffMaster SMS Test - ${timestamp}. If you received this, SMS is working!`;
 
     let result;
-    if (forceProvider === "twilio") {
-      const { sent, failures } = await sendViaTwilio(testMessage, recipients);
-      result = { sent, failures: failures.map((f) => ({ ...f, provider: "twilio" })), provider: "twilio" };
+    if (forceProvider === "brevo") {
+      const { sent, failures } = await sendViaBrevo(testMessage, recipients);
+      result = { sent, failures: failures.map((f) => ({ ...f, provider: "brevo" })), provider: "brevo" };
     } else if (forceProvider === "sns") {
       const { sent, failures } = await sendViaSns(testMessage, recipients);
       result = { sent, failures: failures.map((f) => ({ ...f, provider: "sns" })), provider: "sns" };
