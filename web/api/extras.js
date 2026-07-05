@@ -14,7 +14,7 @@
  * sniff-stream, weather-briefing.
  */
 
-import { requireDeviceAuth, requireOwnerAuth } from "../lib/auth.js";
+import { requireDeviceAuth } from "../lib/auth.js";
 import {
   isRedisConfigured,
   getLatest,
@@ -31,8 +31,11 @@ import {
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import {
   getEffectiveThresholds,
+  getEffectiveAlertCooldownMs,
   THRESHOLDS,
   THRESHOLD_LIMITS,
+  ALERT_COOLDOWN_LIMITS,
+  DEFAULT_ALERT_COOLDOWN_MIN,
   ENVIRONMENT_TYPES,
   DEFAULT_ENVIRONMENT_TYPE,
   normalizeEnvironmentType,
@@ -1123,27 +1126,40 @@ async function weatherBriefing(req, res) {
 
 // ── settings ─────────────────────────────────────────────────────────────
 // GET  /api/settings — public read of effective alert thresholds (so the
-//                      dashboard can show/sync the live humidity alarm limit).
-// POST /api/settings — owner-authenticated update of the adjustable limits
-//                      (currently humidityHigh, tempHighC). Values are clamped
-//                      to safe ranges in getEffectiveThresholds so a bad input
-//                      can never silently disable monitoring.
+//                      dashboard can show/sync the live alarm limits).
+// POST /api/settings — public, unauthenticated update of the adjustable
+//                      limits (humidityHigh, tempHighC, co2High, iaqPoor,
+//                      gasDropPct, alertCooldownMin, environmentType).
+//                      Deliberately no owner key: this is a personal
+//                      single-tenant dashboard, and the tradeoff is that
+//                      anyone with the dashboard URL can retune alarms.
+//                      Every field is clamped to a safe range in
+//                      getEffectiveThresholds/getEffectiveAlertCooldownMs so
+//                      a bad (or malicious) input can never fully silence
+//                      monitoring — see THRESHOLD_LIMITS/ALERT_COOLDOWN_LIMITS.
 function effectiveSettingsPayload(overrides) {
   const t = getEffectiveThresholds(overrides);
+  const gasDropPct = Math.round((1 - t.GAS_DROP_RATIO) * 100);
   return {
     humidityHigh: t.HUMIDITY_HIGH,
     tempHighC: t.TEMP_HIGH_C,
     co2High: t.CO2_HIGH,
+    iaqPoor: t.IAQ_POOR,
+    gasDropPct,
+    alertCooldownMin: Math.round(getEffectiveAlertCooldownMs(overrides) / 60000),
     environmentType: normalizeEnvironmentType(overrides?.environmentType),
     updatedAt: Number(overrides?.updatedAt) || null,
     defaults: {
       humidityHigh: THRESHOLDS.HUMIDITY_HIGH,
       tempHighC: THRESHOLDS.TEMP_HIGH_C,
       co2High: THRESHOLDS.CO2_HIGH,
+      iaqPoor: THRESHOLDS.IAQ_POOR,
+      gasDropPct: Math.round((1 - THRESHOLDS.GAS_DROP_RATIO) * 100),
+      alertCooldownMin: DEFAULT_ALERT_COOLDOWN_MIN,
       environmentType: DEFAULT_ENVIRONMENT_TYPE,
     },
     environmentTypes: ENVIRONMENT_TYPES,
-    limits: THRESHOLD_LIMITS,
+    limits: { ...THRESHOLD_LIMITS, ALERT_COOLDOWN_MIN: ALERT_COOLDOWN_LIMITS },
   };
 }
 
@@ -1169,8 +1185,6 @@ async function settings(req, res) {
     return res.status(405).json({ error: "GET/POST only" });
   }
 
-  if (!requireOwnerAuth(req, res)) return;
-
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const patch = {};
   if (body.humidityHigh !== undefined) {
@@ -1188,6 +1202,21 @@ async function settings(req, res) {
     if (!Number.isFinite(v)) return res.status(400).json({ error: "co2High must be a number" });
     patch.co2High = v;
   }
+  if (body.iaqPoor !== undefined) {
+    const v = Number(body.iaqPoor);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "iaqPoor must be a number" });
+    patch.iaqPoor = v;
+  }
+  if (body.gasDropPct !== undefined) {
+    const v = Number(body.gasDropPct);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "gasDropPct must be a number" });
+    patch.gasDropPct = v;
+  }
+  if (body.alertCooldownMin !== undefined) {
+    const v = Number(body.alertCooldownMin);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "alertCooldownMin must be a number" });
+    patch.alertCooldownMin = v;
+  }
   if (body.environmentType !== undefined) {
     // Accept current types plus legacy aliases (e.g. "construction" →
     // "industrial") so older clients keep working; store the normalized name.
@@ -1197,7 +1226,9 @@ async function settings(req, res) {
     patch.environmentType = normalizeEnvironmentType(body.environmentType);
   }
   if (!Object.keys(patch).length) {
-    return res.status(400).json({ error: "no adjustable settings supplied (humidityHigh, tempHighC, co2High, environmentType)" });
+    return res.status(400).json({
+      error: "no adjustable settings supplied (humidityHigh, tempHighC, co2High, iaqPoor, gasDropPct, alertCooldownMin, environmentType)",
+    });
   }
 
   try {

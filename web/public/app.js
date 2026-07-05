@@ -84,7 +84,6 @@ const WEATHER_BRIEFING_TTL_MS = 60 * 60 * 1000; // 1-hour cadence for AI weather
 const MAP_PREF_KEY = "sniffmaster-map-layers";
 const VIEW_PREF_KEY = "sniffmaster-view";
 const THEME_PREF_KEY = "sniffmaster-theme";
-const OWNER_KEY_SESSION_KEY = "sniffmaster-owner-key";
 const THEME_META = {
   obsidian: {
     label: "Obsidian Lab",
@@ -418,25 +417,6 @@ function closeViewSubmenu() {
   setViewSubmenuOpen(false);
 }
 
-function loadOwnerKey() {
-  try {
-    return (sessionStorage.getItem(OWNER_KEY_SESSION_KEY) || "").trim();
-  } catch (_) {
-    return "";
-  }
-}
-
-function saveOwnerKey(key) {
-  try {
-    sessionStorage.setItem(OWNER_KEY_SESSION_KEY, `${key || ""}`.trim());
-  } catch (_) {}
-}
-
-function clearOwnerKey() {
-  try {
-    sessionStorage.removeItem(OWNER_KEY_SESSION_KEY);
-  } catch (_) {}
-}
 
 function tierColor(score) {
   if (score >= 80) return "var(--mint)";
@@ -3901,6 +3881,12 @@ function applyRestorationSettings(data) {
   if (Number.isFinite(Number(data.co2High))) {
     RESTORATION_THRESHOLDS.CO2_HIGH = Number(data.co2High);
   }
+  if (Number.isFinite(Number(data.iaqPoor))) {
+    RESTORATION_THRESHOLDS.IAQ_POOR = Number(data.iaqPoor);
+  }
+  if (Number.isFinite(Number(data.gasDropPct))) {
+    RESTORATION_THRESHOLDS.GAS_DROP_RATIO = 1 - Number(data.gasDropPct) / 100;
+  }
   const env = normalizeEnvClient(data.environmentType);
   if (env) currentEnvironmentType = env;
   // Reflect the live values in the controls (unless the user is mid-edit).
@@ -3914,6 +3900,11 @@ function applyRestorationSettings(data) {
   seed("rs-humidity-input", T.HUMIDITY_HIGH);
   seed("rs-temp-input", Math.round((T.TEMP_HIGH_C * 9) / 5 + 32));
   seed("rs-co2-input", T.CO2_HIGH);
+  seed("rs-iaq-input", T.IAQ_POOR);
+  seed("rs-gasdrop-input", Math.round((1 - T.GAS_DROP_RATIO) * 100));
+  if (Number.isFinite(Number(data.alertCooldownMin))) {
+    seed("rs-cooldown-input", Number(data.alertCooldownMin));
+  }
   updateEnvironmentToggleUI();
   applyEnvironmentLabels();
 }
@@ -3953,13 +3944,6 @@ function applyEnvironmentLabels() {
 async function saveEnvironmentType(type) {
   if (type !== "office" && type !== "industrial") return;
   if (type === currentEnvironmentType) return;
-  const keyInput = $("rs-owner-key");
-  const key = (keyInput?.value || loadOwnerKey() || "").trim();
-  if (!key) {
-    setAdjustStatus("Owner key required to change the environment mode.", "warn");
-    keyInput?.focus();
-    return;
-  }
   const industrial = $("rs-env-industrial");
   const office = $("rs-env-office");
   if (industrial) industrial.disabled = true;
@@ -3968,16 +3952,11 @@ async function saveEnvironmentType(type) {
   try {
     const res = await fetch("/api/settings", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-SniffMaster-Key": key },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ environmentType: type }),
     });
-    if (res.status === 401) {
-      setAdjustStatus("Owner key rejected. Check the key and try again.", "warn");
-      return;
-    }
     if (!res.ok) throw new Error(`settings ${res.status}`);
     const data = await res.json();
-    saveOwnerKey(key);
     restorationSettingsState.data = data;
     restorationSettingsState.fetchedAt = Date.now();
     applyRestorationSettings(data);
@@ -3998,7 +3977,6 @@ function wireRestorationControls() {
   const body = $("rs-adjust-body");
   const saveBtn = $("rs-thresholds-save");
   const humInput = $("rs-humidity-input");
-  const keyInput = $("rs-owner-key");
   const envIndustrial = $("rs-env-industrial");
   const envOffice = $("rs-env-office");
   if (!toggle || !body || !saveBtn || !humInput) return;
@@ -4007,6 +3985,10 @@ function wireRestorationControls() {
   if (envIndustrial) envIndustrial.addEventListener("click", () => saveEnvironmentType("industrial"));
   if (envOffice) envOffice.addEventListener("click", () => saveEnvironmentType("office"));
   updateEnvironmentToggleUI();
+
+  const adjustFieldIds = [
+    "rs-humidity-input", "rs-temp-input", "rs-co2-input", "rs-iaq-input", "rs-gasdrop-input", "rs-cooldown-input",
+  ];
 
   toggle.addEventListener("click", () => {
     const open = body.classList.toggle("is-hidden") === false;
@@ -4018,26 +4000,33 @@ function wireRestorationControls() {
       if (tempInput && !tempInput.value) tempInput.value = String(Math.round((T.TEMP_HIGH_C * 9) / 5 + 32));
       const co2Input = $("rs-co2-input");
       if (co2Input && !co2Input.value) co2Input.value = String(T.CO2_HIGH);
-      if (keyInput && !keyInput.value) keyInput.value = loadOwnerKey();
+      const iaqInput = $("rs-iaq-input");
+      if (iaqInput && !iaqInput.value) iaqInput.value = String(T.IAQ_POOR);
+      const gasDropInput = $("rs-gasdrop-input");
+      if (gasDropInput && !gasDropInput.value) gasDropInput.value = String(Math.round((1 - T.GAS_DROP_RATIO) * 100));
       humInput.focus();
     }
   });
 
   saveBtn.addEventListener("click", () => saveThresholds());
-  for (const id of ["rs-humidity-input", "rs-temp-input", "rs-co2-input"]) {
+  for (const id of adjustFieldIds) {
     $(id)?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); saveThresholds(); }
     });
   }
 }
 
-// Save all three adjustable alarm limits in one POST. Temp is entered in °F
+// Save every adjustable alarm limit in one POST. Temp is entered in °F
 // (matches every other reading on the dashboard) but stored in °C server-side.
+// No owner key: this dashboard has no login, so anyone with the URL can
+// retune alarms — the backend clamps every field to a safe range regardless.
 async function saveThresholds() {
   const humInput = $("rs-humidity-input");
   const tempInput = $("rs-temp-input");
   const co2Input = $("rs-co2-input");
-  const keyInput = $("rs-owner-key");
+  const iaqInput = $("rs-iaq-input");
+  const gasDropInput = $("rs-gasdrop-input");
+  const cooldownInput = $("rs-cooldown-input");
   const saveBtn = $("rs-thresholds-save");
 
   const patch = {};
@@ -4056,14 +4045,23 @@ async function saveThresholds() {
     if (!Number.isFinite(v)) return setAdjustStatus("CO2 limit must be a number (ppm).", "warn");
     patch.co2High = v;
   }
+  if (iaqInput && iaqInput.value !== "") {
+    const v = Number(iaqInput.value);
+    if (!Number.isFinite(v)) return setAdjustStatus("Air quality limit must be a number (IAQ).", "warn");
+    patch.iaqPoor = v;
+  }
+  if (gasDropInput && gasDropInput.value !== "") {
+    const v = Number(gasDropInput.value);
+    if (!Number.isFinite(v)) return setAdjustStatus("Gas-drop sensitivity must be a number (%).", "warn");
+    patch.gasDropPct = v;
+  }
+  if (cooldownInput && cooldownInput.value !== "") {
+    const v = Number(cooldownInput.value);
+    if (!Number.isFinite(v)) return setAdjustStatus("Alert cooldown must be a number (minutes).", "warn");
+    patch.alertCooldownMin = v;
+  }
   if (!Object.keys(patch).length) {
     return setAdjustStatus("Enter at least one limit to save.", "warn");
-  }
-  const key = (keyInput?.value || "").trim();
-  if (!key) {
-    setAdjustStatus("Owner key required to change the alarms.", "warn");
-    keyInput?.focus();
-    return;
   }
 
   if (saveBtn) saveBtn.disabled = true;
@@ -4071,22 +4069,17 @@ async function saveThresholds() {
   try {
     const res = await fetch("/api/settings", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-SniffMaster-Key": key },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     });
-    if (res.status === 401) {
-      setAdjustStatus("Owner key rejected. Check the key and try again.", "warn");
-      return;
-    }
     if (!res.ok) throw new Error(`settings ${res.status}`);
     const data = await res.json();
-    saveOwnerKey(key);
     restorationSettingsState.data = data;
     restorationSettingsState.fetchedAt = Date.now();
     applyRestorationSettings(data);
     const T = RESTORATION_THRESHOLDS;
     setAdjustStatus(
-      `Saved — alarms: humidity >${T.HUMIDITY_HIGH}%, temp >${Math.round((T.TEMP_HIGH_C * 9) / 5 + 32)}°F, CO2 >${T.CO2_HIGH} ppm.`,
+      `Saved — humidity >${T.HUMIDITY_HIGH}%, temp >${Math.round((T.TEMP_HIGH_C * 9) / 5 + 32)}°F, CO2 >${T.CO2_HIGH} ppm, IAQ >=${T.IAQ_POOR}, gas drop >=${Math.round((1 - T.GAS_DROP_RATIO) * 100)}%, cooldown ${data.alertCooldownMin}min.`,
       "good"
     );
     if (lastData) renderRestorationMonitor(lastData);
@@ -4225,8 +4218,16 @@ function ensureRestorationDom() {
               <span class="rs-adjust-input"><input type="number" id="rs-co2-input" min="600" max="2000" step="50" inputmode="numeric" enterkeyhint="done"> ppm</span>
             </label>
             <label class="rs-adjust-field">
-              <span>Owner key</span>
-              <input type="password" id="rs-owner-key" placeholder="Owner key" autocomplete="off">
+              <span>Air quality alarm above</span>
+              <span class="rs-adjust-input"><input type="number" id="rs-iaq-input" min="50" max="300" step="5" inputmode="numeric" enterkeyhint="done"> IAQ</span>
+            </label>
+            <label class="rs-adjust-field">
+              <span>Gas-drop sensitivity</span>
+              <span class="rs-adjust-input"><input type="number" id="rs-gasdrop-input" min="20" max="70" step="5" inputmode="numeric" enterkeyhint="done"> %</span>
+            </label>
+            <label class="rs-adjust-field">
+              <span>Alert re-send cooldown</span>
+              <span class="rs-adjust-input"><input type="number" id="rs-cooldown-input" min="5" max="180" step="5" inputmode="numeric" enterkeyhint="done"> min</span>
             </label>
             <div class="rs-adjust-actions">
               <button type="button" class="rs-save-btn" id="rs-thresholds-save">Save alarm limits</button>

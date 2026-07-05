@@ -32,13 +32,11 @@ import {
   evaluateBreaches,
   getEffectiveThresholds,
   getEffectiveEnvironmentType,
+  getEffectiveAlertCooldownMs,
 } from "../lib/thresholds.js";
 import { sendSms } from "../lib/notify.js";
 import { buildAlertBroSummary } from "../lib/brogpt.js";
 import { buildSummary, summaryToSms } from "./daily-summary.js";
-
-// Per-breach cooldown: re-remind an ongoing breach at most this often (ms).
-const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 function etTimeLabel(ts) {
   try {
@@ -70,18 +68,21 @@ async function maybeSendAlerts(stored) {
     console.error("alerts: history fetch failed:", err);
   }
 
-  // Owner-adjustable limits (humidity/temp) + environment preset; falls back
-  // to defaults on any error.
+  // Owner-adjustable limits (humidity/temp/etc) + environment preset + alert
+  // cooldown; falls back to defaults on any error.
   let thresholds;
   let environmentType;
+  let cooldownMs;
   try {
     const settings = await getSettings();
     thresholds = getEffectiveThresholds(settings);
     environmentType = getEffectiveEnvironmentType(settings);
+    cooldownMs = getEffectiveAlertCooldownMs(settings);
   } catch (err) {
     console.error("alerts: settings fetch failed, using defaults:", err);
     thresholds = getEffectiveThresholds();
     environmentType = getEffectiveEnvironmentType();
+    cooldownMs = getEffectiveAlertCooldownMs();
   }
 
   const base = baselineGasR(priorHistory);
@@ -94,7 +95,7 @@ async function maybeSendAlerts(stored) {
 
   const toNotify = breaches.filter((b) => {
     const isNew = !prevActive.has(b.key);
-    const cooledDown = !sentAt[b.key] || now - sentAt[b.key] > ALERT_COOLDOWN_MS;
+    const cooledDown = !sentAt[b.key] || now - sentAt[b.key] > cooldownMs;
     return isNew || cooledDown;
   });
 

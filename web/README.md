@@ -157,10 +157,10 @@ Two modes:
 
 ### GET/POST /api/settings
 
-Owner-adjustable alarm limits and the environment mode.
+Adjustable alarm limits and the environment mode.
 
-- **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
-- **POST** (requires `X-SniffMaster-Key: $SNIFFMASTER_OWNER_KEY` header): accepts a partial patch of `{ humidityHigh, tempHighC, co2High, environmentType }`. `environmentType` must be `"industrial"` (default) or `"office"` (`"construction"` is accepted as a legacy alias and normalized to `"industrial"`). Changing it immediately affects: real-time alert wording on the dashboard, which sensor reading is highlighted, and the next morning report's tone and stats. All three numeric limits are clamped to safe ranges server-side.
+- **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, `iaqPoor`, `gasDropPct`, `alertCooldownMin`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
+- **POST**: no auth required — this is a personal single-tenant dashboard, so anyone with the URL can retune alarms from the "Adjust alarm limits" panel. Accepts a partial patch of `{ humidityHigh, tempHighC, co2High, iaqPoor, gasDropPct, alertCooldownMin, environmentType }`. `environmentType` must be `"industrial"` (default) or `"office"` (`"construction"` is accepted as a legacy alias and normalized to `"industrial"`). Changing it immediately affects: real-time alert wording on the dashboard, which sensor reading is highlighted, and the next morning report's tone and stats. Every numeric field is clamped to a safe range server-side (see `THRESHOLD_LIMITS`/`ALERT_COOLDOWN_LIMITS` in `lib/thresholds.js`) so a bad or malicious value can never fully disable monitoring.
 
 Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold — an abnormal-conditions alert includes the same 24h stats block as the morning report, not just the bare breach line, so it reads as a full comprehensive report.
 
