@@ -14,7 +14,7 @@
  * sniff-stream, weather-briefing.
  */
 
-import { requireDeviceAuth, requireOwnerAuth } from "../lib/auth.js";
+import { requireDeviceAuth } from "../lib/auth.js";
 import {
   isRedisConfigured,
   getLatest,
@@ -27,12 +27,16 @@ import {
   getSettings,
   putSettings,
   getDailySummary,
+  getAlertSnapshot,
 } from "../lib/store.js";
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import {
   getEffectiveThresholds,
+  getEffectiveAlertCooldownMs,
   THRESHOLDS,
   THRESHOLD_LIMITS,
+  ALERT_COOLDOWN_LIMITS,
+  DEFAULT_ALERT_COOLDOWN_MIN,
   ENVIRONMENT_TYPES,
   DEFAULT_ENVIRONMENT_TYPE,
   normalizeEnvironmentType,
@@ -1123,27 +1127,40 @@ async function weatherBriefing(req, res) {
 
 // ── settings ─────────────────────────────────────────────────────────────
 // GET  /api/settings — public read of effective alert thresholds (so the
-//                      dashboard can show/sync the live humidity alarm limit).
-// POST /api/settings — owner-authenticated update of the adjustable limits
-//                      (currently humidityHigh, tempHighC). Values are clamped
-//                      to safe ranges in getEffectiveThresholds so a bad input
-//                      can never silently disable monitoring.
+//                      dashboard can show/sync the live alarm limits).
+// POST /api/settings — public, unauthenticated update of the adjustable
+//                      limits (humidityHigh, tempHighC, co2High, iaqPoor,
+//                      gasDropPct, alertCooldownMin, environmentType).
+//                      Deliberately no owner key: this is a personal
+//                      single-tenant dashboard, and the tradeoff is that
+//                      anyone with the dashboard URL can retune alarms.
+//                      Every field is clamped to a safe range in
+//                      getEffectiveThresholds/getEffectiveAlertCooldownMs so
+//                      a bad (or malicious) input can never fully silence
+//                      monitoring — see THRESHOLD_LIMITS/ALERT_COOLDOWN_LIMITS.
 function effectiveSettingsPayload(overrides) {
   const t = getEffectiveThresholds(overrides);
+  const gasDropPct = Math.round((1 - t.GAS_DROP_RATIO) * 100);
   return {
     humidityHigh: t.HUMIDITY_HIGH,
     tempHighC: t.TEMP_HIGH_C,
     co2High: t.CO2_HIGH,
+    iaqPoor: t.IAQ_POOR,
+    gasDropPct,
+    alertCooldownMin: Math.round(getEffectiveAlertCooldownMs(overrides) / 60000),
     environmentType: normalizeEnvironmentType(overrides?.environmentType),
     updatedAt: Number(overrides?.updatedAt) || null,
     defaults: {
       humidityHigh: THRESHOLDS.HUMIDITY_HIGH,
       tempHighC: THRESHOLDS.TEMP_HIGH_C,
       co2High: THRESHOLDS.CO2_HIGH,
+      iaqPoor: THRESHOLDS.IAQ_POOR,
+      gasDropPct: Math.round((1 - THRESHOLDS.GAS_DROP_RATIO) * 100),
+      alertCooldownMin: DEFAULT_ALERT_COOLDOWN_MIN,
       environmentType: DEFAULT_ENVIRONMENT_TYPE,
     },
     environmentTypes: ENVIRONMENT_TYPES,
-    limits: THRESHOLD_LIMITS,
+    limits: { ...THRESHOLD_LIMITS, ALERT_COOLDOWN_MIN: ALERT_COOLDOWN_LIMITS },
   };
 }
 
@@ -1169,8 +1186,6 @@ async function settings(req, res) {
     return res.status(405).json({ error: "GET/POST only" });
   }
 
-  if (!requireOwnerAuth(req, res)) return;
-
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const patch = {};
   if (body.humidityHigh !== undefined) {
@@ -1188,6 +1203,21 @@ async function settings(req, res) {
     if (!Number.isFinite(v)) return res.status(400).json({ error: "co2High must be a number" });
     patch.co2High = v;
   }
+  if (body.iaqPoor !== undefined) {
+    const v = Number(body.iaqPoor);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "iaqPoor must be a number" });
+    patch.iaqPoor = v;
+  }
+  if (body.gasDropPct !== undefined) {
+    const v = Number(body.gasDropPct);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "gasDropPct must be a number" });
+    patch.gasDropPct = v;
+  }
+  if (body.alertCooldownMin !== undefined) {
+    const v = Number(body.alertCooldownMin);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "alertCooldownMin must be a number" });
+    patch.alertCooldownMin = v;
+  }
   if (body.environmentType !== undefined) {
     // Accept current types plus legacy aliases (e.g. "construction" →
     // "industrial") so older clients keep working; store the normalized name.
@@ -1197,7 +1227,9 @@ async function settings(req, res) {
     patch.environmentType = normalizeEnvironmentType(body.environmentType);
   }
   if (!Object.keys(patch).length) {
-    return res.status(400).json({ error: "no adjustable settings supplied (humidityHigh, tempHighC, co2High, environmentType)" });
+    return res.status(400).json({
+      error: "no adjustable settings supplied (humidityHigh, tempHighC, co2High, iaqPoor, gasDropPct, alertCooldownMin, environmentType)",
+    });
   }
 
   try {
@@ -1210,19 +1242,22 @@ async function settings(req, res) {
 }
 
 /**
- * GET /api/report-card — the daily summary rendered as an image, so the
- * morning report and its push notification carry a visual, not just text.
+ * GET /api/report-card — the latest summary rendered as an image, so a
+ * report/alert and its push notification carry a visual, not just text.
+ * Picks whichever is newer between the morning report and the last
+ * real-time alert's own snapshot, so an alert's MMS shows the alert's own
+ * numbers rather than a stale morning report from hours earlier.
  * ?format=png renders a raster PNG (for MMS media_file, which carriers
  * expect over SVG); default is SVG for ntfy Attach / dashboard <img> use.
- * Public and read-only (no secrets in the image); cached briefly since the
- * daily summary itself only regenerates a couple times a day.
+ * Public and read-only (no secrets in the image); cached briefly.
  */
 async function reportCard(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Cache-Control", "public, max-age=300");
   if (req.method === "OPTIONS") return res.status(204).end();
   try {
-    const summary = await getDailySummary();
+    const [daily, alert] = await Promise.all([getDailySummary(), getAlertSnapshot()]);
+    const summary = num(alert?.generatedAt) > num(daily?.generatedAt) ? alert : daily;
     if (req.query?.format === "png") {
       const png = renderReportCardPng(summary || {});
       res.setHeader("Content-Type", "image/png");

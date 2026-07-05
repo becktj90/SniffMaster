@@ -57,11 +57,23 @@ export function isKnownEnvironmentType(value) {
 
 // Guardrails for owner-supplied overrides — a fat-fingered value must never
 // disable safety monitoring (e.g. humidity set to 500 would never alarm).
+// The settings endpoint has no password gate (anyone with the dashboard URL
+// can adjust these), so these ranges are the only thing standing between a
+// bad input and monitoring going dark — keep every adjustable field clamped.
 export const THRESHOLD_LIMITS = {
   HUMIDITY_HIGH: { min: 40, max: 90 },
   TEMP_HIGH_C: { min: 25, max: 70 },
   CO2_HIGH: { min: 600, max: 2000 },
+  IAQ_POOR: { min: 50, max: 300 },
+  // Expressed to owners as a % drop (e.g. 40 = "a 40% drop trips the alert"),
+  // stored internally as GAS_DROP_RATIO (= 1 - pct/100).
+  GAS_DROP_PCT: { min: 20, max: 70 },
 };
+
+// Real-time alert re-send cooldown — separate from THRESHOLDS (it paces
+// notifications, not a breach condition) but adjustable the same way.
+export const DEFAULT_ALERT_COOLDOWN_MIN = 30;
+export const ALERT_COOLDOWN_LIMITS = { min: 5, max: 180 };
 
 function clampNum(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -89,6 +101,15 @@ export function getEffectiveThresholds(overrides) {
   if (Number.isFinite(co2)) {
     t.CO2_HIGH = clampNum(co2, THRESHOLD_LIMITS.CO2_HIGH.min, THRESHOLD_LIMITS.CO2_HIGH.max);
   }
+  const iaq = Number(o.iaqPoor);
+  if (Number.isFinite(iaq)) {
+    t.IAQ_POOR = clampNum(iaq, THRESHOLD_LIMITS.IAQ_POOR.min, THRESHOLD_LIMITS.IAQ_POOR.max);
+  }
+  const gasDropPct = Number(o.gasDropPct);
+  if (Number.isFinite(gasDropPct)) {
+    const pct = clampNum(gasDropPct, THRESHOLD_LIMITS.GAS_DROP_PCT.min, THRESHOLD_LIMITS.GAS_DROP_PCT.max);
+    t.GAS_DROP_RATIO = 1 - pct / 100;
+  }
   return t;
 }
 
@@ -96,6 +117,16 @@ export function getEffectiveThresholds(overrides) {
 export function getEffectiveEnvironmentType(overrides) {
   const o = overrides && typeof overrides === "object" ? overrides : {};
   return normalizeEnvironmentType(o.environmentType);
+}
+
+/** Resolve the effective real-time-alert re-send cooldown, in milliseconds. */
+export function getEffectiveAlertCooldownMs(overrides) {
+  const o = overrides && typeof overrides === "object" ? overrides : {};
+  const min = Number(o.alertCooldownMin);
+  const clamped = Number.isFinite(min)
+    ? clampNum(min, ALERT_COOLDOWN_LIMITS.min, ALERT_COOLDOWN_LIMITS.max)
+    : DEFAULT_ALERT_COOLDOWN_MIN;
+  return clamped * 60 * 1000;
 }
 
 function num(value, fallback = NaN) {

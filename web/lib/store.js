@@ -49,6 +49,7 @@ const KEY_COMMAND_SEQ = "sniffmaster:command_seq";
 const KEY_BLE_OCCUPANCY = "sniffmaster:ble_occupancy";
 const KEY_BLE_OCCUPANCY_HISTORY = "sniffmaster:ble_occupancy_history";
 const KEY_ALERT_STATE = "sniffmaster:alert_state";
+const KEY_ALERT_SNAPSHOT = "sniffmaster:alert_snapshot";
 const KEY_DAILY_SUMMARY = "sniffmaster:daily_summary";
 const KEY_DAILY_SUMMARY_HISTORY = "sniffmaster:daily_summary_history";
 const KEY_SETTINGS = "sniffmaster:settings";
@@ -323,6 +324,28 @@ export async function setAlertState(state) {
 }
 
 /**
+ * Latest real-time-alert summary (24h stats + baseline + weather outlook,
+ * same shape as a daily summary) — a single slot, no history, distinct from
+ * putDailySummary/getDailySummary (the morning cron's record, which has its
+ * own resend-guard/lock semantics this must not disturb). /api/report-card
+ * reads whichever of the two is newer, so an alert's visual reflects the
+ * alert's own numbers instead of a stale morning report.
+ */
+export async function putAlertSnapshot(data) {
+  const redis = getRedis();
+  const entry = { ...data, generatedAt: data?.generatedAt || Date.now() };
+  await redis.set(KEY_ALERT_SNAPSHOT, JSON.stringify(entry));
+  return entry;
+}
+
+export async function getAlertSnapshot() {
+  const redis = getRedis();
+  const raw = await redis.get(KEY_ALERT_SNAPSHOT);
+  if (!raw) return null;
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+/**
  * Atomically claim the right to generate+send today's daily summary.
  * Uses SET NX EX so a double cron fire (or a manual trigger racing the cron)
  * can never double-text: exactly one caller wins the lock per window.
@@ -337,6 +360,26 @@ export async function acquireDailySummaryLock(ttlSeconds) {
     { nx: true, ex: Math.max(60, Math.floor(ttlSeconds)) }
   );
   // Upstash returns "OK" when the key was set, null when it already existed.
+  return result === "OK";
+}
+
+/**
+ * Rate-limit for the unauthenticated "send me a test report now" trigger
+ * (see api/daily-summary.js's ?manual=true path). Distinct key/lock from
+ * acquireDailySummaryLock — that one guards the cron's own dedup window (up
+ * to 6h) and would otherwise block a manual test for hours; this one is a
+ * short, tight cooldown whose only job is capping how often an
+ * unauthenticated caller can trigger a real (costs-money) send.
+ * @param {number} ttlSeconds
+ * @returns {Promise<boolean>} true if this caller won the lock
+ */
+export async function acquireManualReportLock(ttlSeconds) {
+  const redis = getRedis();
+  const result = await redis.set(
+    "sniffmaster:manual_report_lock",
+    String(Date.now()),
+    { nx: true, ex: Math.max(30, Math.floor(ttlSeconds)) }
+  );
   return result === "OK";
 }
 

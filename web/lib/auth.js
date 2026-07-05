@@ -47,18 +47,6 @@ export function requireDeviceAuth(req, res) {
   return requireSharedSecret(req, res, "SNIFFMASTER_API_KEY", "sniffmaster-device");
 }
 
-export function requireOwnerAuth(req, res) {
-  const owner = process.env.SNIFFMASTER_OWNER_KEY || "";
-  if (owner) {
-    return requireSharedSecret(req, res, "SNIFFMASTER_OWNER_KEY", "sniffmaster-owner");
-  }
-
-  // Easy-but-still-gated fallback: if no dedicated owner key is configured,
-  // reuse the device key for owner actions. The key is still supplied at
-  // runtime and never embedded in the public frontend.
-  return requireSharedSecret(req, res, "SNIFFMASTER_API_KEY", "sniffmaster-owner");
-}
-
 export function sanitizePostedBody(body) {
   if (!body || typeof body !== "object") return {};
   const { key, ...rest } = body;

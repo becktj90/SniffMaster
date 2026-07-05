@@ -23,6 +23,7 @@ import {
   putDailySummary,
   getDailySummaryHistory,
   acquireDailySummaryLock,
+  acquireManualReportLock,
   markDailySummaryDelivered,
   getSettings,
 } from "../lib/store.js";
@@ -41,6 +42,10 @@ import { fetchLc36Outlook, outlookToSmsLines } from "../lib/forecast.js";
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
 const RESEND_GUARD_MS = 6 * 60 * 60 * 1000;
+// How often an unauthenticated "send me a test report now" request may fire —
+// see ?manual=true below. Real money (ClickSend) is spent per send, so this
+// stays tight even though the dashboard itself has no login.
+const MANUAL_TEST_COOLDOWN_SEC = 300;
 
 function timingSafeMatch(supplied, expected) {
   const a = Buffer.from(String(supplied));
@@ -92,8 +97,13 @@ function halfDelta(values) {
   return mean(newer) - mean(older);
 }
 
+// ASCII-only placeholder: an em-dash here would need sanitizeSmsAscii to run
+// downstream to become "-", and not every caller of fmt() (the real-time
+// alert's stats block, in particular) does that — ship ASCII directly so a
+// missed sanitize pass degrades to a readable "n/a" instead of a silently
+// stripped blank.
 function fmt(n, digits = 0) {
-  return Number.isFinite(n) ? n.toFixed(digits) : "—";
+  return Number.isFinite(n) ? n.toFixed(digits) : "n/a";
 }
 
 // Report text speaks Fahrenheit; internals (stats, thresholds, stored
@@ -108,12 +118,12 @@ function pctDiff(current, baselineValue) {
 }
 
 /**
- * Per-metric norm from previously stored summaries: the mean of each metric's
- * daily average over the retained history. Multiple runs on the same ET day
- * collapse to the newest, and today's runs are excluded, so the comparison is
- * genuinely "today vs prior days". days === 0 means no usable baseline yet.
+ * Collapse stored summaries to one per ET calendar day (multiple cron runs on
+ * the same day keep only the newest), excluding today, newest-day-first.
+ * Shared by buildBaseline (the % vs norm math) and computeProblemStreak (the
+ * "Nth day in a row" math) so both agree on what "a day" means.
  */
-function buildBaseline(prevSummaries, now = Date.now()) {
+function dedupeSummariesByDay(prevSummaries, now = Date.now()) {
   const today = etDateKey(now);
   const byDay = new Map();
   (Array.isArray(prevSummaries) ? prevSummaries : []).forEach((s) => {
@@ -123,7 +133,17 @@ function buildBaseline(prevSummaries, now = Date.now()) {
     if (day === today || byDay.has(day)) return; // newest-first: keep latest per day
     byDay.set(day, s);
   });
-  const days = [...byDay.values()];
+  return [...byDay.values()];
+}
+
+/**
+ * Per-metric norm from previously stored summaries: the mean of each metric's
+ * daily average over the retained history. Multiple runs on the same ET day
+ * collapse to the newest, and today's runs are excluded, so the comparison is
+ * genuinely "today vs prior days". days === 0 means no usable baseline yet.
+ */
+function buildBaseline(prevSummaries, now = Date.now()) {
+  const days = dedupeSummariesByDay(prevSummaries, now);
   const mean = (pick) => {
     const vals = days.map(pick).filter(Number.isFinite);
     return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
@@ -138,6 +158,27 @@ function buildBaseline(prevSummaries, now = Date.now()) {
     iaq: mean((d) => d?.iaq?.avg),
     co2: mean((d) => d?.co2?.avg),
   };
+}
+
+/**
+ * How many consecutive days (walking back from today) controlsStabilizing has
+ * been false, so wording can say "3rd day in a row" instead of reading
+ * identically whether a problem started today or five days ago.
+ * @returns {{streakDays:number, justRecovered:boolean}} streakDays is 0 when
+ *   today is fine; justRecovered is true when today is fine but yesterday
+ *   (the most recent prior day) wasn't.
+ */
+function computeProblemStreak(prevSummaries, todayStabilizing, now = Date.now()) {
+  const days = dedupeSummariesByDay(prevSummaries, now); // newest-first
+  if (todayStabilizing) {
+    return { streakDays: 0, justRecovered: days[0]?.controlsStabilizing === false };
+  }
+  let streakDays = 1; // today counts as day 1 of the streak
+  for (const day of days) {
+    if (day?.controlsStabilizing === false) streakDays += 1;
+    else break;
+  }
+  return { streakDays, justRecovered: false };
 }
 
 /**
@@ -242,7 +283,7 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "indus
   };
 }
 
-function summaryToSms(s, baseline = null) {
+function summaryToSms(s, baseline = null, headerLabel = "AM report") {
   const dateLabel = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     month: "short",
@@ -250,7 +291,7 @@ function summaryToSms(s, baseline = null) {
   }).format(new Date(s.generatedAt));
 
   if (!s.sampleCount) {
-    return `SniffMaster AM report (${dateLabel})\nNo telemetry received in the last 24h - check the device power/Wi-Fi.`;
+    return `SniffMaster ${headerLabel} (${dateLabel})\nNo telemetry received in the last 24h - check the device power/Wi-Fi.`;
   }
 
   // ASCII only (GSM-7): no degree signs, ohm symbols, dashes, or emoji.
@@ -259,7 +300,7 @@ function summaryToSms(s, baseline = null) {
     const d = pctDiff(cur, base);
     return d ? `, ${d}` : "";
   };
-  const lines = [`SniffMaster AM report (${dateLabel})`];
+  const lines = [`SniffMaster ${headerLabel} (${dateLabel})`];
   if (s.temp)
     lines.push(
       `Temp: ${fmt(cToF(s.temp.avg), 1)}F (${fmt(cToF(s.temp.min), 1)} to ${fmt(cToF(s.temp.max), 1)})${tag(cToF(s.temp.avg), baseline?.tempF)}`
@@ -309,13 +350,25 @@ function statsBlock(s, baseline = null) {
   return [header, ...lines].join("\n");
 }
 
-function reportFallbackText(s) {
+/**
+ * @param {ReturnType<typeof buildSummary>} s
+ * @param {{streakDays:number, justRecovered:boolean}} [streak] — from
+ *   computeProblemStreak(); makes the same breach type read differently on
+ *   day 1 vs day 5 of the same problem, or when it just cleared, instead of
+ *   a canned line that reads identically regardless of history.
+ */
+function reportFallbackText(s, streak = { streakDays: 0, justRecovered: false }) {
   const isOffice = s.environmentType === "office";
   if (s.controlsStabilizing) {
     const trend =
       Number.isFinite(s.humidityDelta) && s.humidityDelta < -0.5
         ? ` Humidity eased down ${Math.abs(s.humidityDelta).toFixed(0)}% overnight - conditions are comfortable.`
         : " The HVAC is holding steady.";
+    if (streak.justRecovered) {
+      return isOffice
+        ? "Good morning! The office is back to comfortable this morning after yesterday's trouble - worth a quick check that whatever caused it hasn't just paused."
+        : "Good morning! The work area is back in the safe zone this morning after yesterday's trouble - worth a quick check that whatever caused it hasn't just paused.";
+    }
     if (isOffice) {
       return `Good morning! Overnight report from the office: everything stayed comfortable.${trend}`;
     }
@@ -325,10 +378,16 @@ function reportFallbackText(s) {
         : " Cooling and dehumidifiers are holding steady.";
     return `Good morning! Overnight report from the work area: conditions stayed in the safe zone for the crew.${crewTrend}`;
   }
+  const streakNote =
+    streak.streakDays >= 3
+      ? ` This is day ${streak.streakDays} in a row - worth more than a quick fix at this point.`
+      : streak.streakDays === 2
+        ? " Second day in a row now."
+        : "";
   if (isOffice) {
-    return `Morning - heads up on the office. ${s.controlsNote} Worth checking the HVAC today.`;
+    return `Morning - heads up on the office. ${s.controlsNote}${streakNote} Worth checking the HVAC today.`;
   }
-  return `Morning - heads up on the work area. ${s.controlsNote} Worth checking the cooling and ventilation before the crew settles in.`;
+  return `Morning - heads up on the work area. ${s.controlsNote}${streakNote} Worth checking the cooling and ventilation before the crew settles in.`;
 }
 
 /** ET calendar date (YYYY-MM-DD) for a timestamp, for "today" comparisons. */
@@ -371,7 +430,7 @@ function launchesTodayLine(launches, now = Date.now()) {
   return `Cape launch${todays.length > 1 ? "es" : ""} today: ${shown.join("; ")}${more}.`;
 }
 
-async function generateReportText(s) {
+async function generateReportText(s, baseline = null, streak = { streakDays: 0, justRecovered: false }) {
   const apiKey = (process.env.OPENAI_API_KEY || "").trim();
   if (!apiKey) return null;
   const model = `${process.env.OPENAI_REPORT_MODEL || "gpt-5.4-nano"}`.trim();
@@ -391,16 +450,22 @@ async function generateReportText(s) {
     "Tone: a nice personal daily report - friendly and direct, like a trusted site tech texting their boss.",
     "Never mention AI, GPT, chatbots, models, or that this message is generated - it is simply the morning report.",
     verdictLine,
+    "Make this report distinct from a generic template: reference the specific numbers below, how they compare to the recent-days average (pct fields), and the day streak/recovery info if present - don't just restate the verdict in different words every day.",
     "",
     `24h data: ${JSON.stringify({
       tempF_avg: s.temp ? Number(cToF(s.temp.avg).toFixed(1)) : null,
+      tempF_vs_norm_pct: Number.isFinite(baseline?.tempF) ? pctDiff(cToF(s.temp?.avg), baseline.tempF) : null,
       humidity_avg: s.humidity ? Number(s.humidity.avg.toFixed(0)) : null,
       humidity_max: s.humidity ? Number(s.humidity.max.toFixed(0)) : null,
       humidity_trend: Number.isFinite(s.humidityDelta) ? Number(s.humidityDelta.toFixed(1)) : null,
+      humidity_vs_norm_pct: Number.isFinite(baseline?.humidity) ? pctDiff(s.humidity?.avg, baseline.humidity) : null,
       iaq_avg: s.iaq ? Number(s.iaq.avg.toFixed(0)) : null,
       co2_avg: s.co2 ? Number(s.co2.avg.toFixed(0)) : null,
+      co2_vs_norm_pct: Number.isFinite(baseline?.co2) ? pctDiff(s.co2?.avg, baseline.co2) : null,
       controls_stabilizing: s.controlsStabilizing,
       verdict: s.controlsNote,
+      problem_streak_days: streak.streakDays,
+      just_recovered_today: streak.justRecovered,
     })}`,
   ].join("\n");
 
@@ -422,23 +487,28 @@ async function generateReportText(s) {
  * Compose the morning SMS: personal report + readable stats block + LC-36
  * weather/lighting outlook + today's Cape launches. Never throws; every piece
  * degrades independently.
+ * @param {Array} [prevSummaries] — from getDailySummaryHistory(); powers the
+ *   day-streak/recovery wording so the same breach reads differently on day
+ *   1 vs day 5, instead of an identical canned line either way.
  */
-async function composeReportSms(s, launches, baseline = null, outlook = null) {
+async function composeReportSms(s, launches, baseline = null, outlook = null, prevSummaries = []) {
   if (!s.sampleCount) {
     const dark =
       "Good morning - heads up: the site sensor went quiet overnight (no data in 24h). Check the device power and WiFi when you get a chance.";
     return { smsText: dark, reportText: dark, reportMode: "deterministic" };
   }
 
+  const streak = computeProblemStreak(prevSummaries, s.controlsStabilizing);
+
   let reportText = null;
   let reportMode = "deterministic";
   try {
-    reportText = await generateReportText(s);
+    reportText = await generateReportText(s, baseline, streak);
     if (reportText) reportMode = "openai";
   } catch (err) {
     console.error("daily-summary: report generation failed, using fallback:", err?.message || err);
   }
-  if (!reportText) reportText = reportFallbackText(s);
+  if (!reportText) reportText = reportFallbackText(s, streak);
 
   const launchLine = launchesTodayLine(launches);
   const outlookLines = outlookToSmsLines(outlook);
@@ -448,8 +518,20 @@ async function composeReportSms(s, launches, baseline = null, outlook = null) {
   return { smsText, reportText, reportMode, launchLine };
 }
 
-// Exported for unit testing; the Vercel runtime only invokes the default export.
-export { buildSummary, summaryToSms, composeReportSms, reportFallbackText, sanitizeSmsAscii, launchesTodayLine };
+// Exported for unit testing and reuse by the real-time alert path
+// (api/update.js), which wants the same "% vs recent-days norm" comparison
+// the daily report shows; the Vercel runtime only invokes the default export.
+export {
+  buildSummary,
+  summaryToSms,
+  composeReportSms,
+  reportFallbackText,
+  sanitizeSmsAscii,
+  launchesTodayLine,
+  buildBaseline,
+  buildDeltas,
+  computeProblemStreak,
+};
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -459,8 +541,25 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
 
-  // Unauthenticated read: serve the last stored summary for the dashboard panel.
-  if (!isAuthorized(req)) {
+  // ?manual=true: "send me a test report now" from the dashboard button, no
+  // CRON_SECRET needed (same no-login philosophy as /api/settings) but real
+  // money is spent per send, so it's throttled by its own short cooldown
+  // lock instead of trusting a secret. Authorized (cron/secret) callers skip
+  // this — they already have a stronger gate.
+  const manual = req.query?.manual === "true";
+  const authorized = isAuthorized(req);
+  if (manual && !authorized) {
+    const wonManualLock = await acquireManualReportLock(MANUAL_TEST_COOLDOWN_SEC);
+    if (!wonManualLock) {
+      return res.status(429).json({
+        error: `Test report is rate-limited to once every ${Math.round(MANUAL_TEST_COOLDOWN_SEC / 60)} minutes. Try again shortly.`,
+      });
+    }
+  }
+
+  // Unauthenticated, non-manual read: serve the last stored summary for the
+  // dashboard panel.
+  if (!authorized && !manual) {
     try {
       const [latest, history] = await Promise.all([
         getDailySummary(),
@@ -474,12 +573,13 @@ export default async function handler(req, res) {
     }
   }
 
-  // Authorized (cron / secret): compute, text, store.
+  // Authorized (cron / secret) OR a manual test request that just won its
+  // cooldown lock: compute, text, store.
   try {
     // ?force=true bypasses BOTH idempotency layers — deliberate double-send
-    // for previewing the report format. Authorized callers only (we're already
-    // past the isAuthorized gate here).
-    const force = req.query?.force === "true";
+    // for previewing the report format. A manual test always forces a fresh
+    // send (that's the point of asking for one "whenever you want").
+    const force = req.query?.force === "true" || manual;
 
     // Idempotency, two layers: a fast read check, then an atomic SET NX lock
     // so even two simultaneous triggers can't both send.
@@ -498,13 +598,13 @@ export default async function handler(req, res) {
           return res.status(200).json({
             ...(updated || { ...existing, smsDelivered: true }),
             retriedSms: true,
-            sms: { configured: retry.configured, sent: retry.sent, failures: retry.failures },
+            sms: { configured: retry.configured, sent: retry.sent, failures: retry.failures, provider: retry.provider },
           });
         }
         return res.status(200).json({
           ...existing,
           retriedSms: true,
-          sms: { configured: retry.configured, sent: 0, failures: retry.failures },
+          sms: { configured: retry.configured, sent: 0, failures: retry.failures, provider: retry.provider },
         });
       }
       return res.status(200).json({ ...existing, skipped: "recently generated" });
@@ -542,7 +642,7 @@ export default async function handler(req, res) {
       console.error("daily-summary: enrichment fetch failed:", err?.message || err);
     }
 
-    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline, outlook);
+    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline, outlook, prevSummaries);
 
     // Store BEFORE sending: /api/report-card reads the latest stored summary,
     // and both ClickSend (MMS media_file) and ntfy (Attach) fetch that URL
@@ -575,7 +675,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ...stored,
-      sms: { configured: smsResult.configured, sent: smsResult.sent, failures: smsResult.failures },
+      sms: { configured: smsResult.configured, sent: smsResult.sent, failures: smsResult.failures, provider: smsResult.provider },
     });
   } catch (err) {
     console.error("daily-summary generate error:", err);

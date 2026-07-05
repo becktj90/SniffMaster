@@ -48,7 +48,7 @@ export function extractOutputText(responseJson) {
  * Returns GSM-7-safe ASCII. Never throws — on any OpenAI error it falls back
  * to a deterministic line, so the alert always ships.
  *
- * @param {Array<{key:string,label:string,message:string}>} breaches
+ * @param {Array<{key:string,label:string,message:string,isNew?:boolean}>} breaches
  * @param {{ timeoutMs?:number, maxChars?:number, environmentType?:"industrial"|"office" }} [opts]
  * @returns {Promise<string>}
  */
@@ -58,8 +58,11 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 4000;
   const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 200;
   const environmentType = opts.environmentType === "office" ? "office" : "industrial";
+  // Every breach already active (not a fresh trip) means this is a re-notify
+  // past cooldown, not the first alert for the problem.
+  const ongoing = list.every((b) => b.isNew === false);
 
-  const fallback = alertFallbackText(list, environmentType);
+  const fallback = alertFallbackText(list, environmentType, ongoing);
 
   const apiKey = `${process.env.OPENAI_API_KEY || ""}`.trim();
   if (!apiKey) return fallback;
@@ -68,9 +71,13 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   const contextLine = environmentType === "office"
     ? "Context: a sensor watches an occupied office space, tracking comfort (temp/humidity) and air quality/ventilation (CO2, IAQ) for the people working there."
     : "Context: a sensor watches an industrial work area where a crew is working around equipment; conditions matter for both the people (heat stress, air quality, ventilation) and the hardware (condensation).";
+  const statusLine = ongoing
+    ? "This is a re-notification: every one of these alarms was already active and has now been going on long enough to remind about again - make that clear (e.g. \"still\", \"ongoing\"), don't write it like a fresh alert."
+    : "At least one of these alarms just tripped for the first time this episode - write it like a fresh alert.";
   const prompt = [
     "Write ONE short line for an SMS alert from an environmental monitor to its owner.",
     contextLine,
+    statusLine,
     "The specific alarms that just tripped are listed below; explain in plain terms what the situation means for the people in the space (heat stress, bad air, ventilation, condensation) and give ONE practical next move, in a calm, direct, human voice - like a trusted site tech texting their boss.",
     "Requirements: max 200 characters, ONE sentence or two very short ones, plain ASCII only (no emoji, no degree symbols). Use Fahrenheit if you mention temperature.",
     "Never mention AI, GPT, chatbots, models, or that this message is generated.",
@@ -96,8 +103,19 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   }
 }
 
-/** Deterministic personal-voice line keyed to which alarms are active. */
-export function alertFallbackText(breaches, environmentType = "industrial") {
+/**
+ * Deterministic personal-voice line keyed to which alarms are active.
+ * @param {boolean} [ongoing] — true when every active breach was already
+ *   active before this run (a re-notify past cooldown, not a fresh trip).
+ *   Swaps the opener so a 5th re-notify of the same problem doesn't read
+ *   identically to the first "just tripped" text.
+ */
+export function alertFallbackText(breaches, environmentType = "industrial", ongoing = false) {
+  const text = alertFallbackCore(breaches, environmentType);
+  return ongoing ? text.replace(/^Heads up - /, "Still an issue - ") : text;
+}
+
+function alertFallbackCore(breaches, environmentType) {
   const keys = new Set((breaches || []).map((b) => b.key));
   const isOffice = environmentType === "office";
 

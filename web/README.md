@@ -151,18 +151,25 @@ Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Me
 
 ### GET /api/daily-summary
 
-Two modes:
+Three modes:
 - **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
 - **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window. The report is tailored (wording, which sensors are highlighted) by the current `environmentType` — see `/api/settings` below.
+- **`?manual=true`** (no `CRON_SECRET` needed — the "Send test report now" button on the dashboard): forces a real, fresh send the same way `?force=true` does, but since anyone with the dashboard URL can trigger it and each send costs real money via ClickSend, it's rate-limited server-side to once every 5 minutes (independent of the 6-hour cron resend guard) rather than gated behind a secret.
+
+Report wording isn't static: it factors in how many consecutive days a problem has persisted (or that it just cleared) via `computeProblemStreak()`, and the OpenAI-written narrative is given the same day-over-day % comparisons the stats block shows, so two different underlying situations don't read the same.
 
 ### GET/POST /api/settings
 
-Owner-adjustable alarm limits and the environment mode.
+Adjustable alarm limits and the environment mode.
 
-- **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
-- **POST** (requires `X-SniffMaster-Key: $SNIFFMASTER_OWNER_KEY` header): accepts a partial patch of `{ humidityHigh, tempHighC, co2High, environmentType }`. `environmentType` must be `"industrial"` (default) or `"office"` (`"construction"` is accepted as a legacy alias and normalized to `"industrial"`). Changing it immediately affects: real-time alert wording on the dashboard, which sensor reading is highlighted, and the next morning report's tone and stats. All three numeric limits are clamped to safe ranges server-side.
+- **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, `iaqPoor`, `gasDropPct`, `alertCooldownMin`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
+- **POST**: no auth required — this is a personal single-tenant dashboard, so anyone with the URL can retune alarms from the "Adjust alarm limits" panel. Accepts a partial patch of `{ humidityHigh, tempHighC, co2High, iaqPoor, gasDropPct, alertCooldownMin, environmentType }`. `environmentType` must be `"industrial"` (default) or `"office"` (`"construction"` is accepted as a legacy alias and normalized to `"industrial"`). Changing it immediately affects: real-time alert wording on the dashboard, which sensor reading is highlighted, and the next morning report's tone and stats. Every numeric field is clamped to a safe range server-side (see `THRESHOLD_LIMITS`/`ALERT_COOLDOWN_LIMITS` in `lib/thresholds.js`) so a bad or malicious value can never fully disable monitoring.
 
-Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold — an abnormal-conditions alert includes the same 24h stats block as the morning report, not just the bare breach line, so it reads as a full comprehensive report.
+Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold. Each breach sends **two messages**, independent of each other so a slow piece never delays the other:
+1. **Urgent** — the breach line(s) plus a short personal-voice summary. Kept short and sent as plain SMS.
+2. **Detailed analysis** — 24h stats compared against the recent-days baseline (the same "% vs norm" the morning report shows), plus the LC-36 weather/lightning outlook. Sent as an MMS with the visual report-card image when ClickSend is configured (falls back to a second plain SMS otherwise).
+
+Sending two messages per breach roughly doubles ClickSend usage/cost compared to the single-message alert this replaced — worth knowing if you're watching account balance.
 
 ## SMS alerts (Amazon SNS) — setup
 
