@@ -28,7 +28,7 @@ import {
   putSettings,
   getDailySummary,
 } from "../lib/store.js";
-import { buildReportCardSvg } from "../lib/reportCard.js";
+import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import {
   getEffectiveThresholds,
   THRESHOLDS,
@@ -1210,8 +1210,10 @@ async function settings(req, res) {
 }
 
 /**
- * GET /api/report-card — the daily summary rendered as an SVG image, so the
+ * GET /api/report-card — the daily summary rendered as an image, so the
  * morning report and its push notification carry a visual, not just text.
+ * ?format=png renders a raster PNG (for MMS media_file, which carriers
+ * expect over SVG); default is SVG for ntfy Attach / dashboard <img> use.
  * Public and read-only (no secrets in the image); cached briefly since the
  * daily summary itself only regenerates a couple times a day.
  */
@@ -1221,6 +1223,11 @@ async function reportCard(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   try {
     const summary = await getDailySummary();
+    if (req.query?.format === "png") {
+      const png = renderReportCardPng(summary || {});
+      res.setHeader("Content-Type", "image/png");
+      return res.status(200).end(png);
+    }
     const svg = buildReportCardSvg(summary || {});
     res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
     return res.status(200).end(svg);

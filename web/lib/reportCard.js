@@ -1,14 +1,18 @@
 /**
- * reportCard.js — renders the daily/alert summary as a small SVG "report
- * card" image, so the morning text and push notification carry a visual
- * instead of being pure ASCII.
+ * reportCard.js — renders the daily/alert summary as a small "report card"
+ * image, so the morning text and push notification carry a visual instead
+ * of being pure ASCII.
  *
- * Deliberately plain SVG (no canvas/@vercel/og/headless-browser dependency):
- * Vercel Hobby functions are already at the CPU/memory budget for a JSON
- * API, and every consumer here (ntfy Attach, an <img> tag on the dashboard,
- * a link opened in a browser) renders SVG natively. Returns a string;
- * callers set `Content-Type: image/svg+xml`.
+ * The card is authored once as an SVG string (buildReportCardSvg) — cheap,
+ * no headless-browser/canvas dependency, and every text/web consumer (ntfy
+ * Attach on a browser/desktop client, an <img> tag, a link opened directly)
+ * renders SVG natively. MMS is the one consumer that needs a raster image
+ * (carriers don't accept SVG attachments), so renderReportCardPng rasterizes
+ * that same SVG via @resvg/resvg-js — a WASM/native rasterizer with no
+ * headless-browser overhead, safe to run inside a Vercel serverless function.
  */
+
+import { Resvg } from "@resvg/resvg-js";
 
 const WIDTH = 600;
 const HEIGHT = 338;
@@ -78,7 +82,9 @@ export function buildReportCardSvg(summary, opts = {}) {
   if (s.forecast?.highF != null && s.forecast?.lowF != null) {
     footerBits.push(`${s.forecast.site || "Site"}: ${Math.round(s.forecast.highF)}°/${Math.round(s.forecast.lowF)}°F, ${esc(s.forecast.condition || "")}`);
   }
+  if (s.forecast?.thunder) footerBits.push("⚡ Thunderstorm risk");
   const footer = footerBits.join("  ·  ");
+  const launchLine = s.launchLine ? esc(s.launchLine) : "";
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
   <rect width="${WIDTH}" height="${HEIGHT}" rx="18" fill="#0b1420"/>
@@ -88,6 +94,20 @@ export function buildReportCardSvg(summary, opts = {}) {
   <text x="${WIDTH - 130}" y="50" font-size="14" font-weight="700" fill="${statusColor}" font-family="Segoe UI, Arial, sans-serif" text-anchor="middle">${esc(statusLabel)}</text>
   <line x1="40" y1="86" x2="${WIDTH - 40}" y2="86" stroke="#22303f" stroke-width="1"/>
   ${rows.join("")}
-  ${footer ? `<text x="40" y="${HEIGHT - 24}" font-size="13" fill="#7c93ab" font-family="Segoe UI, Arial, sans-serif">${footer}</text>` : ""}
+  ${footer ? `<text x="40" y="${HEIGHT - 44}" font-size="13" fill="#7c93ab" font-family="Segoe UI, Arial, sans-serif">${footer}</text>` : ""}
+  ${launchLine ? `<text x="40" y="${HEIGHT - 24}" font-size="13" fill="#7c93ab" font-family="Segoe UI, Arial, sans-serif">${launchLine}</text>` : ""}
 </svg>`;
+}
+
+/**
+ * Rasterize buildReportCardSvg's output to PNG — for MMS, where carriers
+ * expect a raster image rather than SVG.
+ * @param {object} summary
+ * @param {object} [opts] — see buildReportCardSvg
+ * @returns {Buffer} PNG bytes
+ */
+export function renderReportCardPng(summary, opts = {}) {
+  const svg = buildReportCardSvg(summary, opts);
+  const resvg = new Resvg(svg, { background: "#0b1420" });
+  return resvg.render().asPng();
 }
