@@ -5233,3 +5233,12 @@ body *::after {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* Environment-mode hint under the Industrial/Office toggle */
+.rs-env-hint {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-dim, #8b97a5);
+  max-width: 52ch;
+}

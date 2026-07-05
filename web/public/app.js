@@ -1103,31 +1103,60 @@ function heroSummaryText(d) {
   return aiLine || roomSummary(d);
 }
 
+// Smell framing per environment mode. Industrial (the default) reads each
+// detected odor as a work-area signal (fuel, solvents, hot equipment, exhaust);
+// office keeps the occupant-comfort framing. Mirrors the env split in
+// lib/thresholds.js / lib/brogpt.js server-side.
+const ODOR_CONTEXT_INDUSTRIAL = {
+  "Fart": "bio odor in the work area",
+  "Musty": "damp/musty air - possible moisture buildup",
+  "Cigarette": "smoke residue near the work area",
+  "Alcohol": "alcohol/solvent vapor traces",
+  "Weed": "skunky plant odor on site",
+  "Cleaning": "cleaning-chemical vapors",
+  "Gasoline": "fuel vapor - check for spills or running equipment",
+  "Smoke": "smoke - check for hot work or electrical trouble",
+  "Cooking": "cooking odors drifting into the work area",
+  "Coffee": "coffee in the air",
+  "Garbage": "waste odor building up",
+  "Sweat/BO": "crew occupancy load in the air",
+  "Perfume": "fragrance traces",
+  "Laundry": "detergent notes",
+  "Sulfur": "sulfur odor - check batteries, sewer gas, or hot electrical",
+  "Solvent": "solvent vapors - check adhesives, paints, or degreasers",
+  "Pet/Litter": "ammonia-like odor",
+  "Sour Food": "spoiled-food odor",
+  "Burnt/Oil": "burnt oil or overheating equipment",
+  "Citrus": "citrus degreaser or cleaner",
+};
+const ODOR_CONTEXT_OFFICE = {
+  "Fart": "bio drama",
+  "Musty": "musty office funk",
+  "Cigarette": "smoke residue",
+  "Alcohol": "sanitizer or alcohol traces",
+  "Weed": "skunky plant funk",
+  "Cleaning": "cleaning-product energy",
+  "Gasoline": "fuel-like weirdness",
+  "Smoke": "smoke trouble",
+  "Cooking": "cooking in the mix",
+  "Coffee": "coffee in the air",
+  "Garbage": "break-room trash drama",
+  "Sweat/BO": "occupancy funk",
+  "Perfume": "fragrance cloud activity",
+  "Laundry": "fresh detergent notes",
+  "Sulfur": "sulfur trouble",
+  "Solvent": "solvent-heavy air",
+  "Pet/Litter": "pet-zone funk",
+  "Sour Food": "leftovers getting bold",
+  "Burnt/Oil": "burnt equipment notes",
+  "Citrus": "citrus-cleaner lift",
+};
+
 function primaryNarrative(d) {
   if (hasConfidentPrimary(d)) {
     const primary = `${d.primary || ""}`.trim();
-    const contextualLabel = {
-      "Fart": "bio drama",
-      "Musty": "musty office funk",
-      "Cigarette": "smoke residue",
-      "Alcohol": "sanitizer or alcohol traces",
-      "Weed": "skunky plant funk",
-      "Cleaning": "cleaning-product energy",
-      "Gasoline": "fuel-like weirdness",
-      "Smoke": "smoke trouble",
-      "Cooking": "cooking in the mix",
-      "Coffee": "coffee in the air",
-      "Garbage": "break-room trash drama",
-      "Sweat/BO": "occupancy funk",
-      "Perfume": "fragrance cloud activity",
-      "Laundry": "fresh detergent notes",
-      "Sulfur": "sulfur trouble",
-      "Solvent": "solvent-heavy air",
-      "Pet/Litter": "pet-zone funk",
-      "Sour Food": "leftovers getting bold",
-      "Burnt/Oil": "burnt equipment notes",
-      "Citrus": "citrus-cleaner lift",
-    }[primary];
+    const contextMap = currentEnvironmentType === "office" ? ODOR_CONTEXT_OFFICE : ODOR_CONTEXT_INDUSTRIAL;
+    const contextualLabel = contextMap[primary];
     return contextualLabel || primary.toLowerCase();
   }
   const score = num(d.airScore);
@@ -3909,7 +3938,10 @@ function applyEnvironmentLabels() {
   }
   const toggleLabel = $("rs-adjust-toggle-label");
   if (toggleLabel) toggleLabel.textContent = "Adjust alarm limits";
-  if (lastData) renderRestorationMonitor(lastData);
+  // Full re-render so env-aware copy elsewhere (smell narrative, hero/odor
+  // cards) flips immediately on a mode change instead of waiting for the
+  // next poll cycle.
+  if (lastData) render(lastData);
   if (dailySummaryState.data) renderDailySummary(dailySummaryState.data);
 }
 
@@ -4169,6 +4201,7 @@ function ensureRestorationDom() {
             <button type="button" class="rs-env-btn" id="rs-env-industrial">Industrial</button>
             <button type="button" class="rs-env-btn" id="rs-env-office">Office</button>
           </div>
+          <p class="rs-env-hint" id="rs-env-hint">Industrial is the default — alerts, smell readings, and reports are framed for a work-area crew. Select Office to reframe them for occupant comfort.</p>
           <button type="button" class="rs-adjust-toggle" id="rs-adjust-toggle" aria-expanded="false" aria-controls="rs-adjust-body">
             <span id="rs-adjust-toggle-label">Adjust alarm limits</span>
             <span class="rs-adjust-current" id="rs-adjust-current"></span>

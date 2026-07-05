@@ -71,7 +71,7 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   const prompt = [
     "Write ONE short line for an SMS alert from an environmental monitor to its owner.",
     contextLine,
-    "The specific alarms that just tripped are listed below; summarize the situation and the practical next move in a calm, direct, human voice - like a trusted site tech texting their boss.",
+    "The specific alarms that just tripped are listed below; explain in plain terms what the situation means for the people in the space (heat stress, bad air, ventilation, condensation) and give ONE practical next move, in a calm, direct, human voice - like a trusted site tech texting their boss.",
     "Requirements: max 200 characters, ONE sentence or two very short ones, plain ASCII only (no emoji, no degree symbols). Use Fahrenheit if you mention temperature.",
     "Never mention AI, GPT, chatbots, models, or that this message is generated.",
     "Do not repeat the raw numbers verbatim - the detailed readings follow separately.",
@@ -102,6 +102,9 @@ export function alertFallbackText(breaches, environmentType = "industrial") {
   const isOffice = environmentType === "office";
 
   if (isOffice) {
+    if (keys.has("temp") && keys.has("humidity")) {
+      return "Heads up - the office is hot AND humid right now, which feels much worse than either alone. Check the AC before it gets miserable in there.";
+    }
     if (keys.has("co2") && (keys.has("gas") || keys.has("iaq"))) {
       return "Heads up - the office has both high CO2 and bad air quality right now. Worth cracking a window or checking the HVAC.";
     }
@@ -120,6 +123,9 @@ export function alertFallbackText(breaches, environmentType = "industrial") {
     return "Heads up - the office just tripped a comfort/air-quality alarm. Worth a look when you can.";
   }
 
+  if (keys.has("temp") && keys.has("humidity")) {
+    return "Heads up - the work area is hot AND humid right now, the worst combo for heat stress. Get the crew on breaks/water and check the cooling and dehumidifiers.";
+  }
   if (keys.has("humidity") && (keys.has("gas") || keys.has("iaq"))) {
     return "Heads up - the work area is both damp and showing bad air right now. Worth checking ventilation and looking for a fume source before the crew keeps working.";
   }
