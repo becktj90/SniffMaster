@@ -37,7 +37,7 @@ import { sendSms, isSmsConfigured, PUBLIC_BASE_URL } from "../lib/notify.js";
 // Shared SMS-text helpers (single source of truth; also used by the alert path).
 import { sanitizeSmsAscii, extractOutputText } from "../lib/brogpt.js";
 import { getCapeLaunches } from "../lib/launches.js";
-import { fetchLc36Outlook, outlookToSmsLines } from "../lib/forecast.js";
+import { fetchLc36Outlook } from "../lib/forecast.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idempotency guard: don't re-send if a summary was generated this recently.
@@ -329,27 +329,6 @@ function summaryToSms(s, baseline = null, headerLabel = "AM report") {
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const REPORT_MAX_CHARS = 320;
 
-// One metric per line so the morning text scans at a glance, each with its
-// change vs the recent-days norm when enough stored history exists.
-function statsBlock(s, baseline = null) {
-  const tag = (cur, base) => {
-    const d = pctDiff(cur, base);
-    return d ? ` (${d})` : "";
-  };
-  const lines = [];
-  if (s.temp) lines.push(`Temp ${fmt(cToF(s.temp.avg), 1)}F${tag(cToF(s.temp.avg), baseline?.tempF)}`);
-  if (s.humidity) lines.push(`Humidity ${fmt(s.humidity.avg)}%${tag(s.humidity.avg, baseline?.humidity)}`);
-  if (s.pressure) lines.push(`Pressure ${fmt(s.pressure.avg)} hPa${tag(s.pressure.avg, baseline?.pressure)}`);
-  const air = [];
-  if (s.gas) air.push(`Gas ${gasLabel(s.gas.avg)}${tag(s.gas.avg, baseline?.gas)}`);
-  if (s.iaq) air.push(`IAQ ${fmt(s.iaq.avg)}${tag(s.iaq.avg, baseline?.iaq)}`);
-  if (s.co2) air.push(`CO2 ${fmt(s.co2.avg)} ppm${tag(s.co2.avg, baseline?.co2)}`);
-  if (air.length) lines.push(air.join(", "));
-  if (!lines.length) return "";
-  const header = baseline?.days ? `24h averages (% = vs ${baseline.days}-day avg):` : "24h averages:";
-  return [header, ...lines].join("\n");
-}
-
 /**
  * @param {ReturnType<typeof buildSummary>} s
  * @param {{streakDays:number, justRecovered:boolean}} [streak] — from
@@ -484,14 +463,17 @@ async function generateReportText(s, baseline = null, streak = { streakDays: 0, 
 }
 
 /**
- * Compose the morning SMS: personal report + readable stats block + LC-36
- * weather/lighting outlook + today's Cape launches. Never throws; every piece
- * degrades independently.
+ * Compose the morning SMS: a short personal-voice summary + today's Cape
+ * launches (one line) + a link to the full visual report (/report) — the
+ * detailed stats/weather breakdown lives there instead of as a raw text
+ * dump, so the text itself stays a "simple summary" rather than a report.
+ * Never throws; every piece degrades independently.
  * @param {Array} [prevSummaries] — from getDailySummaryHistory(); powers the
  *   day-streak/recovery wording so the same breach reads differently on day
  *   1 vs day 5, instead of an identical canned line either way.
  */
 async function composeReportSms(s, launches, baseline = null, outlook = null, prevSummaries = []) {
+  const reportUrl = `${PUBLIC_BASE_URL}/report`;
   if (!s.sampleCount) {
     const dark =
       "Good morning - heads up: the site sensor went quiet overnight (no data in 24h). Check the device power and WiFi when you get a chance.";
@@ -511,11 +493,10 @@ async function composeReportSms(s, launches, baseline = null, outlook = null, pr
   if (!reportText) reportText = reportFallbackText(s, streak);
 
   const launchLine = launchesTodayLine(launches);
-  const outlookLines = outlookToSmsLines(outlook);
   const smsText = sanitizeSmsAscii(
-    [reportText, statsBlock(s, baseline), outlookLines, launchLine].filter(Boolean).join("\n")
+    [reportText, launchLine, `Full report: ${reportUrl}`].filter(Boolean).join("\n")
   );
-  return { smsText, reportText, reportMode, launchLine };
+  return { smsText, reportText, reportMode, launchLine, streak };
 }
 
 // Exported for unit testing and reuse by the real-time alert path
@@ -642,12 +623,13 @@ export default async function handler(req, res) {
       console.error("daily-summary: enrichment fetch failed:", err?.message || err);
     }
 
-    const { smsText, reportText, reportMode, launchLine } = await composeReportSms(summary, launches, baseline, outlook, prevSummaries);
+    const { smsText, reportText, reportMode, launchLine, streak } = await composeReportSms(summary, launches, baseline, outlook, prevSummaries);
 
-    // Store BEFORE sending: /api/report-card reads the latest stored summary,
-    // and both ClickSend (MMS media_file) and ntfy (Attach) fetch that URL
-    // synchronously while handling the send below — sending first would have
-    // them race the write and pick up yesterday's numbers.
+    // Store BEFORE sending: /api/report-card (and /report, the page the SMS
+    // links to) read the latest stored summary, and both ClickSend (MMS
+    // media_file) and ntfy (Attach) fetch that URL synchronously while
+    // handling the send below — sending first would have them race the
+    // write and pick up yesterday's numbers.
     let stored = await putDailySummary({
       ...summary,
       baseline,
@@ -657,6 +639,8 @@ export default async function handler(req, res) {
       reportText,
       reportMode,
       launchLine,
+      problemStreakDays: streak?.streakDays ?? 0,
+      justRecovered: streak?.justRecovered ?? false,
       plainText: summaryToSms(summary, baseline),
       smsDelivered: null,
     });

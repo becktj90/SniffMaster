@@ -1258,6 +1258,14 @@ async function reportCard(req, res) {
   try {
     const [daily, alert] = await Promise.all([getDailySummary(), getAlertSnapshot()]);
     const summary = num(alert?.generatedAt) > num(daily?.generatedAt) ? alert : daily;
+    if (req.query?.format === "json") {
+      // Powers web/public/report.html — the "visually nice report" the SMS/MMS
+      // link points to, so message bodies can stay a short summary instead of
+      // a raw stats dump.
+      res.setHeader("Cache-Control", "no-store");
+      if (!summary) return res.status(204).end();
+      return res.status(200).json(summary);
+    }
     if (req.query?.format === "png") {
       const png = renderReportCardPng(summary || {});
       res.setHeader("Content-Type", "image/png");

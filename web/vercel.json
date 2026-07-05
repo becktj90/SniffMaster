@@ -2,6 +2,7 @@
   "buildCommand": "",
   "outputDirectory": "public",
   "rewrites": [
+    { "source": "/report", "destination": "/report.html" },
     { "source": "/api/apod", "destination": "/api/extras?fn=apod" },
     { "source": "/api/command", "destination": "/api/extras?fn=command" },
     { "source": "/api/launches", "destination": "/api/extras?fn=launches" },

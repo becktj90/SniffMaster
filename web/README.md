@@ -156,7 +156,9 @@ Three modes:
 - **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window. The report is tailored (wording, which sensors are highlighted) by the current `environmentType` — see `/api/settings` below.
 - **`?manual=true`** (no `CRON_SECRET` needed — the "Send test report now" button on the dashboard): forces a real, fresh send the same way `?force=true` does, but since anyone with the dashboard URL can trigger it and each send costs real money via ClickSend, it's rate-limited server-side to once every 5 minutes (independent of the 6-hour cron resend guard) rather than gated behind a secret.
 
-Report wording isn't static: it factors in how many consecutive days a problem has persisted (or that it just cleared) via `computeProblemStreak()`, and the OpenAI-written narrative is given the same day-over-day % comparisons the stats block shows, so two different underlying situations don't read the same.
+Report wording isn't static: it factors in how many consecutive days a problem has persisted (or that it just cleared) via `computeProblemStreak()`, and the OpenAI-written narrative is given the same day-over-day % comparisons the report page shows, so two different underlying situations don't read the same.
+
+The text message itself is a short summary (the personal-voice report + today's Cape launches, if any) plus a link to `/report` — the detailed 24h stats-vs-baseline breakdown and the LC-36 weather/lightning outlook live on that page instead of as a raw text dump in the SMS.
 
 ### GET/POST /api/settings
 
@@ -165,11 +167,11 @@ Adjustable alarm limits and the environment mode.
 - **GET**: returns the effective settings (including current `environmentType`, `humidityHigh`, `tempHighC`, `co2High`, `iaqPoor`, `gasDropPct`, `alertCooldownMin`, and the allowed ranges/enum). No auth required — the dashboard reads this to mirror the backend's thresholds and copy.
 - **POST**: no auth required — this is a personal single-tenant dashboard, so anyone with the URL can retune alarms from the "Adjust alarm limits" panel. Accepts a partial patch of `{ humidityHigh, tempHighC, co2High, iaqPoor, gasDropPct, alertCooldownMin, environmentType }`. `environmentType` must be `"industrial"` (default) or `"office"` (`"construction"` is accepted as a legacy alias and normalized to `"industrial"`). Changing it immediately affects: real-time alert wording on the dashboard, which sensor reading is highlighted, and the next morning report's tone and stats. Every numeric field is clamped to a safe range server-side (see `THRESHOLD_LIMITS`/`ALERT_COOLDOWN_LIMITS` in `lib/thresholds.js`) so a bad or malicious value can never fully disable monitoring.
 
-Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold. Each breach sends **two messages**, independent of each other so a slow piece never delays the other:
-1. **Urgent** — the breach line(s) plus a short personal-voice summary. Kept short and sent as plain SMS.
-2. **Detailed analysis** — 24h stats compared against the recent-days baseline (the same "% vs norm" the morning report shows), plus the LC-36 weather/lightning outlook. Sent as an MMS with the visual report-card image when ClickSend is configured (falls back to a second plain SMS otherwise).
+Real-time alerts fire both on the daily 6 AM ET schedule **and** immediately whenever a reading breaches a threshold. Each breach sends **one message**: a short personal-voice summary of what tripped, plus a link to `/report` for the detailed 24h-stats-vs-baseline breakdown and the LC-36 weather/lightning outlook — the message itself stays a simple summary rather than a raw stats dump. Sent as an MMS with the visual report-card image when ClickSend is configured (falls back to plain SMS otherwise).
 
-Sending two messages per breach roughly doubles ClickSend usage/cost compared to the single-message alert this replaced — worth knowing if you're watching account balance.
+### GET /report
+
+A small, self-contained mobile-first page (no dependency on the main dashboard SPA) that the daily report and alert messages link to. Fetches `/api/report-card?format=json` (whichever is newer: the morning report or the most recent alert's own snapshot) and renders a verdict banner, stat tiles with deltas vs the recent-days baseline, the LC-36 weather outlook, and today's Cape launches.
 
 ## SMS alerts (Amazon SNS) — setup
 

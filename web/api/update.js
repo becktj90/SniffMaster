@@ -38,8 +38,8 @@ import {
 } from "../lib/thresholds.js";
 import { sendSms, PUBLIC_BASE_URL } from "../lib/notify.js";
 import { buildAlertBroSummary, sanitizeSmsAscii } from "../lib/brogpt.js";
-import { buildSummary, summaryToSms, buildBaseline } from "./daily-summary.js";
-import { fetchLc36Outlook, outlookToSmsLines } from "../lib/forecast.js";
+import { buildSummary, buildBaseline, buildDeltas } from "./daily-summary.js";
+import { fetchLc36Outlook } from "../lib/forecast.js";
 
 function etTimeLabel(ts) {
   try {
@@ -108,18 +108,14 @@ async function maybeSendAlerts(stored) {
     });
 
   if (toNotify.length > 0) {
-    // Two messages instead of one long one:
-    //   1. URGENT — header + a personal-voice ("bro") line + the raw breach
-    //      lines. Short and single-segment wherever possible, so the
-    //      "something needs attention now" text always ships fast and clean.
-    //   2. DETAILED ANALYSIS — 24h stats compared against the recent-days
-    //      baseline (same "% vs norm" the morning report shows) plus the
-    //      LC-36 weather/lightning outlook, sent as an MMS with the visual
-    //      report card when ClickSend is configured. Kept separate so a slow
-    //      weather fetch, a long stats block, or an MMS-only provider hiccup
-    //      never delays message 1.
-    // Every piece degrades independently (OpenAI absent/slow, history fetch
-    // failure, weather outage, etc.) so both messages always ship something.
+    // One simple message: header + a personal-voice ("bro") summary + the
+    // breach lines + a link to the full visual report (/report — 24h stats
+    // vs the recent-days baseline, the LC-36 weather/lightning outlook, etc).
+    // The detailed numbers used to be dumped as raw text in a second message;
+    // now they live on that page instead, so the text itself stays a simple
+    // summary. Sent as an MMS with the report-card image when ClickSend is
+    // configured. Every piece degrades independently (OpenAI absent/slow,
+    // history fetch failure, weather outage, etc.) so the alert always ships.
     const header = `SniffMaster ALERT (${etTimeLabel(reading.receivedAt)})`;
     const lines = toNotify.map((b) => `- ${b.message}`);
 
@@ -129,11 +125,10 @@ async function maybeSendAlerts(stored) {
     } catch (err) {
       console.error("alerts: bro summary failed:", err);
     }
-    const urgentMessage = sanitizeSmsAscii([header, broLine, lines.join("\n")].filter(Boolean).join("\n"));
 
-    let detailMessage = "";
-    let summary = null;
-    let outlook = null;
+    // Still compute + store a fresh snapshot so /report and the MMS image
+    // reflect THIS alert's numbers (not a stale morning report from hours
+    // earlier) — just no longer dumped as text in the message body itself.
     try {
       const [fullHistory, prevSummaries, weather] = await Promise.all([
         getHistory(288), // up to ~48h @ 10min, filtered to 24h inside buildSummary
@@ -143,41 +138,24 @@ async function maybeSendAlerts(stored) {
           return null;
         }),
       ]);
-      summary = buildSummary(fullHistory, thresholds, environmentType);
-      outlook = weather;
+      const summary = buildSummary(fullHistory, thresholds, environmentType);
       const baseline = buildBaseline(prevSummaries);
-      const statsLine = summaryToSms(summary, baseline, "24h analysis");
-      const outlookLines = outlookToSmsLines(outlook);
-      detailMessage = sanitizeSmsAscii([statsLine, outlookLines].filter(Boolean).join("\n"));
+      await putAlertSnapshot({ ...summary, deltas: buildDeltas(summary, baseline), forecast: weather });
     } catch (err) {
-      console.error("alerts: detail message failed:", err);
+      console.error("alerts: snapshot store failed:", err);
     }
 
-    // So /api/report-card's image reflects THIS alert's numbers (not a stale
-    // morning report from hours earlier) when the detail message rides as MMS.
-    if (summary) {
-      try {
-        await putAlertSnapshot({ ...summary, forecast: outlook });
-      } catch (err) {
-        console.error("alerts: snapshot store failed:", err);
-      }
-    }
+    const message = sanitizeSmsAscii(
+      [header, broLine, lines.join("\n"), `Full report: ${PUBLIC_BASE_URL}/report`].filter(Boolean).join("\n")
+    );
 
     try {
-      const [urgentResult, detailResult] = await Promise.all([
-        sendSms(urgentMessage),
-        detailMessage
-          ? sendSms(detailMessage, {
-              imageUrl: `${PUBLIC_BASE_URL}/api/report-card?format=png`,
-              clickUrl: PUBLIC_BASE_URL,
-            })
-          : Promise.resolve(null),
-      ]);
-      if (urgentResult.configured && urgentResult.sent > 0) {
+      const result = await sendSms(message, {
+        imageUrl: `${PUBLIC_BASE_URL}/api/report-card?format=png`,
+        clickUrl: `${PUBLIC_BASE_URL}/report`,
+      });
+      if (result.configured && result.sent > 0) {
         for (const b of toNotify) sentAt[b.key] = now;
-      }
-      if (detailMessage && !(detailResult?.configured && detailResult.sent > 0)) {
-        console.warn("alerts: detail message did not deliver:", JSON.stringify(detailResult?.failures || []));
       }
     } catch (err) {
       console.error("alerts: sendSms failed:", err);
