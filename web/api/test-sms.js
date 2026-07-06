@@ -110,12 +110,16 @@ export default async function handler(req, res) {
       // Prefer the latest real daily report (already has weather, lightning
       // risk, and today's Cape launches baked in) over a placeholder string.
       const latest = await getDailySummary().catch(() => null);
-      const body = latest?.smsText || `${testMessage} (no stored daily report yet — this is placeholder text.)`;
       // Diagnostic overrides (isolating ClickSend's "Invalid input" 400):
       //   ?mediaUrl=<url>  — swap the image URL (e.g. a known-good external host)
       //   ?subject=<text>  — override the subject line
       //   ?noSubject=true  — omit subject entirely
-      const mediaUrl = req.query?.mediaUrl || REPORT_CARD_PNG_URL;
+      //   ?noMedia=true    — omit media_file entirely (tests plain body+subject via the MMS endpoint)
+      //   ?shortBody=true  — use the short generic test message instead of the full daily-report text
+      const body = req.query?.shortBody === "true"
+        ? testMessage
+        : latest?.smsText || `${testMessage} (no stored daily report yet — this is placeholder text.)`;
+      const mediaUrl = req.query?.noMedia === "true" ? "" : (req.query?.mediaUrl || REPORT_CARD_PNG_URL);
       const subject = req.query?.noSubject === "true" ? undefined : (req.query?.subject ?? "SniffMaster Report");
       const { sent, failures } = await sendViaClickSendMms(body, recipients, mediaUrl, subject);
       result = { sent, failures: failures.map((f) => ({ ...f, provider: "clicksend-mms" })), provider: "clicksend-mms" };
