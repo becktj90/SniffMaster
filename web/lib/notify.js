@@ -282,7 +282,15 @@ export async function sendViaClickSendMms(text, recipients, mediaUrl, subject = 
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            messages: [{ to, from: clickSendFrom(), body: text, subject, media_file: mediaUrl, source: "sniffmaster" }],
+            // Diagnostic: omit media_file entirely when no URL is given, so
+            // callers can isolate whether the media_file field itself (any
+            // value) is what ClickSend rejects, vs. something else in the
+            // shared payload (subject, body text, etc).
+            messages: [
+              mediaUrl
+                ? { to, from: clickSendFrom(), body: text, subject, media_file: mediaUrl, source: "sniffmaster" }
+                : { to, from: clickSendFrom(), body: text, subject, source: "sniffmaster" },
+            ],
           }),
           signal: AbortSignal.timeout(MMS_SEND_TIMEOUT_MS),
         });
