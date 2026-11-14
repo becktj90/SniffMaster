@@ -28,8 +28,14 @@ import {
   putSettings,
   getDailySummary,
   getAlertSnapshot,
+  getJsonCache,
+  setJsonCache,
+  incrCounter,
 } from "../lib/store.js";
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
+import { buildHomeMetrics } from "../lib/homeAir.js";
+import { fetchOutdoor } from "../lib/outdoor.js";
+import { fetchGooglePollen } from "../lib/pollen.js";
 import {
   getEffectiveThresholds,
   getEffectiveAlertCooldownMs,
@@ -764,6 +770,92 @@ async function officeStats(req, res) {
   }
 }
 
+// ── home-stats ───────────────────────────────────────────────────────────
+// GET /api/home-stats — whole-home air-quality, particulate, mold/dust-mite and
+// comfort metrics (see lib/homeAir.js), plus free outdoor context (Open-Meteo)
+// and capped pollen (Google Pollen API, see lib/pollen.js). Public/read-only,
+// like the other dashboard GETs. Never returns any API key.
+const HOME_OUTDOOR_TTL_SEC = 15 * 60;
+
+async function homeStats(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+
+  try {
+    const [latest, history] = await Promise.all([getLatest(), getHistory(432)]); // 72 h @ 10 min
+    if (!latest) return res.status(204).end();
+
+    const lat = Number(latest.lat);
+    const lon = Number(latest.lon);
+    const haveLoc = Number.isFinite(lat) && Number.isFinite(lon);
+
+    // Outdoor context: Open-Meteo is free + keyless; cached 15 min per ~11 km cell.
+    let outdoor = null;
+    let pollen = null;
+    if (haveLoc) {
+      const cell = `outdoor:${lat.toFixed(1)}:${lon.toFixed(1)}`;
+      try {
+        const hit = await getJsonCache(cell);
+        if (hit) ({ outdoor, pollen } = hit);
+      } catch {}
+      if (!outdoor) {
+        ({ outdoor, pollen } = await fetchOutdoor({ lat, lon }));
+        if (outdoor) {
+          try {
+            await setJsonCache(cell, { outdoor, pollen }, HOME_OUTDOOR_TTL_SEC);
+          } catch {}
+        }
+      }
+      // Only when the free feed has no pollen for this location, fall back to
+      // the capped Google Pollen API (cache + monthly cap live in pollen.js).
+      if (!pollen) {
+        pollen = await fetchGooglePollen(
+          { lat, lon },
+          { cacheGet: getJsonCache, cacheSet: setJsonCache, incr: incrCounter }
+        );
+      } else {
+        pollen = { ok: true, ...pollen };
+      }
+    } else {
+      pollen = { ok: false, reason: "No device location yet" };
+    }
+
+    const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
+
+    // 24 h oldest→newest series for the trend sparklines.
+    const dayAgo = Date.now() - 24 * 3600 * 1000;
+    const rows = history
+      .filter((h) => num(h?.receivedAt, 0) >= dayAgo)
+      .sort((a, b) => num(a.receivedAt) - num(b.receivedAt));
+    const pick = (f) => rows.map((h) => (Number.isFinite(Number(f(h))) && f(h) !== null && f(h) !== undefined ? Number(f(h)) : null));
+    const series = {
+      t: rows.map((h) => num(h.receivedAt)),
+      humidity: pick((h) => h.humidity),
+      tempC: pick((h) => (h.temperature ?? h.tempC ?? (Number.isFinite(Number(h.tempF)) ? ((Number(h.tempF) - 32) * 5) / 9 : null))),
+      co2: pick((h) => h.co2True ?? h.co2),
+      iaq: pick((h) => h.iaq),
+      pm25: pick((h) => h.pm25),
+    };
+
+    return res.status(200).json({
+      mode: "home",
+      receivedAt: latest.receivedAt || null,
+      city: latest.city || "",
+      located: haveLoc,
+      ...metrics,
+      pollen,
+      series,
+    });
+  } catch (err) {
+    console.error("home-stats error:", err);
+    return res.status(500).json({ error: "home-stats error" });
+  }
+}
+
 // ── sniff-stream ─────────────────────────────────────────────────────────
 // GET /api/sniff-stream — lightweight SSE stream for the latest sulfur/VSC
 // priority event. Polls Redis for up to 25 seconds, then the browser reconnects.
@@ -1146,6 +1238,7 @@ function effectiveSettingsPayload(overrides) {
     tempHighC: t.TEMP_HIGH_C,
     co2High: t.CO2_HIGH,
     iaqPoor: t.IAQ_POOR,
+    pm25High: t.PM25_HIGH,
     gasDropPct,
     alertCooldownMin: Math.round(getEffectiveAlertCooldownMs(overrides) / 60000),
     environmentType: normalizeEnvironmentType(overrides?.environmentType),
@@ -1155,6 +1248,7 @@ function effectiveSettingsPayload(overrides) {
       tempHighC: THRESHOLDS.TEMP_HIGH_C,
       co2High: THRESHOLDS.CO2_HIGH,
       iaqPoor: THRESHOLDS.IAQ_POOR,
+      pm25High: THRESHOLDS.PM25_HIGH,
       gasDropPct: Math.round((1 - THRESHOLDS.GAS_DROP_RATIO) * 100),
       alertCooldownMin: DEFAULT_ALERT_COOLDOWN_MIN,
       environmentType: DEFAULT_ENVIRONMENT_TYPE,
@@ -1208,6 +1302,11 @@ async function settings(req, res) {
     if (!Number.isFinite(v)) return res.status(400).json({ error: "iaqPoor must be a number" });
     patch.iaqPoor = v;
   }
+  if (body.pm25High !== undefined) {
+    const v = Number(body.pm25High);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "pm25High must be a number" });
+    patch.pm25High = v;
+  }
   if (body.gasDropPct !== undefined) {
     const v = Number(body.gasDropPct);
     if (!Number.isFinite(v)) return res.status(400).json({ error: "gasDropPct must be a number" });
@@ -1228,7 +1327,7 @@ async function settings(req, res) {
   }
   if (!Object.keys(patch).length) {
     return res.status(400).json({
-      error: "no adjustable settings supplied (humidityHigh, tempHighC, co2High, iaqPoor, gasDropPct, alertCooldownMin, environmentType)",
+      error: "no adjustable settings supplied (humidityHigh, tempHighC, co2High, iaqPoor, pm25High, gasDropPct, alertCooldownMin, environmentType)",
     });
   }
 
@@ -1287,6 +1386,7 @@ const ROUTES = {
   launches,
   "occupancy-briefing": occupancyBriefing,
   "office-stats": officeStats,
+  "home-stats": homeStats,
   "sniff-stream": sniffStream,
   "weather-briefing": weatherBriefing,
   settings,

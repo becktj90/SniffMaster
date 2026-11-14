@@ -8,6 +8,7 @@
     { "source": "/api/launches", "destination": "/api/extras?fn=launches" },
     { "source": "/api/occupancy-briefing", "destination": "/api/extras?fn=occupancy-briefing" },
     { "source": "/api/office-stats", "destination": "/api/extras?fn=office-stats" },
+    { "source": "/api/home-stats", "destination": "/api/extras?fn=home-stats" },
     { "source": "/api/sniff-stream", "destination": "/api/extras?fn=sniff-stream" },
     { "source": "/api/weather-briefing", "destination": "/api/extras?fn=weather-briefing" },
     { "source": "/api/settings", "destination": "/api/extras?fn=settings" },

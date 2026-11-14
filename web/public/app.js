@@ -115,6 +115,10 @@ const VIEW_META = {
     title: "Air & Signal",
     subtitle: "Air classification, odor intensity, occupancy, and room intelligence.",
   },
+  household: {
+    title: "Home",
+    subtitle: "Whole-home air quality, particulate, allergens, mold and comfort — with a visitor summary.",
+  },
   history: {
     title: "Trends",
     subtitle: "Daily rhythm patterns and the timestamped event log.",
@@ -4879,6 +4883,7 @@ function setDashboardView(view) {
   if ($("view-title")) $("view-title").textContent = meta.title;
   if ($("view-subtitle")) $("view-subtitle").textContent = meta.subtitle;
   renderViewSubnav(nextView);
+  if (window.SniffHome) window.SniffHome.onView(nextView);
 
     window.requestAnimationFrame(() => {
         if (nextView === "environment" || nextView === "analysis") {

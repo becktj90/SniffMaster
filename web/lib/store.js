@@ -471,3 +471,31 @@ export async function getDailySummaryHistory(count = 14) {
     typeof item === "string" ? JSON.parse(item) : item
   );
 }
+
+// ── Generic short-lived cache + counters (outdoor feeds, API-quota guards) ──
+
+/** Read a JSON value cached with setJsonCache; null when absent/expired. */
+export async function getJsonCache(key) {
+  const redis = getRedis();
+  const raw = await redis.get(`sniffmaster:cache:${key}`);
+  if (!raw) return null;
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+/** Cache a JSON value for `ttlSec` seconds. */
+export async function setJsonCache(key, value, ttlSec) {
+  const redis = getRedis();
+  await redis.set(`sniffmaster:cache:${key}`, JSON.stringify(value), { ex: Math.max(1, Math.floor(ttlSec)) });
+}
+
+/**
+ * Atomically increment a counter and (on first increment) give it a TTL so it
+ * resets itself. Returns the new value. Used to hard-cap paid API calls.
+ */
+export async function incrCounter(key, ttlSec) {
+  const redis = getRedis();
+  const k = `sniffmaster:counter:${key}`;
+  const n = await redis.incr(k);
+  if (n === 1) await redis.expire(k, Math.max(1, Math.floor(ttlSec)));
+  return n;
+}

@@ -59,6 +59,10 @@ app.all("/api/office-stats", (req, res, next) => {
   req.query = { ...req.query, fn: "office-stats" };
   next();
 }, wrap(extrasHandler));
+app.all("/api/home-stats", (req, res, next) => {
+  req.query = { ...req.query, fn: "home-stats" };
+  next();
+}, wrap(extrasHandler));
 app.all("/api/sniff-stream", (req, res, next) => {
   req.query = { ...req.query, fn: "sniff-stream" };
   next();

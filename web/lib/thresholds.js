@@ -23,6 +23,8 @@
  * sync if you change anything here.
  */
 
+import { evaluateHomeBreaches } from "./homeAir.js";
+
 export const THRESHOLDS = {
   HUMIDITY_HIGH: 60, // %RH (loosened from 55 — was firing at the ~56% baseline)
   TEMP_HIGH_C: 40, // °C
@@ -30,13 +32,16 @@ export const THRESHOLDS = {
   GAS_DROP_RATIO: 0.6, // gasR at/under 60% of baseline = ≥40% sudden drop
   GAS_MIN_BASELINE: 1000, // ignore drop test below this baseline (noise floor, Ohms)
   CO2_HIGH: 1000, // ppm — ASHRAE-style indoor-air-quality guidance for occupied office space
+  PM25_HIGH: 35, // µg/m³ — only evaluated when the device reports PM2.5 (add-on sensor); EPA 24-h "unhealthy for sensitive groups" edge
 };
 
 // Environment presets tailor which readings matter and how they're framed.
 // "industrial" (default) watches an active work area with equipment and crews
 // (condensation, heat, fumes); "office" watches a normally-occupied workspace
-// where CO2/ventilation and comfort for people matter most.
-export const ENVIRONMENT_TYPES = ["industrial", "office"];
+// where CO2/ventilation and comfort for people matter most. "home" watches a
+// residence: particulate, mold/dust-mite humidity exposure, dry air, VOC and
+// ventilation (see lib/homeAir.js and the dashboard's Home tab).
+export const ENVIRONMENT_TYPES = ["industrial", "office", "home"];
 export const DEFAULT_ENVIRONMENT_TYPE = "industrial";
 
 // Legacy aliases from older stored settings — normalize silently so existing
@@ -65,6 +70,7 @@ export const THRESHOLD_LIMITS = {
   TEMP_HIGH_C: { min: 25, max: 70 },
   CO2_HIGH: { min: 600, max: 2000 },
   IAQ_POOR: { min: 50, max: 300 },
+  PM25_HIGH: { min: 9, max: 150 },
   // Expressed to owners as a % drop (e.g. 40 = "a 40% drop trips the alert"),
   // stored internally as GAS_DROP_RATIO (= 1 - pct/100).
   GAS_DROP_PCT: { min: 20, max: 70 },
@@ -105,6 +111,10 @@ export function getEffectiveThresholds(overrides) {
   if (Number.isFinite(iaq)) {
     t.IAQ_POOR = clampNum(iaq, THRESHOLD_LIMITS.IAQ_POOR.min, THRESHOLD_LIMITS.IAQ_POOR.max);
   }
+  const pm25 = Number(o.pm25High);
+  if (Number.isFinite(pm25)) {
+    t.PM25_HIGH = clampNum(pm25, THRESHOLD_LIMITS.PM25_HIGH.min, THRESHOLD_LIMITS.PM25_HIGH.max);
+  }
   const gasDropPct = Number(o.gasDropPct);
   if (Number.isFinite(gasDropPct)) {
     const pct = clampNum(gasDropPct, THRESHOLD_LIMITS.GAS_DROP_PCT.min, THRESHOLD_LIMITS.GAS_DROP_PCT.max);
@@ -113,7 +123,7 @@ export function getEffectiveThresholds(overrides) {
   return t;
 }
 
-/** Resolve the effective environment type ("industrial"/"office") from stored settings. */
+/** Resolve the effective environment type ("industrial"/"office"/"home") from stored settings. */
 export function getEffectiveEnvironmentType(overrides) {
   const o = overrides && typeof overrides === "object" ? overrides : {};
   return normalizeEnvironmentType(o.environmentType);
@@ -165,11 +175,16 @@ export function normalizeReading(snapshot) {
   if (!Number.isFinite(gasR)) gasR = num(s.gasResistance);
 
   const iaq = num(s.iaq);
-  const co2 = num(s.co2);
+  const co2 = num(s.co2True) || num(s.co2);
+
+  // Optional add-on sensor fields (NaN when the device does not report them).
+  const pm25 = num(s.pm25);
+  const pm10 = num(s.pm10);
+  const hcho = num(s.hcho);
 
   const receivedAt = num(s.receivedAt, Date.now());
 
-  return { tempC, humidity, pressHpa, gasR, iaq, co2, receivedAt };
+  return { tempC, humidity, pressHpa, gasR, iaq, co2, pm25, pm10, hcho, receivedAt };
 }
 
 /**
@@ -211,15 +226,19 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
   const r = reading || {};
   const T = thresholds || THRESHOLDS;
   const env = normalizeEnvironmentType(environmentType);
-  const isOffice = env === "office";
-  const place = isOffice ? "the office" : "the work area";
+  const isHome = env === "home";
+  // Home reads like office for comfort wording (people, not equipment).
+  const isOffice = env === "office" || isHome;
+  const place = isHome ? "the home" : isOffice ? "the office" : "the work area";
 
   if (Number.isFinite(r.humidity) && r.humidity > T.HUMIDITY_HIGH) {
     breaches.push({
       key: "humidity",
       level: "crit",
       label: "High humidity",
-      message: isOffice
+      message: isHome
+        ? `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - mold and dust-mite risk if it stays this high; run a dehumidifier or ventilate.`
+        : isOffice
         ? `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - uncomfortable/moisture risk in ${place}.`
         : `Humidity ${r.humidity.toFixed(0)}% (limit ${T.HUMIDITY_HIGH}%) - muggy conditions for the crew and condensation risk on equipment.`,
     });
@@ -230,7 +249,9 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
       key: "temp",
       level: "crit",
       label: "High temperature",
-      message: `Temp ${r.tempC.toFixed(1)}C (limit ${T.TEMP_HIGH_C}C) - heat stress risk; check cooling before extended work in ${place}.`,
+      message: isHome
+        ? `Temp ${r.tempC.toFixed(1)}C (limit ${T.TEMP_HIGH_C}C) - too hot inside; check cooling and that nobody (or any pet) is at risk.`
+        : `Temp ${r.tempC.toFixed(1)}C (limit ${T.TEMP_HIGH_C}C) - heat stress risk; check cooling before extended work in ${place}.`,
     });
   }
 
@@ -271,6 +292,8 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
       message: `CO2 ${Math.round(r.co2)} ppm (limit ${T.CO2_HIGH} ppm) - ventilation is falling behind occupancy in ${place}.`,
     });
   }
+
+  if (isHome) breaches.push(...evaluateHomeBreaches(r, T));
 
   return breaches;
 }
