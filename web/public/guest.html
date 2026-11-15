@@ -117,6 +117,7 @@ h1{font-size:1.1rem;margin:8px 0 2px}
     save(l); load();
   });
   load();
+  // Stays on a 60s poll with no visibility check. Classic and the new dashboard pause; this page does not.
   setInterval(load, 60000);
 })();
 </script>

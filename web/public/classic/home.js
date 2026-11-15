@@ -10,6 +10,8 @@
   var inflight = false;
   var queued = false;
   var active = false;
+  var lastReceivedAt = null;
+  var unchanged = 0;
 
   var TRIGGER_LABELS = [["cat", "Cats"], ["dog", "Dogs"], ["pollen", "Pollen"], ["dustMite", "Dust mites"], ["mold", "Mold"], ["smoke", "Smoke"]];
   function getTriggers() {
@@ -220,12 +222,37 @@
     root.innerHTML = h.join("");
     var stamp = $("home-updated");
     if (stamp) stamp.textContent = d.receivedAt ? "Reading from " + new Date(d.receivedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + (d.city ? " · " + d.city : "") : "";
+    if (d && d.receivedAt != null) {
+      unchanged = d.receivedAt === lastReceivedAt ? unchanged + 1 : 0;
+      lastReceivedAt = d.receivedAt;
+    } else {
+      unchanged = 0;
+    }
+  }
+
+  function nextDelay() {
+    if (unchanged <= 0) return POLL_MS;
+    return Math.max(POLL_MS, Math.min(60000, 30000 + (unchanged - 1) * 15000));
+  }
+
+  function stopTimer() {
+    clearTimeout(timer);
+    timer = null;
+  }
+
+  function arm() {
+    stopTimer();
+    if (!active || document.hidden) return;
+    timer = setTimeout(function () {
+      if (!active || document.hidden) return;
+      load().then(arm, arm);
+    }, nextDelay());
   }
 
   function load() {
-    if (inflight) { queued = true; return; }
+    if (inflight) { queued = true; return Promise.resolve(); }
     inflight = true;
-    fetch("/api/home-stats?triggers=" + encodeURIComponent(getTriggers().join(",")), { cache: "no-store" })
+    return fetch("/api/home-stats?triggers=" + encodeURIComponent(getTriggers().join(",")), { cache: "no-store" })
       .then(function (r) { return r.status === 204 ? null : r.ok ? r.json() : Promise.reject(new Error("home-stats " + r.status)); })
       .then(function (d) {
         render(d);
@@ -242,7 +269,7 @@
           stamp.textContent = "Update failed — showing the last reading";
         }
       })
-      .then(function () { inflight = false; if (queued) { queued = false; load(); } });
+      .then(function () { inflight = false; if (queued) { queued = false; return load(); } });
   }
 
   document.addEventListener("click", function (e) {
@@ -254,11 +281,25 @@
     load();
   });
 
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { stopTimer(); return; }
+    if (!active) return;
+    unchanged = 0;
+    load().then(arm, arm);
+  });
+
   window.SniffHome = {
     onView: function (view) {
       var on = view === "household";
-      if (on && !active) { active = true; load(); timer = setInterval(load, POLL_MS); }
-      else if (!on && active) { active = false; clearInterval(timer); timer = null; }
+      if (on && !active) {
+        active = true;
+        if (!document.hidden) load().then(arm, arm);
+      } else if (!on && active) {
+        active = false;
+        stopTimer();
+      } else if (on && active && !document.hidden && !timer) {
+        load().then(arm, arm);
+      }
     },
   };
 })();
