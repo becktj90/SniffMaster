@@ -76,7 +76,13 @@ export function toOledView(p) {
   const pol = p.pollen || {};
   const od = p.outdoor || {};
 
-  const smellState = sm.state === "bad" ? (sm.safety ? "DANGER" : "SMELLY") : sm.state === "ok" ? (sm.level === "Slight odor" ? "SLIGHT" : "FRESH") : "LEARNING";
+  const smellState = sm.state === "bad"
+    ? (sm.safety ? "DANGER" : "SMELLY")
+    : sm.state === "unclassified"
+      ? "GAS SHIFT"
+      : sm.state === "ok"
+        ? (sm.level === "Slight odor" ? "SLIGHT" : "FRESH")
+        : "LEARNING";
   const hasCause = cause.key && cause.key !== "none";
   const causeLine = hasCause ? (SHORT_CAUSE[cause.key] || ascii(cause.label).toUpperCase()) : "";
   const actionText = hasCause ? (SHORT_ACTION[cause.key] || ascii(cause.action).toUpperCase()) : ascii(sm.action).toUpperCase();
@@ -90,8 +96,8 @@ export function toOledView(p) {
   return {
     v: 1,
     t: p.receivedAt || 0,
-    sc: p.score?.value ?? null,                 // home air score 0-100
-    sm: smellState,                              // FRESH | SLIGHT | SMELLY | DANGER | LEARNING
+    sc: p.score?.value ?? null,                 // home health score 0-100, higher is healthier
+    sm: smellState,                              // FRESH | SLIGHT | SMELLY | DANGER | LEARNING | GAS SHIFT
     sl: sm.state === "bad" ? sm.sinceMinutes ?? 0 : 0, // minutes it has smelled
     tr: sm.trend ? String(sm.trend).toUpperCase() : "",
     ca: wrap(causeLine, W, 1)[0] || "",         // cause label

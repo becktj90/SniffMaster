@@ -115,10 +115,10 @@
     // ── Right now: smell + personal outlook ─────────────────────────────
     var sm = d.smell || {}, ol = d.outlook || {}, vt = d.ventilation || {};
     var mine = getTriggers();
-    var smellTone = sm.state === "bad" ? (sm.tone || "poor") : sm.state === "ok" ? (sm.tone || "good") : "na";
+    var smellTone = sm.state === "bad" ? (sm.tone || "poor") : (sm.state === "ok" || sm.state === "unclassified") ? (sm.tone || "good") : "na";
     h.push('<section class="hm-card hm-visitor" id="hm-now"><div class="hm-now-grid">' +
       '<div class="hm-now-block hm-t-' + smellTone + '"><div class="hm-kicker">Room smell</div><h3>' + esc(sm.headline || "No gas reading yet.") + '</h3>' +
-      (sm.state === "bad" ? '<div class="hm-now-meta">' + esc(sm.level || "") +
+      (sm.state === "bad" || sm.state === "unclassified" ? '<div class="hm-now-meta">' + esc(sm.level || "") +
         (sm.sinceMinutes != null ? " · for " + sm.sinceMinutes + " min" : "") +
         (sm.trend ? " · " + esc(sm.trend) : "") + "</div>" : "") +
       (d.cause && d.cause.key && d.cause.key !== "none" ? '<div class="hm-cause"><b>Likely cause: ' + esc(d.cause.label) + '</b> <small>' + esc(d.cause.confidence === "none" ? "unconfirmed" : d.cause.confidence + " confidence") + '</small>' +
@@ -139,7 +139,7 @@
       '<div class="hm-disclaimer">' + esc((v.disclaimer || "Estimates from home sensors and outdoor feeds. Not a medical device.")) + "</div></section>");
 
     // ── Score + drivers ────────────────────────────────────────────────
-    h.push('<section class="hm-card" id="hm-score"><div class="hm-card-head"><span>Home Air Score</span><span class="hm-pill hm-t-' + tone(sc.value) + '">' +
+    h.push('<section class="hm-card" id="hm-score"><div class="hm-card-head"><span>Home health score</span><span class="hm-pill hm-t-' + tone(sc.value) + '">' +
       esc(sc.grade || "No data") + "</span></div>");
     h.push('<div class="hm-score-row"><div class="hm-bigscore hm-t-' + tone(sc.value) + '">' + fmt(sc.value) + '<small>/100</small></div><div class="hm-drivers">' +
       ((sc.drivers || []).length

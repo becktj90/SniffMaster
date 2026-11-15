@@ -503,8 +503,24 @@ export function buildHomeMetrics(latest, history, opts = {}) {
   };
 
   const petAllergen = petAllergenIndex(s, { co2, particulate: { pm25, pm10 } });
+  // Copied from the device snapshot. The home-health score above is a
+  // separate estimate (higher is healthier) and is what the OLED Home Score
+  // shows while the dashboard is reachable. airScore is the device's own
+  // room-load index (lower is cleaner). The OLED's offline "Device score"
+  // is 100 minus that load, so both numbers the panel can print are here.
+  const airScore = Number.isFinite(num(s.airScore)) ? Math.round(num(s.airScore)) : null;
+  const device = {
+    airScore,
+    airScoreDirection: "lower-is-cleaner",
+    oledDeviceScore: airScore === null ? null : Math.max(0, Math.min(100, 100 - airScore)),
+    oledDeviceScoreDirection: "higher-is-cleaner",
+    smellTier: Number.isFinite(num(s.tier)) ? Math.round(num(s.tier)) : null,
+    primary: typeof s.primary === "string" && s.primary.trim() ? s.primary.trim() : null,
+    primaryConf: Number.isFinite(num(s.primaryConf)) ? Math.round(num(s.primaryConf)) : null,
+  };
   const result = {
     score: { value, grade: gradeFor(value ?? NaN), components: comps, drivers },
+    device,
     particulate,
     gases,
     climate,

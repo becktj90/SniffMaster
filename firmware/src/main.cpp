@@ -500,7 +500,7 @@ struct OutdoorAQI {
 struct HomeStats {
   bool  valid;
   unsigned long fetchedMs;
-  int   score;            // Home Air Score 0-100
+  int   score;            // dashboard home health score, 0-100, higher is healthier
   char  grade[12];
   int   comp[4];          // VOC, ventilation, biological, comfort (-1 = missing)
   float dewPointF;
@@ -515,7 +515,7 @@ struct WallStatus {
   unsigned long fetchedMs;
   int   sc, sl, aq, ot;     // home score, minutes smelly, outdoor AQI, outdoor F (-1/-999 = none)
   float uv;                 // NAN = none
-  char  sm[10];             // FRESH | SLIGHT | SMELLY | DANGER | LEARNING
+  char  sm[10];             // FRESH | SLIGHT | SMELLY | DANGER | LEARNING | GAS SHIFT
   char  tr[12];             // trend word
   char  ca[24];             // likely cause
   char  cc[8];              // cause confidence

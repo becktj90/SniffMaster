@@ -24,6 +24,7 @@ test("clean room does not smell", () => {
   const s = analyzeSmell(latestOf(h), h, { now });
   assert.equal(s.smellsBad, false);
   assert.equal(s.level, "Fresh");
+  assert.equal(s.headline, "Air smells fresh.");
 });
 
 test("sustained drop in gas resistance is flagged, with duration", () => {
@@ -34,6 +35,20 @@ test("sustained drop in gas resistance is flagged, with duration", () => {
   assert.match(s.headline, /garbage/);
   assert.ok(s.sinceMinutes >= 15 && s.sinceMinutes <= 22, String(s.sinceMinutes));
   assert.ok(s.action);
+});
+
+test("a raw gas change is not a smell when every odor class is background", () => {
+  const h = day({ spikeFromMin: 20 });
+  const odors = Array(20).fill(0);
+  odors[13] = 8;
+  const s = analyzeSmell(latestOf(h, { odors }), h, { now });
+  assert.equal(s.smellsBad, false);
+  assert.equal(s.unclassifiedGasChange, true);
+  assert.equal(s.state, "unclassified");
+  assert.equal(s.level, "Unclassified gas change");
+  assert.equal(s.action, null);
+  assert.match(s.headline, /no odor class is confirmed/i);
+  assert.match(s.detail, /below background/i);
 });
 
 test("a single noisy sample is not an alarm", () => {

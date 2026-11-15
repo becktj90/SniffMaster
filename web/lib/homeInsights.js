@@ -193,11 +193,15 @@ export function analyzeSmell(latest, history, { now = Date.now() } = {}) {
   }
 
   // What is it? Use the on-device classifier only when confident.
+  // Scores under 20 are the background band the smell page already labels
+  // as noise, and the cutoff the OLED uses before it will name an odor.
   const odors = Array.isArray(s.odors) ? s.odors.map((v) => num(v, 0)) : [];
+  let topOdorScore = 0;
   let cause = null;
   if (odors.length) {
     let top = 0;
     for (let i = 1; i < odors.length; i++) if (odors[i] > odors[top]) top = i;
+    topOdorScore = odors[top];
     const second = odors.reduce((m, v, i) => (i !== top && v > m ? v : m), 0);
     if (odors[top] >= 45 && odors[top] - second >= 10) {
       cause = { index: top, name: ODOR_NAMES[top] || `class ${top}`, score: Math.round(odors[top]), benign: BENIGN.has(top) };
@@ -210,26 +214,33 @@ export function analyzeSmell(latest, history, { now = Date.now() } = {}) {
   else if (gd.spanH < 6 || !gd.humidityCorrected) confidence = "medium";
   if (gd.spanH < 2) confidence = "low";
 
-  const bad = persistent && dNow >= 0.3 && !(cause && cause.benign && dNow < 0.6);
+  const rawGasChange = persistent && dNow >= 0.3;
+  // A gas-resistance drop says the air changed. It cannot name a smell.
+  // When the classifier is present and every channel is still background,
+  // keep that distinction instead of asserting "Strong smell" or alerting.
+  const unclassifiedGasChange = rawGasChange && odors.length > 0 && topOdorScore < 20;
+  const bad = rawGasChange && !unclassifiedGasChange && !(cause && cause.benign && dNow < 0.6);
   const smellsBad = bad;
   const safety = cause && SAFETY[cause.index] ? SAFETY[cause.index] : null;
 
   let headline;
-  if (!bad) headline = dNow >= 0.12 ? "Air is slightly off but not smelly." : "Air smells fresh.";
+  if (unclassifiedGasChange) headline = "Gas signal changed, but no odor class is confirmed.";
+  else if (!bad) headline = dNow >= 0.12 ? "Air is slightly off but not smelly." : "Air smells fresh.";
   else if (cause && !cause.benign) headline = `${level.label}: probably ${cause.name.toLowerCase()}.`;
   else headline = `${level.label}.`;
 
   const action = bad ? (safety || (cause && SUGGEST[cause.index]) || "Open a window or run a fan; check for a spill, trash or damp spot.") : null;
 
   return {
-    state: smellsBad ? "bad" : "ok",
+    state: smellsBad ? "bad" : unclassifiedGasChange ? "unclassified" : "ok",
     smellsBad,
-    level: level.label,
-    tone: bad ? level.tone : dNow >= 0.12 ? "fair" : "good",
+    unclassifiedGasChange,
+    level: unclassifiedGasChange ? "Unclassified gas change" : level.label,
+    tone: unclassifiedGasChange ? "fair" : bad ? level.tone : dNow >= 0.12 ? "fair" : "good",
     headline,
     action,
     safety: !!safety,
-    trend: bad ? trend : null,
+    trend: rawGasChange ? trend : null,
     sinceMinutes: sinceMs === null ? null : Math.round(sinceMs / MIN),
     cause,
     confidence,
@@ -237,7 +248,8 @@ export function analyzeSmell(latest, history, { now = Date.now() } = {}) {
     detail:
       `Gas resistance is ${dNow >= 0 ? Math.round((1 - Math.exp(-dNow)) * 100) : 0}% below this room's own clean-air level` +
       (gd.humidityCorrected ? ", corrected for humidity" : "") +
-      `, from ${gd.samples} readings over ${Math.round(gd.spanH)}h.`,
+      `, from ${gd.samples} readings over ${Math.round(gd.spanH)}h.` +
+      (unclassifiedGasChange ? ` The odor classifier is still below background (top score ${Math.round(topOdorScore)}/100).` : ""),
   };
 }
 

@@ -261,6 +261,7 @@
     var smell = home.smell || {};
     var cl = home.climate || {};
     var g = home.gases || {};
+    var device = home.device || {};
     var pet = home.petAllergen || {};
     var out = home.outdoor || {};
     var cur = wx && wx.current;
@@ -269,7 +270,7 @@
     var tiles = [
       '<a class="card stat" href="#/smell"><p class="kicker">Smell</p><div class="value" style="font-size:22px;font-family:var(--sans);font-weight:700">' + esc(smell.level || "—") + '</div><div class="line">' + esc(smell.headline || "") + "</div>" + (smell.sinceMinutes ? '<div class="line muted small">For ' + smell.sinceMinutes + " min · " + esc(smell.trend || "") + "</div>" : "") + "</a>",
       '<a class="card stat" href="#/sensors"><p class="kicker">Comfort</p><div class="value num">' + fmt(cl.tempF, 1) + "<small>°F</small> " + fmt(cl.humidity) + '<small>% RH</small></div><div class="line">' + esc(cl.comfort || "") + " · dew point " + fmt(cToF(cl.dewPointC)) + "°F</div>" + spark(s.tempC, css("--series-2")) + "</a>",
-      '<a class="card stat" href="#/sensors"><p class="kicker">Fresh air</p><div class="value num">' + fmt(g.co2) + '<small>ppm CO₂</small></div><div class="line">' + esc(vent.text || g.co2Category || "") + "</div>" + spark(s.co2, css("--series-1")) + "</a>",
+      '<a class="card stat" href="#/sensors"><p class="kicker">' + (g.co2Source === "sensor" ? "CO₂ sensor" : g.co2Source === "estimated" ? "CO₂ estimate" : "CO₂") + '</p><div class="value num">' + fmt(g.co2) + '<small>ppm CO₂</small></div><div class="line">' + esc(vent.text || g.co2Category || "") + (g.co2Source === "estimated" ? " · same BSEC estimate as the OLED" : "") + "</div>" + spark(s.co2, css("--series-1")) + "</a>",
       '<a class="card stat" href="#/pets"><p class="kicker">Pet meter</p><div class="value num">' + fmt(pet.index) + '<small>/ 100</small></div><div class="line">' + pill(pet.level || "Unknown", levelTone(pet.level)) + ' <span class="muted small">' + esc(pet.confidence ? pet.confidence + " confidence" : "") + "</span></div></a>",
     ];
 
@@ -289,9 +290,18 @@
       "<dt>Dry air</dt><dd>" + pill((bio.dryAir && bio.dryAir.category) || "—", levelTone(bio.dryAir && bio.dryAir.category)) + "</dd>" +
       "<dt>Outdoor pollen</dt><dd>" + (home.pollen && home.pollen.ok ? pill(topPollen(home.pollen), levelTone(topPollen(home.pollen).split(" ").pop())) : '<span class="muted small">not available here</span>') + "</dd></dl></div>";
 
+    var deviceRows = "";
+    if (isNum(device.airScore) || device.primary) {
+      deviceRows = '<div class="device-readout">' +
+        (isNum(device.airScore) ? '<span>Device air load</span><b class="num">' + fmt(device.airScore) + '/100</b>' : "") +
+        (isNum(device.oledDeviceScore) ? '<span>OLED device score</span><b class="num">' + fmt(device.oledDeviceScore) + '/100</b>' : "") +
+        (device.primary ? '<span>Dominant odor</span><b>' + esc(device.primary) + (isNum(device.primaryConf) ? " · " + fmt(device.primaryConf) + "%" : "") + "</b>" : "") +
+        '<small>Lower is cleaner. The OLED prints the other number, 100 minus this one, only when it cannot reach the dashboard. Dominant odor uses the same 20% cutoff as the OLED footer.</small></div>';
+    }
+
     return '<div class="grid g-hero">' +
-      '<div class="card score-card"><p class="kicker">Home air score</p>' + scoreRing(home.score && home.score.value, home.score && home.score.grade) +
-      '<div class="where">Updated ' + esc(ago(home.receivedAt)) + "</div>" + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
+      '<div class="card score-card"><p class="kicker">Home health score</p>' + scoreRing(home.score && home.score.value, home.score && home.score.grade) +
+      '<div class="where">Higher is healthier · this is the OLED Home Score · updated ' + esc(ago(home.receivedAt)) + "</div>" + deviceRows + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
       '<div class="grid g-4" style="margin-top:16px">' + tiles.join("") + "</div>" +
       '<div class="grid g-2" style="margin-top:16px">' + outside + risks + "</div>" + '<div style="margin-top:16px">' + sampleCard + "</div>";
@@ -422,6 +432,7 @@
     var sniffs = await load("sniffs").catch(function () { return []; });
     window.__sensorData = sens;
     var sm = home.smell || {};
+    var device = home.device || {};
     var sense = home.airSense || {};
     var cause = home.cause || sense.cause || {};
     var latest = (sens && sens.latest) || {};
@@ -435,11 +446,18 @@
     var nose = sense.sensoryLoad || {};
     var debt = sense.freshnessDebt || {};
     var character = sense.character || {};
+    var smellPill = sm.state === "unclassified"
+      ? pill(sm.level || "Unclassified gas change", "fair")
+      : (sm.smellsBad ? pill(sm.level || "Smelly", tone) : pill(sm.tone === "fair" ? "Slightly off" : "Fresh", tone));
+    var deviceOdor = device.primary
+      ? '<p class="note"><b>OLED dominant odor. </b>' + esc(device.primary) + (isNum(device.primaryConf) ? " · " + fmt(device.primaryConf) + "%" : "") + ". The smells card footer uses this same call.</p>"
+      : "";
     var main = '<div class="card"><p class="kicker">Right now</p><h2 style="font-size:22px;margin:0 0 6px">' + esc(sm.headline || "No reading yet") + "</h2>" +
-      '<div class="chips" style="margin:6px 0 10px">' + (sm.smellsBad ? pill(sm.level || "Smelly", tone) : pill(sm.tone === "fair" ? "Slightly off" : "Fresh", tone)) + (sm.confidence ? pill(sm.confidence + " confidence", "na") : "") + (sm.trend ? pill(sm.trend, sm.trend === "worsening" ? "poor" : "na") : "") +
+      '<div class="chips" style="margin:6px 0 10px">' + smellPill + (sm.confidence ? pill(sm.confidence + " confidence", "na") : "") + (sm.trend ? pill(sm.trend, sm.trend === "worsening" ? "poor" : "na") : "") +
       (nose.band ? pill("Nose: " + nose.band, nose.value >= 65 ? "poor" : nose.value >= 40 ? "fair" : "good") : "") +
       (character.headline ? pill(character.headline, "na") : "") + "</div>" +
       (sm.action ? '<div class="callout ' + (sm.safety ? "bad" : "fair") + '">' + esc(sm.action) + "</div>" : "") +
+      deviceOdor +
       (cause.label ? '<p class="note"><b>Likely situation. </b>' + esc(cause.label) + (cause.action ? " — " + esc(cause.action) : "") + "</p>" : "") +
       '<p class="note">' + esc(sm.detail || "") + "</p></div>";
 
