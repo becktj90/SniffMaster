@@ -864,6 +864,18 @@ export async function buildHomePayload(triggersInput) {
       pm25: pick((h) => h.pm25),
     };
 
+    // Optional. Old snapshots omit these keys, and the guest/OLED views
+    // never copy this object.
+    const airSample = latest.airSampleState ? {
+      state: latest.airSampleState,
+      startedAt: Number(latest.airSampleStartedAt) || null,
+      progress: Number.isFinite(Number(latest.airSampleProgress)) ? Number(latest.airSampleProgress) : null,
+      baselineVoc: Number.isFinite(Number(latest.airSampleBaselineVoc)) ? Number(latest.airSampleBaselineVoc) : null,
+      deltaVoc: Number.isFinite(Number(latest.airSampleDeltaVoc)) ? Number(latest.airSampleDeltaVoc) : null,
+      result: latest.airSampleResult || "",
+      completedAt: Number(latest.airSampleCompletedAt) || null,
+    } : null;
+
     return {
       mode: "home",
       receivedAt: latest.receivedAt || null,
@@ -876,6 +888,7 @@ export async function buildHomePayload(triggersInput) {
       outlook,
       ventilation,
       series: trend,
+      ...(airSample ? { airSample } : {}),
     };
 }
 

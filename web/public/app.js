@@ -278,8 +278,27 @@
       '<div class="card score-card"><p class="kicker">Home air score</p>' + scoreRing(home.score && home.score.value, home.score && home.score.grade) +
       '<div class="where">Updated ' + esc(ago(home.receivedAt)) + "</div>" + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
+      airSampleCard(home.airSample) +
       '<div class="grid g-4" style="margin-top:16px">' + tiles.join("") + "</div>" +
       '<div class="grid g-2" style="margin-top:16px">' + outside + risks + "</div>";
+  }
+  function airSampleCard(a) {
+    if (!a || !a.state) return "";
+    var phrase = { no_shift: "No meaningful VOC shift", mild: "Mild VOC response", strong: "Strong VOC response" };
+    var stateLabel = { idle: "Idle", baseline: "Baseline", measure: "Measuring", result: "Result", rejected: "Not ready", cancelled: "Cancelled" };
+    var tone = a.result === "strong" ? "poor" : a.result === "mild" ? "fair" : a.result === "no_shift" ? "good" : "na";
+    var live = a.state === "baseline" || a.state === "measure";
+    var headline = live
+      ? (a.state === "baseline" ? "Collecting a 10 second baseline." : "Measuring the VOC change.")
+      : (phrase[a.result] || "Hold the right-hand button to compare the air in front of the sensor.");
+    var prog = isNum(a.progress) ? Math.max(0, Math.min(100, Math.round(Number(a.progress)))) : 0;
+    var when = isNum(a.completedAt) && a.completedAt > 1000000000 ? clock(a.completedAt * 1000) : "";
+    var delta = isNum(a.deltaVoc) ? '<p class="muted" style="margin:0 0 8px">VOC change ' + fmt(a.deltaVoc, 2) + " ppm" + (isNum(a.baselineVoc) ? " from a " + fmt(a.baselineVoc, 2) + " ppm baseline" : "") + "</p>" : "";
+    var bar = live ? '<div class="hbar"><span>' + esc(stateLabel[a.state] || "Progress") + '</span><div class="track"><i style="width:' + prog + '%"></i></div><span class="v">' + prog + "%</span></div>" : "";
+    return '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Air sample</h3>' + pill(stateLabel[a.state] || a.state, tone) + "</div>" +
+      '<p style="margin:0 0 8px">' + esc(headline) + "</p>" + delta + bar +
+      (when && !live ? '<p class="muted small" style="margin:8px 0 0">Latest result ' + esc(when) + "</p>" : "") +
+      '<p class="note">VOC response only. Not a health or alcohol test.</p></div>';
   }
   function topPollen(p) {
     var items = [].concat(p.types || [], p.plants || []).filter(function (x) { return isNum(x.value); }).sort(function (a, b) { return b.value - a.value; });
