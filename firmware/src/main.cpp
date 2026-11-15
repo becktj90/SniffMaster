@@ -49,11 +49,11 @@
   #define I2C_BEGIN() Wire.begin()
 #endif
 
-// Page / long-press button is D0 (GPIO2). D1 and the XIAO BOOT button (GPIO9)
-// also work. Each input arms only after it has read "released", so a pin
-// that is held low (or wired to something else) can never jam the button.
-#define BTN_PIN        D0
-static const uint8_t BTN_PINS[] = { D0, D1, 9 };
+// The expansion-board user button is D1 (GPIO3), active low. D0 is the
+// Grove A0 pin, not that button. The BOOT button on the XIAO module is
+// GPIO9. Each pin is tracked on its own: one stuck-low pin must not hold
+// the others in the "already pressed" state.
+#define BTN_PIN        D1
 #define BTN_LONG_MS    700
 #define BTN_DEBOUNCE_MS 25
 #define BUZZER_PIN     D3
@@ -2043,12 +2043,28 @@ static void processSample(unsigned long now) {
 // Button (loop task)
 // ══════════════════════════════════════════════════════════════
 
-static bool          btnArmed = false;       // wait for release after boot
-static bool          btnStable = false;      // debounced "down" state
-static bool          btnLastRaw = false;
-static unsigned long btnRawChangeMs = 0;
-static unsigned long btnDownMs = 0;
-static bool          btnLongFired = false;
+struct BtnTrack {
+  uint8_t gpio;
+  bool    armed;       // has been seen released since boot
+  bool    stable;      // debounced "down"
+  bool    lastRaw;
+  unsigned long changeMs;
+  unsigned long downMs;
+  bool    longFired;
+};
+static BtnTrack btnTrack[] = {
+  { D1, false, false, false, 0, 0, false },
+  { D0, false, false, false, 0, 0, false },
+  { 9,  false, false, false, 0, 0, false },
+};
+// Set from a falling-edge interrupt. display() blocks for ~160 ms while the
+// OLED frame is sent, which is long enough to miss a whole tap if we only
+// poll in loop().
+static volatile bool btnFell[3] = {};
+static void IRAM_ATTR btnIsr0() { btnFell[0] = true; }
+static void IRAM_ATTR btnIsr1() { btnFell[1] = true; }
+static void IRAM_ATTR btnIsr2() { btnFell[2] = true; }
+static void (*const btnIsr[3])() = { btnIsr0, btnIsr1, btnIsr2 };
 
 static void onShortPress() {
   if (alarmStepsLeft) alarmStop();
@@ -2081,35 +2097,63 @@ static void onLongPress() {
   showOverlay("Portal Sync", "Fresh snapshot\nqueued for upload.", 1500, false);
 }
 
+static void armButtonPins() {
+  for (uint8_t i = 0; i < 3; i++) {
+    BtnTrack& b = btnTrack[i];
+    pinMode(b.gpio, INPUT_PULLUP);
+    gpio_pullup_en((gpio_num_t)b.gpio);
+    gpio_pulldown_dis((gpio_num_t)b.gpio);
+    attachInterrupt(digitalPinToInterrupt(b.gpio), btnIsr[i], FALLING);
+  }
+}
+
 static void handleButton(unsigned long now) {
-  static bool pinArmed[sizeof(BTN_PINS)] = {};
-  bool raw = false;
-  for (uint8_t i = 0; i < sizeof(BTN_PINS); i++) {
-    const bool low = digitalRead(BTN_PINS[i]) == LOW;
-    if (!pinArmed[i]) { if (!low) pinArmed[i] = true; continue; }
-    raw |= low;
-  }
-  if (raw != btnLastRaw) { btnLastRaw = raw; btnRawChangeMs = now; }
-  if (now - btnRawChangeMs < BTN_DEBOUNCE_MS) return;
-
-  if (!btnArmed) {           // ignore a button held/floating through boot
-    if (!raw) btnArmed = true;
-    btnStable = raw;
-    return;
+  static unsigned long lastPullMs = 0;
+  // Wi-Fi bring-up can clear the pull-ups on these pins. Put them back
+  // without detaching the edge interrupt (gpio pull only, no pinMode).
+  if (lastPullMs && now - lastPullMs >= 2000UL) {
+    for (BtnTrack& b : btnTrack) gpio_pullup_en((gpio_num_t)b.gpio);
+    lastPullMs = now;
+  } else if (!lastPullMs) {
+    lastPullMs = now;
   }
 
-  if (raw && !btnStable) {                 // pressed
-    btnStable = true;
-    btnDownMs = now;
-    btnLongFired = false;
-  } else if (raw && btnStable) {           // held
-    if (!btnLongFired && now - btnDownMs >= BTN_LONG_MS) {
-      btnLongFired = true;
-      onLongPress();
+  for (uint8_t i = 0; i < 3; i++) {
+    BtnTrack& b = btnTrack[i];
+    const bool fell = btnFell[i];
+    if (fell) btnFell[i] = false;
+    const bool low = digitalRead(b.gpio) == LOW || fell;
+    if (!b.armed) {
+      if (digitalRead(b.gpio) == HIGH) b.armed = true;
+      continue;
     }
-  } else if (!raw && btnStable) {          // released
-    btnStable = false;
-    if (!btnLongFired) onShortPress();
+    if (low != b.lastRaw) { b.lastRaw = low; b.changeMs = now; }
+    if (!fell && now - b.changeMs < BTN_DEBOUNCE_MS) continue;
+
+    if (low && !b.stable) {
+      b.stable = true;
+      b.downMs = now;
+      b.longFired = false;
+      // Tap completed entirely during an OLED transfer: the pin is already up.
+      if (fell && digitalRead(b.gpio) == HIGH) {
+        b.stable = false;
+        b.lastRaw = false;
+        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        onShortPress();
+      }
+    } else if (low && b.stable) {
+      if (!b.longFired && now - b.downMs >= BTN_LONG_MS) {
+        b.longFired = true;
+        Serial.printf("[BTN] hold gpio=%u\n", b.gpio);
+        onLongPress();
+      }
+    } else if (!low && b.stable) {
+      b.stable = false;
+      if (!b.longFired) {
+        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        onShortPress();
+      }
+    }
   }
 }
 
@@ -2873,7 +2917,7 @@ static void task(void*) {
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  for (uint8_t p : BTN_PINS) pinMode(p, INPUT_PULLUP);
+  armButtonPins();
 
   Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
@@ -3092,15 +3136,15 @@ void loop() {
   if (newDataReady) processSample(now);
   alarmTick(millis());
   updateDisplay(millis());
+  handleButton(millis());   // catch a tap that landed during the OLED transfer
   oledHealthCheck(millis());
 
   const unsigned long took = millis() - now;
   if (took > loopMaxMs) loopMaxMs = took;
   if (now - lastLoopLogMs >= 10000UL) {
-    Serial.printf("[LOOP] max=%lums heap=%u minHeap=%u oledRecov=%u bsecFail=%u timing=%u last=%d acc=%u runIn=%.0f stab=%.0f\n",
-                  loopMaxMs, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(), oledRecoveries,
-                  bsecRunFail, bsecTimingViol, bsecLastFailStatus, latestIAQAccuracy,
-                  latestRunInStatus, latestStabStatus);
+    Serial.printf("[LOOP] max=%lums heap=%u page=%u d0=%d d1=%d boot=%d\n",
+                  loopMaxMs, (unsigned)ESP.getFreeHeap(), displayPage,
+                  digitalRead(D0), digitalRead(D1), digitalRead(9));
     bsecRunFail = bsecTimingViol = 0;
     loopMaxMs = 0;
     lastLoopLogMs = now;
