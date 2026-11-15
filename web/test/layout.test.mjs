@@ -93,6 +93,66 @@ test("charts are shorter but still readable", () => {
   assert.match(cssText, /\.chart\.tall\s*\{[^}]*height:\s*220px/, ".chart.tall is 220px (was 240)");
 });
 
+test("wide desktop: content steps out past the 1240px cap", () => {
+  assert.match(
+    cssText,
+    /@media\s*\(min-width:\s*1440px\)\s*\{[\s\S]*?main\s*\{[^}]*max-width:\s*1400px/,
+    "main is 1400px at 1440px+"
+  );
+  assert.match(
+    cssText,
+    /@media\s*\(min-width:\s*1440px\)\s*\{[\s\S]*?\.foot\s*\{[^}]*max-width:\s*1400px/,
+    "footer steps out with main at 1440px+"
+  );
+  assert.match(
+    cssText,
+    /@media\s*\(min-width:\s*1720px\)\s*\{[\s\S]*?main\s*\{[^}]*max-width:\s*1560px/,
+    "main is 1560px at 1720px+"
+  );
+  // The base cap is unchanged, so smaller screens are unaffected.
+  assert.match(cssText, /main\s*\{[^}]*max-width:\s*1240px/, "base main is still 1240px");
+});
+
+test("overview uses wide-desktop space: hero, tips, and the bottom row", () => {
+  assert.ok(jsText.includes('grid g-hero overview-hero'), "overview hero carries overview-hero");
+  assert.ok(jsText.includes('grid g-2 top mt overview-bottom'), "outside + risks + sample share one row");
+  assert.ok(
+    jsText.includes("outside + risks + sampleCard + \"</div>\""),
+    "sample card is inside the bottom row, not a lone full-width card"
+  );
+  assert.match(
+    cssText,
+    /@media\s*\(min-width:\s*1440px\)\s*\{[\s\S]*?\.g-hero\.overview-hero\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*380px\)/,
+    "hero score column is 380px at 1440px+"
+  );
+  assert.match(
+    cssText,
+    /@media\s*\(min-width:\s*1440px\)\s*\{[\s\S]*?\.brief \.tips\s*\{[^}]*grid-template-columns:\s*repeat\(3/,
+    "brief tips go 3-across at 1440px+"
+  );
+  assert.match(
+    cssText,
+    /@media\s*\(min-width:\s*1440px\)\s*\{[\s\S]*?\.overview-bottom\s*\{[^}]*grid-template-columns:\s*repeat\(3/,
+    "bottom row is 3 columns at 1440px+"
+  );
+  assert.match(
+    cssText,
+    /\.overview-bottom > \.card:last-child\s*\{[^}]*grid-column:\s*1 \/ -1/,
+    "sample spans both columns below the wide breakpoint"
+  );
+});
+
+test("mobile and tablet breakpoints are untouched", () => {
+  for (const bp of [1020, 760, 600, 480]) {
+    assert.match(cssText, new RegExp("@media\\s*\\(max-width:\\s*" + bp + "px\\)"), bp + "px breakpoint still present");
+  }
+  assert.match(
+    cssText,
+    /@media\s*\(max-width:\s*760px\)\s*\{[^}]*\.g-hero[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    "hero still collapses to one column on mobile"
+  );
+});
+
 test("cats-band clearance is untouched: body padding still clears the band", () => {
   // Desktop: band is 64px tall, body padding-bottom must clear it.
   const band = pxValue(cssText, /\.cats-band\s*\{[^}]*height:\s*(\d+)px/, "cats band height");
