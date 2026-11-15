@@ -279,6 +279,9 @@
       "</a>";
 
     var bio = home.biological || {};
+    var sample = home.airSample || {};
+    var sampleActive = sample.state === "baseline" || sample.state === "measure";
+    var sampleCard = '<div class="card"><div class="card-head"><h3>Air sample</h3>' + pill(sampleActive ? "Running" : sample.result ? "Complete" : "Ready", sampleActive ? "fair" : sample.result ? "good" : "na") + '</div><p style="margin:0 0 8px;font-weight:600">' + esc(sampleActive ? "Measuring a short VOC response…" : sample.result || "Hold the device button to start a 35-second sample.") + '</p>' + (sampleActive && isNum(sample.progress) ? '<p class="note">' + fmt(sample.progress) + '% complete</p>' : '') + (sample.result ? '<dl class="kv"><dt>VOC change</dt><dd>' + fmt(sample.deltaVoc, 2) + ' ppm</dd><dt>Baseline</dt><dd>' + fmt(sample.baselineVoc, 2) + ' ppm</dd></dl>' : '') + '<p class="note">A room-air VOC response only — not an alcohol, health, or identity test.</p></div>';
     var risks = '<div class="card"><div class="card-head"><h3>Allergen & moisture risk</h3><span class="sub">estimates</span></div><dl class="kv">' +
       "<dt>Pet dander</dt><dd>" + pill(pet.level || "—", levelTone(pet.level)) + "</dd>" +
       "<dt>Mold</dt><dd>" + pill((bio.mold && bio.mold.category) || "—", levelTone(bio.mold && bio.mold.category)) + "</dd>" +
@@ -291,7 +294,7 @@
       '<div class="where">Updated ' + esc(ago(home.receivedAt)) + "</div>" + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
       '<div class="grid g-4" style="margin-top:16px">' + tiles.join("") + "</div>" +
-      '<div class="grid g-2" style="margin-top:16px">' + outside + risks + "</div>";
+      '<div class="grid g-2" style="margin-top:16px">' + outside + risks + "</div>" + '<div style="margin-top:16px">' + sampleCard + "</div>";
   }
   function topPollen(p) {
     var items = [].concat(p.types || [], p.plants || []).filter(function (x) { return isNum(x.value); }).sort(function (a, b) { return b.value - a.value; });
@@ -628,9 +631,12 @@
       "</div>" : (g.reason ? '<div class="card"><h3>Google outdoor air</h3><p class="muted">' + esc(g.reason) + ". Open-Meteo numbers are still shown below.</p></div>" : "");
     var pollenCard = '<div class="card"><h3 style="margin-bottom:8px">Pollen</h3>' +
       (pol.ok ? '<div class="chips">' + pollenChips + "</div>" + ((pol.tips || []).map(function (t) { return '<p class="note">' + esc(t) + "</p>"; }).join("")) + '<p class="note">' + esc(pol.source || "") + (pol.date ? " · " + esc(pol.date) : "") + "</p>" : '<p class="muted">' + esc(pol.reason || "No pollen reading yet.") + "</p>") + "</div>";
+    var solar = home.solar || {};
+    var solarCard = solar.ok ? '<div class="card"><div class="card-head"><h3>Roof solar potential</h3><span class="sub">one-time context</span></div><div class="grid g-3"><div class="stat"><p class="kicker">Panels</p><div class="value num">' + fmt(solar.maxPanels) + '</div></div><div class="stat"><p class="kicker">Roof area</p><div class="value num">' + fmt(solar.maxAreaM2) + '<small>m²</small></div></div><div class="stat"><p class="kicker">Sun hours</p><div class="value num">' + fmt(solar.maxSunHoursYear) + '</div></div></div>' + (isNum(solar.estimatedYearlyKwh) ? '<p class="note">Google estimate: up to ' + fmt(solar.estimatedYearlyKwh) + ' kWh/year before local design, shade, tariffs, and rules. Not a quote.</p>' : '') + '</div>' : '<div class="card"><h3>Roof solar potential</h3><p class="muted">' + esc(solar.reason || "No solar insight yet.") + "</p></div>";
     return head("Outside" + (home.city ? " · " + home.city : ""), "A map of the neighborhood, plus outdoor air, pollen, and weather.") +
       mapCard +
       '<div class="grid g-2" style="margin-top:16px">' + googleCard + pollenCard + "</div>" +
+      '<div style="margin-top:16px">' + solarCard + "</div>" +
       '<div class="grid g-3">' +
       '<div class="card stat"><p class="kicker">Now</p><div class="value num">' + fmt(cur && cur.tempF) + '<small>°F</small></div><div class="line">' + esc(cur ? cur.condition + " · feels " + fmt(cur.feelsLikeF) + "°F" : "—") + '</div><div class="line muted small">' + esc(cur ? "Wind " + (cur.windSpeed || "calm") + " " + (cur.windDir || "") + " · " + fmt(cur.pressHpa) + " hPa" : "") + "</div></div>" +
       '<div class="card stat"><p class="kicker">Outdoor AQI</p><div class="value num">' + fmt(o.usAqi) + '</div><div class="line">' + pill((wx && wx.outdoorLevel) || "—", levelTone(wx && wx.outdoorLevel)) + "</div></div>" +

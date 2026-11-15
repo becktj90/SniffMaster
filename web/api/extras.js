@@ -43,6 +43,7 @@ import { buildAirSense } from "../lib/airSense.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
 import { fetchGoogleAir } from "../lib/googleAir.js";
+import { fetchGoogleSolar } from "../lib/googleSolar.js";
 import { airTile } from "../lib/airTile.js";
 import { lookupEnvironment } from "../lib/googleEnv.js";
 import {
@@ -851,6 +852,12 @@ export async function buildHomePayload(triggersInput) {
       }
     }
 
+    let solar = { ok: false, reason: haveLoc ? "Google Solar unavailable" : "No device location yet" };
+    if (haveLoc) {
+      try { solar = await fetchGoogleSolar({ lat, lon }, { cacheGet: getJsonCache, cacheSet: setJsonCache, incr: incrCounter }); }
+      catch (err) { console.error("google solar:", err?.message || err); }
+    }
+
     const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
     
     const smell = analyzeSmell(latest, legacy);
@@ -892,9 +899,17 @@ export async function buildHomePayload(triggersInput) {
       city: latest.city || "",
       located: haveLoc,
       location: haveLoc ? { lat: Math.round(lat * 1e4) / 1e4, lon: Math.round(lon * 1e4) / 1e4 } : null,
+      airSample: latest.airSampleState ? {
+        state: latest.airSampleState,
+        progress: Number.isFinite(Number(latest.airSampleProgress)) ? Number(latest.airSampleProgress) : null,
+        baselineVoc: Number.isFinite(Number(latest.airSampleBaselineVoc)) ? Number(latest.airSampleBaselineVoc) : null,
+        deltaVoc: Number.isFinite(Number(latest.airSampleDeltaVoc)) ? Number(latest.airSampleDeltaVoc) : null,
+        result: latest.airSampleResult || "",
+      } : null,
       ...metrics,
       pollen,
       googleAir,
+      solar,
       smell,
       cause,
       outlook,
