@@ -97,6 +97,7 @@
       <button class="section-btn is-active" type="button" data-view-target="dashboard">Overview</button>
       <button class="section-btn" type="button" data-view-target="environment">Local Area</button>
       <button class="section-btn" type="button" data-view-target="analysis">Air &amp; Signal</button>
+      <button class="section-btn" type="button" data-view-target="household">Home</button>
       <button class="section-btn" type="button" data-view-target="history">Trends</button>
       <button class="section-btn" type="button" data-view-target="space">Space</button>
       <button class="section-btn" type="button" data-view-target="system">System</button>
@@ -394,6 +395,14 @@
           <span class="cause-factor-value" id="cause-factor-vent">--</span>
         </div>
       </div>
+    </section>
+
+    <section class="card home-card" id="card-home" data-view="household">
+      <div class="card-header">
+        <span>Home Air &amp; Allergens</span>
+        <span class="header-pill" id="home-updated">Loading…</span>
+      </div>
+      <div id="home-root" class="hm-root"><div class="hm-empty">Loading home air data…</div></div>
     </section>
 
     <section class="card office-card" id="card-office" data-view="analysis">
@@ -1358,6 +1367,7 @@ loop():
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/home.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

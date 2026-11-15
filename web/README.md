@@ -38,6 +38,21 @@ Browser / iPhone PWA         │
 - IAQ history chart (up to 48 hours)
 - **Work Area Environment Monitor** — real-time threshold alerts + a daily 24h personnel report (stat tiles with change-vs-norm deltas, sparklines, and an LC-36 weather + natural-lighting outlook), with an owner-adjustable **Industrial / Office** environment mode that tailors wording and which sensor readings are highlighted (industrial focuses on crew heat/humidity/air-quality safety plus gas-resistance smoke checks; office frames the same data around occupant comfort and ventilation)
 
+## Home mode
+
+The **Home** tab (and the `home` environment type, selectable next to Industrial and Office) turns the dashboard into a whole-home air monitor with a visitor-friendly summary: Home Air Score, particulate (PM1/2.5/4/10 + AQI), mold / dust-mite / dry-air exposure, estimated pet-dander exposure, CO2 / VOC / formaldehyde, indoor-vs-outdoor comparison, outdoor pollen, and 24 h trends. Data: `GET /api/home-stats` (`lib/homeAir.js`).
+
+Humidity for those exposure scores is kept for 7 days at 10-minute steps, separate from the 24-hour full-snapshot buffer. Until that window has filled in, the Home tab says how many hours are actually recorded. Choosing Home also switches alert text, the morning report, and the PM2.5 limit.
+
+What it can and cannot know:
+
+- The stock device is a BME688. IAQ, bVOC and CO2 are **model estimates**; mold, dust-mite and dry-air figures are exposure heuristics from humidity + temperature history.
+- **Particulate and formaldehyde need add-on sensors.** If the device posts `pm1`, `pm25`, `pm4`, `pm10`, `co2True`, `hcho`, `vocIndex` or `noxIndex`, those tiles light up automatically; otherwise they read "No sensor".
+- **Cat/dog allergen (Fel d 1, Can f 1) cannot be measured by this device.** The dashboard shows an *estimated* pet-dander index from the smell model's pet class, coarse particulate (PM10 − PM2.5) and ventilation, with a confidence level; real values need a lab/ELISA test.
+- Pollen is outdoor-only: Open-Meteo (free) where available, else the capped Google Pollen API (`GOOGLE_POLLEN_API_KEY`, see `.env.example`).
+
+Run the tests with `npm test` (in `web/`).
+
 ## Deploy (one-time setup)
 
 ### 1. Create Upstash Redis database

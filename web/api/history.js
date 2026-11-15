@@ -2,11 +2,11 @@
  * GET /api/history?count=48 — returns recent sensor snapshots (newest first)
  *
  * Query params:
- *   count  — number of entries (default 48, max 1008)
+ *   count  — number of entries (default 48, max 1440 = 24h at 1-minute posts)
  *   fields — "dash" returns only the fields the dashboard actually reads
  *            (charts, rhythm grid, event log, gas baseline). Full snapshots
  *            carry 20-element odor arrays, quips, and other text the history
- *            views never touch; at 1008 entries the projection cuts the
+ *            views never touch; at 1440 entries the projection cuts the
  *            transfer roughly 5x. Omit for the full snapshots (default,
  *            backward compatible).
  */
@@ -56,7 +56,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "GET only" });
   }
 
-  const count = Math.min(parseInt(req.query.count) || 48, 1008);
+  const count = Math.min(parseInt(req.query.count) || 48, 24 * 60);
   const slim = req.query?.fields === "dash";
 
   try {
