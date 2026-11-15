@@ -8,6 +8,10 @@ This directory contains the migrated SniffMaster Pro sketch as a PlatformIO proj
 - `include/melody_library.h` has been moved to the standard include folder.
 - `platformio.ini` contains board environments for both XIAO ESP32-S3 and XIAO ESP32-C3.
 
+## Sensor and outdoor-environment plan
+
+BME688 work and the Google pollen / air-quality / weather integration follow `docs/firmware-bme688-google-env-plan.md`. Implement one phase from that plan at a time. The module split below stays separate from that work.
+
 ## Next refactor targets
 
 1. Extract display code into `lib/display/`
