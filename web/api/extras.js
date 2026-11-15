@@ -39,8 +39,11 @@ import { toGuestView, guestTopic } from "../lib/guest.js";
 import { analyzeCause } from "../lib/causes.js";
 import { toOledView } from "../lib/oled.js";
 import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
+import { buildAirSense } from "../lib/airSense.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
+import { fetchGoogleAir } from "../lib/googleAir.js";
+import { airTile } from "../lib/airTile.js";
 import { lookupEnvironment } from "../lib/googleEnv.js";
 import {
   getEffectiveThresholds,
@@ -843,6 +846,18 @@ export async function buildHomePayload(triggersInput) {
       pollen = { ok: false, reason: "No device location yet" };
     }
 
+    let googleAir = { ok: false, reason: haveLoc ? "Google air quality unavailable" : "No device location yet" };
+    if (haveLoc) {
+      try {
+        googleAir = await fetchGoogleAir(
+          { lat, lon },
+          { cacheGet: getJsonCache, cacheSet: setJsonCache, incr: incrCounter }
+        );
+      } catch (err) {
+        console.error("google air:", err?.message || err);
+      }
+    }
+
     const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
     
     const smell = analyzeSmell(latest, legacy);
@@ -850,6 +865,17 @@ export async function buildHomePayload(triggersInput) {
     const withPollen = { ...metrics, pollen };
     const outlook = allergyOutlook(withPollen, triggers, smell);
     const ventilation = ventilationAdvice(withPollen, smell, triggers);
+    const airSense = buildAirSense({
+      latest,
+      history: legacy,
+      smell,
+      cause,
+      climate: metrics.climate,
+      outdoor: metrics.outdoor || outdoor,
+      pollen,
+      ventilation,
+      gases: metrics.gases,
+    });
 
     // 24 h oldest→newest series for the trend sparklines.
     const dayAgo = Date.now() - 24 * 3600 * 1000;
@@ -872,12 +898,15 @@ export async function buildHomePayload(triggersInput) {
       receivedAt: latest.receivedAt || null,
       city: latest.city || "",
       located: haveLoc,
+      location: haveLoc ? { lat: Math.round(lat * 1e4) / 1e4, lon: Math.round(lon * 1e4) / 1e4 } : null,
       ...metrics,
       pollen,
+      googleAir,
       smell,
       cause,
       outlook,
       ventilation,
+      airSense,
       series: trend,
     };
 }
@@ -1591,7 +1620,7 @@ async function alerts(req, res) {
     return res.status(200).json({
       channels: channelStatus(),
       subscriberCount: subs.filter((s) => s.verified).length,
-      rules: Object.fromEntries(Object.entries(SUBSCRIBER_RULES).map(([k, r]) => [k, { label: r.label, unit: r.unit, dir: r.dir, def: r.def, min: r.min, max: r.max }])),
+      rules: Object.fromEntries(Object.entries(SUBSCRIBER_RULES).map(([k, r]) => [k, { label: r.label, hint: r.hint || "", unit: r.unit, dir: r.dir, def: r.def, min: r.min, max: r.max, easy: r.easy || 0 }])),
     });
   }
   if (req.method !== "POST") return res.status(405).json({ error: "GET or POST" });
@@ -1663,6 +1692,7 @@ const ROUTES = {
   insights,
   sensors,
   alerts,
+  "air-tile": airTile,
 };
 
 export default async function handler(req, res) {

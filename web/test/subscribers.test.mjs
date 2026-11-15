@@ -48,11 +48,40 @@ test("unverified subscribers and missing readings never alert", () => {
 test("alert text is human and specific; addresses are masked", () => {
   const ctx = alertContext({ co2: 1510 }, { smell: { smellsBad: true, headline: "Strong smell: probably garbage." } });
   const text = alertText([{ key: "co2", rule: RULES.co2, value: 1510, limit: 1200 }, { key: "smell", rule: RULES.smell, value: 1, limit: 1 }], ctx);
-  assert.match(text, /1510 ppm, above your 1200 ppm limit/);
+  assert.match(text, /stuffy, about 1510 ppm/);
   assert.match(text, /garbage/);
   assert.match(text, /window/);
   assert.equal(maskAddress("sms", "+13215550142"), "••••••••0142");
   assert.ok(maskAddress("email", "pat@example.com").endsWith("@example.com"));
+});
+
+test("Open-Meteo pollen categories still trip the pollen alert", () => {
+  const ctx = alertContext({}, {
+    pollen: { ok: true, plants: [{ name: "Birch", category: "Very high", grains: 250 }] },
+  });
+  assert.equal(ctx.pollenIndex, 5);
+  const sub = { id: "eu", verified: true, rules: { pollen: 3 }, state: {} };
+  const r = decideSubscriberAlerts([sub], ctx, 1_000);
+  assert.deepEqual(r.sends[0].tripped.map((t) => t.key), ["pollen"]);
+});
+
+test("easy alerts fire for pet dander, mold, and pollen in plain words", () => {
+  const home = {
+    petAllergen: { index: 72 },
+    biological: { mold: { pct: 80 }, dustMite: { pct: 10 } },
+    pollen: { ok: true, types: [{ name: "Ragweed", value: 4, category: "High" }] },
+    smell: { smellsBad: false },
+    score: { value: 90 },
+  };
+  const ctx = alertContext({}, home);
+  const sub = { id: "s", verified: true, rules: { pet: 50, mold: 60, pollen: 3, dustMite: 60 }, state: {} };
+  const r = decideSubscriberAlerts([sub], ctx, 1_000);
+  assert.deepEqual(r.sends[0].tripped.map((t) => t.key).sort(), ["mold", "pet", "pollen"]);
+  const text = alertText(r.sends[0].tripped, ctx);
+  assert.match(text, /Pet allergens are at 72/);
+  assert.match(text, /Mold risk is 80/);
+  assert.match(text, /pollen is 4 out of 5/);
+  assert.match(text, /dehumidifier/);
 });
 
 test("fallback insights always produce the card shape", () => {

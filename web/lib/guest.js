@@ -54,6 +54,15 @@ export function toGuestView(p, { topic = "" } = {}) {
     pollen: pol.ok
       ? { ok: true, items: [...(pol.types || []), ...(pol.plants || [])].map((x) => pick(x, ["name", "category", "value"])) }
       : { ok: false },
+    airSense: p.airSense
+      ? {
+          character: pick(p.airSense.character, ["headline", "tags"]),
+          sensoryLoad: pick(p.airSense.sensoryLoad, ["value", "band", "text"]),
+          freshnessDebt: pick(p.airSense.freshnessDebt, ["pct", "band", "text"]),
+          activeOdors: (p.airSense.activeOdors || []).slice(0, 8).map((o) => pick(o, ["name", "score", "family", "senses"])),
+          bouquets: (p.airSense.bouquets || []).slice(0, 3).map((b) => pick(b, ["label", "score", "strength", "why"])),
+        }
+      : null,
     alerts: topic ? { topic, server: "https://ntfy.sh" } : null,
   };
 }

@@ -15,6 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 </head>
 <body>
   <header class="topbar">
@@ -36,11 +37,12 @@
   <main id="view" tabindex="-1"></main>
 
   <footer class="foot">
-    <p>Readings from a Bosch BME688 with BSEC2 and an on-device smell model. IAQ, CO₂ and VOC are estimates; pet dander, mold and dust-mite figures are risk estimates, not lab measurements. Outdoor data: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.</p>
+    <p>Readings from a Bosch BME688 with BSEC2 and an on-device smell model. IAQ, CO₂ and VOC are estimates; pet dander, mold and dust-mite figures are risk estimates, not lab measurements. Weather: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. Map: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>. Outdoor air colors: Google.</p>
     <p><a href="/guest">Guest view</a> · <a href="/report">Daily report</a> · <a href="/classic">Classic dashboard</a></p>
   </footer>
 
   <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
