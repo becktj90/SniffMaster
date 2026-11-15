@@ -81,6 +81,12 @@ button, input, select { font: inherit; color: inherit; }
 .status.live .dot { background: var(--good); box-shadow: 0 0 0 4px var(--good-bg); }
 .status.stale .dot { background: var(--fair); }
 .status.down .dot { background: var(--bad); }
+.cal-pill { display: flex; align-items: center; flex: none; }
+.cal-pill:hover { text-decoration: none; }
+.icon-btn { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 10px; color: var(--ink-2); flex: none; }
+.icon-btn:hover { background: var(--card); color: var(--ink); text-decoration: none; }
+.icon-btn.active { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line) inset; }
+.icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (max-width: 860px) {
   /* backdrop-filter would make the header the containing block for the fixed tab bar */
@@ -93,6 +99,12 @@ button, input, select { font: inherit; color: inherit; }
   .tabs a { flex-direction: column; gap: 2px; font-size: 10.5px; padding: 6px 4px; min-width: 52px; }
   .tabs a[aria-current="page"] { background: transparent; box-shadow: none; color: var(--accent); }
   .status { margin-left: auto; }
+  /* Header right side is tight on phones: kitten mark alone, no brand text. */
+  .brand-name { display: none; }
+}
+@media (max-width: 480px) {
+  /* Keep just the status dot; the text would crowd the calibration pill. */
+  #status-text { display: none; }
 }
 @media (min-width: 861px) { body { padding-bottom: 72px; } }
 

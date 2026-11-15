@@ -1,6 +1,6 @@
 /* SniffMaster dashboard — vanilla JS, no build step.
  *
- * Routes (hash): #/ overview · #/sensors · #/smell · #/pets · #/outside · #/alerts
+ * Routes (hash): #/ overview · #/sensors · #/smell · #/pets · #/outside · #/alerts · #/settings
  * Data: /api/home-stats (score, smell, pets, mold, outdoor, pollen),
  *       /api/insights (friendly briefing), /api/sensors?range= (BME688 series),
  *       /api/weather-briefing (forecast), /api/sniff-history, /api/alerts.
@@ -65,6 +65,9 @@
     weather: { url: function () { return "/api/weather-briefing"; }, every: 1800000 },
     sniffs: { url: function () { return "/api/sniff-history?count=12"; }, every: 300000 },
     alerts: { url: function () { return "/api/alerts"; }, every: 0 },
+    // Lightweight latest snapshot — feeds the header calibration pill only.
+    // (The full /api/sensors series would be far too heavy for the header.)
+    latest: { url: function () { return "/api/latest"; }, every: 120000 },
   };
   var sensorRange = store("sm-range") || "6h";
   sources.sensors = { url: function () { return "/api/sensors?range=" + sensorRange; }, every: 120000 };
@@ -87,6 +90,7 @@
           window.SniffCats.setCatCount(data.petAllergen && data.petAllergen.index);
         }
       }
+      if (name === "latest") setCalPill(data);
       cache[name] = { data: data, at: Date.now() };
       return data;
     } catch (err) {
@@ -123,6 +127,23 @@
     var age = Date.now() - (home.receivedAt || 0);
     el.classList.add(age < 15 * 60000 ? "live" : "stale");
     txt.textContent = (age < 15 * 60000 ? "Live · " : "Last seen ") + ago(home.receivedAt);
+    // Keep the header calibration pill on the same refresh cycle as the
+    // status. load() caches the snapshot for ~2 min, so the 30s interval
+    // calls below are cheap.
+    load("latest").then(function (d) { setCalPill(d); }).catch(function () {});
+  }
+
+  // Header calibration pill — same thresholds as the Sensors page, via
+  // window.SniffCal (calibration.js). Shows a neutral "Checking…" until the
+  // first snapshot arrives, never a wrong state.
+  function setCalPill(data) {
+    var el = $("#cal-pill-tone");
+    if (!el) return;
+    var st = window.SniffCal
+      ? window.SniffCal.calState(data && data.iaqAcc)
+      : { label: "Checking…", tone: "na" };
+    el.textContent = st.label;
+    el.className = "tone " + st.tone;
   }
 
   // ── charts (SVG, single y-axis, crosshair + tooltip) ───────────────
@@ -882,6 +903,52 @@
     } catch (e) { return { error: "Couldn't reach the server. Check your connection." }; }
   }
 
+  // ── Settings ───────────────────────────────────────────────────────
+  // One place for the per-device preferences that used to live only on
+  // their own pages. Everything reads/writes the same localStorage keys
+  // (sm-range, sm-triggers, sm-alert-rules), so a change here shows up on
+  // the Sensors, Pets, and Alerts pages too. Alert rules themselves are
+  // managed on the Alerts page — the subscription lives server-side, so a
+  // toggle here would be a lie; this page shows what is saved and links
+  // over to change it.
+  async function pageSettings() {
+    var ver = null;
+    try { ver = await getJSON("/api/version"); } catch (e) { ver = null; }
+    var info = await load("alerts").catch(function () { return null; });
+    var trig = store("sm-triggers") || [];
+    var saved = store("sm-alert-rules") || {};
+    var seg = '<div class="seg" role="group" aria-label="Time range">' + ["1h", "6h", "24h", "7d"].map(function (r) { return '<button type="button" data-range="' + r + '" aria-pressed="' + (r === sensorRange) + '">' + r + "</button>"; }).join("") + "</div>";
+    var chips = '<div class="chips" id="trig">' + TRIGGERS.map(function (t) { return '<button type="button" class="chip" data-trig="' + t[0] + '" aria-pressed="' + (trig.indexOf(t[0]) >= 0) + '">' + t[1] + "</button>"; }).join("") + "</div>";
+    var presetOn = ["pet", "mold", "pollen", "smell", "humidityHi"];
+    var rulesHtml;
+    if (!info || !info.rules) {
+      rulesHtml = '<p class="muted" style="margin:0">Couldn\'t load the alert rules right now.</p>';
+    } else {
+      var ruleList = Object.keys(info.rules).map(function (k) { return [k, info.rules[k]]; }).sort(function (a, b) {
+        return (a[1].easy || 99) - (b[1].easy || 99);
+      });
+      rulesHtml = '<dl class="kv">' + ruleList.map(function (x) {
+        var k = x[0], r = x[1];
+        var on = saved[k] !== undefined ? saved[k] !== false : presetOn.indexOf(k) >= 0;
+        return "<dt>" + esc(r.label) + "</dt><dd>" + pill(on ? "On" : "Off", on ? "good" : "na") + "</dd>";
+      }).join("") + "</dl>";
+    }
+    return head("Settings", "Preferences stored on this device — they stay here and apply everywhere on the dashboard.") +
+      '<div class="grid g-2">' +
+      '<div class="card"><h3 style="margin-bottom:8px">Sensor history</h3><p class="muted" style="margin:0 0 12px">Which window the Sensors charts show.</p>' + seg +
+      '<p class="note">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</p></div>' +
+      '<div class="card"><h3 style="margin-bottom:8px">Your allergy triggers</h3><p class="muted" style="margin:0 0 12px">Pick what you react to. It stays on this device.</p>' + chips + "</div></div>" +
+      '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Alerts</h3><span class="sub">what you signed up for</span></div>' + rulesHtml +
+      '<p style="margin:12px 0 0"><a class="btn" href="#/alerts">Manage alerts</a></p></div>' +
+      '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:8px">About this dashboard</h3><dl class="kv">' +
+      "<dt>Version</dt><dd>" + esc(ver ? ver.label : "Unavailable right now") + "</dd>" +
+      (ver && ver.environment ? "<dt>Environment</dt><dd>" + esc(ver.environment) + "</dd>" : "") +
+      "</dl></div>";
+  }
+  function bindSettings() {
+    bindPets(); // allergy trigger chips share the Pets page behavior
+  }
+
   // ── router ─────────────────────────────────────────────────────────
   var ROUTES = {
     home: { render: pageHome, poll: ["home", "insights", "weather"], title: "Overview" },
@@ -890,6 +957,7 @@
     pets: { render: pagePets, poll: ["home", "sensors"], title: "Pet meter", after: drawPetChart, bind: bindPets },
     outside: { render: pageOutside, poll: ["home", "weather"], title: "Outside", after: drawMap },
     alerts: { render: pageAlerts, poll: [], title: "Alerts", bind: bindAlerts },
+    settings: { render: pageSettings, poll: [], title: "Settings", bind: bindSettings },
   };
   var currentRoute = null;
   function routeName() { var h = location.hash.replace(/^#\/?/, "").split("?")[0]; return ROUTES[h] ? h : "home"; }
@@ -920,6 +988,8 @@
     currentRoute = name;
     document.title = (name === "home" ? "" : r.title + " · ") + "SniffMaster";
     document.querySelectorAll(".tabs a").forEach(function (a) { a.toggleAttribute("aria-current", a.dataset.route === name); if (a.dataset.route === name) a.setAttribute("aria-current", "page"); });
+    var gb = document.querySelector(".icon-btn");
+    if (gb) gb.classList.toggle("active", name === "settings");
     if (force) r.poll.forEach(function (n) { if (cache[n]) cache[n].at = 0; });
     var html;
     try { html = await r.render(); } catch (err) { console.error(err); html = noData(err); }
