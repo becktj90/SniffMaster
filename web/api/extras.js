@@ -36,6 +36,8 @@ import {
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import { buildHomeMetrics, mergeClimateHistory } from "../lib/homeAir.js";
 import { toGuestView, guestTopic } from "../lib/guest.js";
+import { analyzeCause } from "../lib/causes.js";
+import { toOledView } from "../lib/oled.js";
 import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
@@ -830,6 +832,7 @@ export async function buildHomePayload(triggersInput) {
     const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
     
     const smell = analyzeSmell(latest, legacy);
+    const cause = analyzeCause(latest, legacy, { outdoor, pollen });
     const withPollen = { ...metrics, pollen };
     const outlook = allergyOutlook(withPollen, triggers, smell);
     const ventilation = ventilationAdvice(withPollen, smell, triggers);
@@ -858,6 +861,7 @@ export async function buildHomePayload(triggersInput) {
       ...metrics,
       pollen,
       smell,
+      cause,
       outlook,
       ventilation,
       series: trend,
@@ -879,6 +883,27 @@ async function homeStats(req, res) {
   } catch (err) {
     console.error("home-stats error:", err);
     return res.status(500).json({ error: "home-stats error" });
+  }
+}
+
+// ── oled ─────────────────────────────────────────────────────────────────
+// GET /api/oled — tiny pre-formatted status for the wall-mounted OLED:
+// smell state, likely cause + action, allergen level, outdoor pollen/AQI.
+// Device-sized (under ~700 bytes). Read-only like the other dashboard GETs.
+async function oled(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  try {
+    // A wall display near the cats cares about every household trigger.
+    const payload = await buildHomePayload("cat,dog,pollen,dustMite,mold,smoke");
+    if (!payload) return res.status(204).end();
+    return res.status(200).json(toOledView(payload));
+  } catch (err) {
+    console.error("oled error:", err);
+    return res.status(500).json({ error: "oled error" });
   }
 }
 
@@ -1434,6 +1459,7 @@ const ROUTES = {
   "office-stats": officeStats,
   "home-stats": homeStats,
   guest,
+  oled,
   "sniff-stream": sniffStream,
   "weather-briefing": weatherBriefing,
   settings,

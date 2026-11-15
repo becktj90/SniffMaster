@@ -5,6 +5,7 @@
     { "source": "/report", "destination": "/report.html" },
     { "source": "/guest", "destination": "/guest.html" },
     { "source": "/api/guest", "destination": "/api/extras?fn=guest" },
+    { "source": "/api/oled", "destination": "/api/extras?fn=oled" },
     { "source": "/api/apod", "destination": "/api/extras?fn=apod" },
     { "source": "/api/command", "destination": "/api/extras?fn=command" },
     { "source": "/api/launches", "destination": "/api/extras?fn=launches" },

@@ -129,6 +129,7 @@ export function gasDeficit(history, latest, now = Date.now()) {
     samples: rows.length,
     spanH,
     recent: rows.slice(-60).map((r) => ({ t: r.t, d: clean - resid(r), odors: r.odors })),
+    series: rows.filter((_, i) => i % 5 === 0).map((r) => ({ t: r.t, d: clean - resid(r) })),
   };
 }
 
