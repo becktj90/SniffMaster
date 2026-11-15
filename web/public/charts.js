@@ -43,22 +43,78 @@ export function medianInterval(t) {
 // so a single late post never counts as an outage. A missing bucket shows
 // up as a jump in `t` (bucketMean averages the rows it has), so this works
 // on the 1-minute and the 10-minute compact series alike.
+//
+// One outage can arrive as two jumps: a single stray sample getting
+// through mid-outage (on Nov 15 a lone 1:51 PM post split the 62-minute
+// router outage into two 32-minute jumps, and both halves drew the same
+// "Feed gap · 32 min" label 13px apart on a phone). A lone sample between
+// two jumps is still one outage, so consecutive jumps with exactly one
+// sample between them merge into a single gap spanning the whole outage.
+// Jumps with two or more samples between them stay separate.
 export function findGaps(t, opts = {}) {
   const med = medianInterval(t);
   const minGap = Math.max(120000, med ? 4 * med : 120000);
-  const out = [];
+  const raw = [];
   for (let i = 1; i < t.length; i++) {
     const dt = t[i] - t[i - 1];
-    if (dt > minGap) {
-      const mins = dt / 60000;
-      const label =
-        mins < 90
-          ? `Feed gap · ${Math.round(mins)} min`
-          : `Feed gap · ${(mins / 60).toFixed(1)} h`;
-      out.push({ t: t[i - 1], t0: t[i - 1], t1: t[i], kind: "gap", label, mins });
-    }
+    if (dt > minGap) raw.push({ startIdx: i - 1, endIdx: i });
   }
-  return out;
+  const merged = [];
+  for (const g of raw) {
+    const prev = merged[merged.length - 1];
+    if (prev && g.startIdx === prev.endIdx) prev.endIdx = g.endIdx;
+    else merged.push({ ...g });
+  }
+  return merged.map((g) => {
+    const mins = (t[g.endIdx] - t[g.startIdx]) / 60000;
+    const label =
+      mins < 90
+        ? `Feed gap · ${Math.round(mins)} min`
+        : `Feed gap · ${(mins / 60).toFixed(1)} h`;
+    return { t: t[g.startIdx], t0: t[g.startIdx], t1: t[g.endIdx], kind: "gap", label, mins };
+  });
+}
+
+// Approximate width of an SVG chart label in px, for collision checks.
+// SVG text has no layout box until rendered, so the layout below works
+// from this estimate (10.5px font, ~0.6em average glyph + a little pad).
+// It is deliberately a little generous: a dropped label beats two labels
+// printed on top of each other.
+export function estimateLabelWidth(text, fontPx = 10.5) {
+  return Math.ceil(String(text || "").length * fontPx * 0.6) + 4;
+}
+
+// Place chart-top labels so none ever overlap. Gaps outrank breaches
+// (data integrity first), and within a kind the earliest wins. Each
+// candidate is { text, cx } for a centered label (a gap) or
+// { text, x, anchor } for an edge-anchored one (a breach: "start" grows
+// right from x, "end" grows left). Spans are clamped into [minX, maxX]
+// and a candidate whose span would collide with an already-placed label
+// is dropped, never drawn on top of another label. Returns the placed
+// labels with their final { x, anchor } for drawing. Pure — testable.
+export function layoutLabels(cands, minX, maxX, opts = {}) {
+  const pad = opts.pad ?? 4;
+  const placed = [];
+  const sorted = (cands || [])
+    .map((c, i) => ({ ...c, _i: i }))
+    .sort((a, b) => (a.priority ?? 1) - (b.priority ?? 1) || ((a.cx ?? a.x) - (b.cx ?? b.x)) || (a._i - b._i));
+  for (const c of sorted) {
+    const w = estimateLabelWidth(c.text);
+    let x0, x1, x, anchor;
+    if (c.anchor === "start") {
+      x = Math.max(minX, Math.min(c.x, maxX - w));
+      x0 = x; x1 = x + w; anchor = "start";
+    } else if (c.anchor === "end") {
+      x = Math.min(maxX, Math.max(c.x, minX + w));
+      x0 = x - w; x1 = x; anchor = "end";
+    } else {
+      const cx = Math.max(minX + w / 2, Math.min(c.cx, maxX - w / 2));
+      x = cx; x0 = cx - w / 2; x1 = cx + w / 2; anchor = "middle";
+    }
+    if (placed.some((p) => x0 < p.x1 + pad && x1 > p.x0 - pad)) continue;
+    placed.push({ text: c.text, kind: c.kind, x, anchor, x0, x1 });
+  }
+  return placed;
 }
 
 // Slice timestamps + every series' values down to a [w0, w1] window
@@ -303,6 +359,8 @@ if (typeof window !== "undefined") {
   window.SniffCharts = {
     medianInterval,
     findGaps,
+    estimateLabelWidth,
+    layoutLabels,
     partitionEvents,
     eventsInWindow,
     smellEvents,
