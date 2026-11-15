@@ -116,7 +116,7 @@ export async function fetchGooglePollen(loc, deps = {}) {
     `?key=${encodeURIComponent(key)}` +
     `&location.latitude=${encodeURIComponent(lat.toFixed(4))}` +
     `&location.longitude=${encodeURIComponent(lon.toFixed(4))}` +
-    "&days=1&languageCode=en";
+    "&days=1&plantsDescription=false&languageCode=en";
 
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 6000);
