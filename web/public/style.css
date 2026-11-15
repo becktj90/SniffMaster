@@ -417,7 +417,11 @@ label.choice.off { opacity: .72; }
    body padding clears it) and above the mobile tab bar, so they never cover
    a number, gauge, chart, card or text. pointer-events: none keeps every
    tap reaching the page. The count follows the live pet dander index. */
-.cats-band { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; z-index: 30; overflow: hidden; pointer-events: none; }
+/* The band is a solid strip, not a transparent overlay: without a
+   background, page text scrolling underneath showed through around the
+   opaque cats, so cats sat on top of text while scrolling (Nov 15 phone
+   video). Now text slides under a solid strip like the tab bar below it. */
+.cats-band { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; z-index: 30; overflow: hidden; pointer-events: none; background: var(--bg); border-top: 1px solid var(--line); }
 @media (max-width: 860px) {
   /* Tab bar occupies the very bottom: the band rides just above it, cats a
      touch smaller and lower so nothing clips. */

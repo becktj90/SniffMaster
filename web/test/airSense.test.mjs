@@ -76,6 +76,11 @@ test("airSense assembles a breath story from many signals", () => {
   assert.ok(out.sensoryLoad.value >= 0);
   assert.ok(out.families.some((f) => /food|Maillard|pyrolysis|terpene/i.test(f.family)));
   assert.match(out.honesty, /not identify molecules/i);
+  // The honesty disclaimer lives in `honesty` only: the client renders it as
+  // the note under the story list, so it must not also appear as a story line
+  // (Nov 15: it printed twice in a row in "Everything known about this air").
+  assert.ok(!out.breathStory.some((line) => line === out.honesty));
+  assert.ok(!out.breathStory.some((line) => /not identify molecules/i.test(line)));
   assert.equal(out.staticGap.gap, 65);
 });
 
