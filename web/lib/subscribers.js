@@ -129,11 +129,15 @@ export function alertContext(snapshot = {}, home = {}) {
   };
 }
 
+const POLLEN_CAT = { "Very low": 1, Low: 2, Moderate: 3, High: 4, "Very high": 5 };
+
 function pollenIndex(pollen) {
   if (!pollen?.ok) return NaN;
-  const vals = [...(pollen.types || []), ...(pollen.plants || [])]
-    .map((x) => Number(x?.value))
-    .filter((v) => Number.isFinite(v));
+  const vals = [...(pollen.types || []), ...(pollen.plants || [])].map((x) => {
+    const v = Number(x?.value);
+    if (Number.isFinite(v)) return v;
+    return POLLEN_CAT[x?.category] ?? NaN;
+  }).filter((v) => Number.isFinite(v));
   return vals.length ? Math.max(...vals) : NaN;
 }
 

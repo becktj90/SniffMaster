@@ -1,8 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { inflateSync } from "node:zlib";
 import {
   parseGoogleAir, parseGoogleAirForecast, tileNearHome, tileXY, fetchGoogleAir,
 } from "../lib/googleAir.js";
+import { readFileSync } from "node:fs";
+
+test("fallback heatmap tile is fully transparent, not half-red", () => {
+  const src = readFileSync(new URL("../lib/airTile.js", import.meta.url), "utf8");
+  const m = src.match(/TRANSPARENT = Buffer\.from\(\s*"([A-Za-z0-9+/=]+)"/);
+  assert.ok(m, "transparent PNG constant present");
+  const png = Buffer.from(m[1], "base64");
+  let o = 8;
+  while (o < png.length) {
+    const len = png.readUInt32BE(o);
+    const type = png.slice(o + 4, o + 8).toString();
+    if (type === "IDAT") {
+      const raw = inflateSync(png.slice(o + 8, o + 8 + len));
+      assert.deepEqual([...raw], [0, 0, 0, 0, 0]);
+      return;
+    }
+    o += 12 + len;
+  }
+  assert.fail("no IDAT chunk");
+});
 
 const SAMPLE = {
   dateTime: "2026-11-15T05:00:00Z",
@@ -72,11 +93,12 @@ test("air lookup fails closed without a key and does not call Google", async () 
 
 test("one lookup returns current air plus the forecast and can be cached", async () => {
   let posts = 0;
+  let incrs = 0;
   let stored = null;
   const out = await fetchGoogleAir({ lat: 28.54, lon: -81.38 }, {
     env: { GOOGLE_POLLEN_API_KEY: "test-key", AIR_MONTHLY_CAP: "5" },
     now: Date.parse("2026-11-15T12:00:00Z"),
-    incr: async (key) => { assert.match(key, /^air_calls:2026-11$/); return 1; },
+    incr: async (key) => { assert.match(key, /^air_calls:2026-11$/); return ++incrs; },
     cacheGet: async () => null,
     cacheSet: async (key, value) => { stored = { key, value }; },
     fetchImpl: async (url, opts) => {
@@ -93,6 +115,7 @@ test("one lookup returns current air plus the forecast and can be cached", async
     },
   });
   assert.equal(posts, 2);
+  assert.equal(incrs, 2, "current and forecast each count against the monthly cap");
   assert.equal(out.ok, true);
   assert.equal(out.heatmap, true);
   assert.equal(out.indexes[1].aqi, 42);
@@ -111,4 +134,24 @@ test("a full monthly cap blocks the request", async () => {
   assert.equal(out.ok, false);
   assert.match(out.reason, /cap/);
   assert.equal(called, false);
+});
+
+test("forecast is skipped when the second call would exceed the monthly cap", async () => {
+  let posts = 0;
+  let n = 0;
+  const out = await fetchGoogleAir({ lat: 28.54, lon: -81.38 }, {
+    env: { GOOGLE_POLLEN_API_KEY: "k", AIR_MONTHLY_CAP: "1" },
+    incr: async () => ++n,
+    cacheGet: async () => null,
+    cacheSet: async () => {},
+    fetchImpl: async (url) => {
+      posts += 1;
+      assert.equal(String(url).includes("forecast"), false);
+      return { ok: true, json: async () => SAMPLE };
+    },
+  });
+  assert.equal(out.ok, true);
+  assert.equal(posts, 1);
+  assert.equal(n, 2);
+  assert.deepEqual(out.hourly, []);
 });

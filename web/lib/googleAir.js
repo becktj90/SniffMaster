@@ -183,16 +183,25 @@ export async function fetchGoogleAir(loc, deps = {}) {
   }
 
   const now = deps.now ?? Date.now();
-  const forecast = await postLookup("forecast:lookup", {
-    location,
-    universalAqi: true,
-    languageCode: "en",
-    period: {
-      startTime: new Date(now).toISOString(),
-      endTime: new Date(now + 24 * 3600 * 1000).toISOString(),
-    },
-  }, key, deps.fetchImpl);
-  const hourly = forecast.ok ? parseGoogleAirForecast(forecast.json) : [];
+  let hourly = [];
+  let forecastUsed;
+  try {
+    forecastUsed = await deps.incr(`air_calls:${monthKey(deps.now)}`, 40 * 24 * 3600);
+  } catch {
+    forecastUsed = Infinity;
+  }
+  if (forecastUsed <= cap) {
+    const forecast = await postLookup("forecast:lookup", {
+      location,
+      universalAqi: true,
+      languageCode: "en",
+      period: {
+        startTime: new Date(now).toISOString(),
+        endTime: new Date(now + 24 * 3600 * 1000).toISOString(),
+      },
+    }, key, deps.fetchImpl);
+    hourly = forecast.ok ? parseGoogleAirForecast(forecast.json) : [];
+  }
   const result = { ok: true, heatmap: true, ...parsed, hourly };
   if (deps.cacheSet) await deps.cacheSet(cacheKey, result, AIR_CACHE_TTL_SEC).catch(() => {});
   return result;

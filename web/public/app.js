@@ -397,7 +397,9 @@
       var vals = (d.series[c.key] || []).map(function (v) { return isNum(v) && c.scale ? v * c.scale : v; });
       var series = [{ name: c.title, values: vals, color: css(c.color) }];
       if (c.extra && d.series[c.extra.key]) series.push({ name: c.extra.name, values: d.series[c.extra.key], color: css("--series-2"), dash: true });
-      lineChart(el, { t: d.series.t, series: series, unit: c.unit, label: c.title, zones: c.zones, marks: c.marks, yRange: c.y || c.zones ? guideRange(vals, c) : undefined, fmt: function (v) { return fmt(v, c.d); } });
+      var allVals = vals.slice();
+      series.slice(1).forEach(function (s) { (s.values || []).forEach(function (v) { allVals.push(v); }); });
+      lineChart(el, { t: d.series.t, series: series, unit: c.unit, label: c.title, zones: c.zones, marks: c.marks, yRange: c.y || c.zones ? guideRange(allVals, c) : undefined, fmt: function (v) { return fmt(v, c.d); } });
     });
   }
 
@@ -584,8 +586,9 @@
     var g = home.googleAir || {};
     var pollName = { pm25: "Fine dust", pm10: "Dust", o3: "Ozone", no2: "Nitrogen dioxide", so2: "Sulfur dioxide", co: "Carbon monoxide", nh3: "Ammonia" };
     var plain = function (code) { return pollName[code] || (code ? String(code).replace(/_/g, " ") : "—"); };
-    var us = (g.indexes || []).filter(function (i) { return i.code === "usa_epa"; })[0] || (g.indexes || [])[0];
+    var us = (g.indexes || []).filter(function (i) { return i.code === "usa_epa"; })[0];
     var uaqi = (g.indexes || []).filter(function (i) { return i.code === "uaqi"; })[0];
+    var primary = us || uaqi || (g.indexes || [])[0];
     var gPoll = (g.pollutants || []).map(function (p) {
       return '<div class="poll"><div><b>' + esc(p.name) + "</b>" + (p.effects ? "<p>" + esc(p.effects) + "</p>" : "") + '</div><span class="num">' + fmt(p.value, p.value < 10 ? 1 : 0) + " " + esc(p.unit) + "</span></div>";
     }).join("");
@@ -604,9 +607,10 @@
       '<p class="note">The pin is your sensor. ' + (g.heatmap ? "Green on the map is cleaner outdoor air and red is dirtier, from Google. " : "") + "Street map © OpenStreetMap.</p></div>";
     var googleCard = g.ok ? '<div class="card"><h3 style="margin-bottom:8px">Outdoor air, from Google</h3>' +
       '<div class="grid g-3">' +
-      '<div class="stat"><p class="kicker">US AQI</p><div class="value num">' + fmt(us && us.aqi) + "</div><div class=\"line\">" + esc(us && us.category || "") + "</div></div>" +
+      (us ? '<div class="stat"><p class="kicker">US AQI</p><div class="value num">' + fmt(us.aqi) + "</div><div class=\"line\">" + esc(us.category || "") + "</div></div>" : "") +
       (uaqi ? '<div class="stat"><p class="kicker">Universal index</p><div class="value num">' + fmt(uaqi.aqi) + "</div><div class=\"line\">" + esc(uaqi.category || "") + "</div></div>" : "") +
-      '<div class="stat"><p class="kicker">Main pollutant</p><div class="line" style="font-size:16px;color:var(--ink)">' + esc(plain(us && us.dominant)) + "</div></div></div>" +
+      (!us && !uaqi && primary ? '<div class="stat"><p class="kicker">' + esc(primary.name || "Air index") + '</p><div class="value num">' + fmt(primary.aqi) + "</div><div class=\"line\">" + esc(primary.category || "") + "</div></div>" : "") +
+      '<div class="stat"><p class="kicker">Main pollutant</p><div class="line" style="font-size:16px;color:var(--ink)">' + esc(plain(primary && primary.dominant)) + "</div></div></div>" +
       (health.olderAdults ? '<p class="callout" style="margin-top:12px"><b>For older adults. </b>' + esc(health.olderAdults) + "</p>" : "") +
       (health.everyone ? '<p class="note"><b>For everyone. </b>' + esc(health.everyone) + "</p>" : "") +
       (health.children || health.lungs || health.heart ? '<details class="more"><summary>Advice for children, lungs, and heart</summary><div class="more-body">' +

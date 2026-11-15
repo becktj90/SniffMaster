@@ -55,6 +55,16 @@ test("alert text is human and specific; addresses are masked", () => {
   assert.ok(maskAddress("email", "pat@example.com").endsWith("@example.com"));
 });
 
+test("Open-Meteo pollen categories still trip the pollen alert", () => {
+  const ctx = alertContext({}, {
+    pollen: { ok: true, plants: [{ name: "Birch", category: "Very high", grains: 250 }] },
+  });
+  assert.equal(ctx.pollenIndex, 5);
+  const sub = { id: "eu", verified: true, rules: { pollen: 3 }, state: {} };
+  const r = decideSubscriberAlerts([sub], ctx, 1_000);
+  assert.deepEqual(r.sends[0].tripped.map((t) => t.key), ["pollen"]);
+});
+
 test("easy alerts fire for pet dander, mold, and pollen in plain words", () => {
   const home = {
     petAllergen: { index: 72 },

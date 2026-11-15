@@ -14,8 +14,9 @@ const TILE_TTL_SEC = 6 * 3600;
 const TILE_CAP = Number(process.env.AIR_TILE_MONTHLY_CAP);
 const MONTHLY_CAP = Number.isFinite(TILE_CAP) && TILE_CAP >= 0 ? Math.floor(TILE_CAP) : 1800;
 
+// 1×1 fully transparent RGBA PNG. (The common "transparent" gist is half-red.)
 const TRANSPARENT = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
   "base64",
 );
 
