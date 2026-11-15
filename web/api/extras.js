@@ -26,6 +26,7 @@ import {
   getLatestSniff,
   getSettings,
   putSettings,
+  getAlertState,
   getDailySummary,
   getAlertSnapshot,
   getJsonCache,
@@ -61,6 +62,15 @@ import { getCapeLaunches, getCached as getCachedLaunches, setCache as setCacheLa
 import { Redis } from "@upstash/redis";
 import { createHash } from "node:crypto";
 import { insightFacts, insightCacheKey, claudeInsights, fallbackInsights } from "../lib/insights.js";
+import {
+  aiInsightFacts,
+  aiInsightCacheKey,
+  generateAiInsight,
+  fallbackInsight,
+  resolveInsightCache,
+  AI_INSIGHT_TTL_SEC,
+  AI_INSIGHT_FALLBACK_TTL_SEC,
+} from "../lib/aiInsight.js";
 import {
   RULES as SUBSCRIBER_RULES,
   AlertError,
@@ -1562,6 +1572,65 @@ async function insights(req, res) {
   }
 }
 
+// ── ai-insight ───────────────────────────────────────────────────────────
+// GET /api/ai-insight — one short, human, tailored insight about what the
+// current air means for focus and breathing. OpenAI writes it when
+// OPENAI_API_KEY is set (see lib/aiInsight.js); otherwise a deterministic
+// writer says the same kind of thing from the same facts, and the response
+// always says which mode produced it. The text is cached per bucketed room
+// state and regenerated only on material change — a breach, a big swing, or
+// a move to steady air — with a 15-minute floor between OpenAI calls (a
+// breach appearing or clearing may regenerate sooner, never faster than
+// 2 minutes), so a poll cycle can't spam the API. Never returns the key.
+async function aiInsight(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  try {
+    const [home, latest, settings, alertState] = await Promise.all([
+      buildHomePayload(req.query?.triggers, req.query?.severity),
+      getLatest(),
+      getSettings(),
+      getAlertState().catch(() => null),
+    ]);
+    if (!home) return res.status(204).end();
+    const facts = aiInsightFacts(home, latest, settings, req.query?.triggers, req.query?.severity, {
+      gasBase: alertState?.gasBase,
+    });
+    const stateKey = aiInsightCacheKey(facts);
+    const hash = createHash("sha256").update(stateKey).digest("hex").slice(0, 20);
+    const perStateKey = `ai-insight:${hash}`;
+    const perState = await getJsonCache(perStateKey).catch(() => null);
+    const last = await getJsonCache("ai-insight:last").catch(() => null);
+    const decision = resolveInsightCache({
+      perState,
+      last,
+      breaches: facts.breaches.map((b) => b.key),
+    });
+    const aiConfigured = Boolean(process.env.OPENAI_API_KEY);
+    if (decision === "per-state" && perState) {
+      return res.status(200).json({ ...perState, receivedAt: home.receivedAt, aiConfigured });
+    }
+    if (decision === "last" && last) {
+      return res.status(200).json({ ...last, receivedAt: home.receivedAt, aiConfigured });
+    }
+    const aiText = await generateAiInsight(facts);
+    const mode = aiText ? "openai" : "deterministic";
+    const entry = {
+      text: aiText || fallbackInsight(facts),
+      mode,
+      generatedAt: Date.now(),
+      breaches: facts.breaches.map((b) => b.key),
+    };
+    await setJsonCache(perStateKey, entry, mode === "openai" ? AI_INSIGHT_TTL_SEC : AI_INSIGHT_FALLBACK_TTL_SEC).catch(() => {});
+    if (mode === "openai") await setJsonCache("ai-insight:last", entry, AI_INSIGHT_TTL_SEC).catch(() => {});
+    return res.status(200).json({ ...entry, receivedAt: home.receivedAt, aiConfigured });
+  } catch (err) {
+    console.error("ai-insight error:", err?.message || err);
+    return res.status(500).json({ error: "ai-insight error" });
+  }
+}
+
 // ── sensors ──────────────────────────────────────────────────────────────
 // GET /api/sensors?range=1h|6h|24h|7d — every BME688 / BSEC channel as
 // downsampled column arrays for the detail charts, plus the latest snapshot.
@@ -1738,6 +1807,7 @@ const ROUTES = {
   settings,
   "report-card": reportCard,
   insights,
+  "ai-insight": aiInsight,
   sensors,
   alerts,
   "air-tile": airTile,

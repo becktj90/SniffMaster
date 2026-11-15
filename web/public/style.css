@@ -533,3 +533,10 @@ label.choice.off { opacity: .72; }
 .event-dot { fill: var(--bad); stroke: var(--card); stroke-width: 1.5; }
 .event-gap { fill: var(--fair-bg); stroke: var(--fair); stroke-width: 1; stroke-dasharray: 4 3; }
 .heat { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+
+/* ── AI insight card (Overview) ─────────────────────────────────────── */
+/* Full-width card under the hero. The text is interpretation, so it reads
+   in the muted-italic treatment; the label says plainly whether AI wrote it. */
+.ai-insight { margin-top: var(--gap); }
+.ai-insight-text { font-size: 16px; line-height: 1.55; margin: 4px 0 8px; }
+.ai-insight-meta { margin: 0; }

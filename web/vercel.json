@@ -19,6 +19,7 @@
     { "source": "/api/report-card", "destination": "/api/extras?fn=report-card" },
     { "source": "/api/report-card.png", "destination": "/api/extras?fn=report-card&format=png" },
     { "source": "/api/insights", "destination": "/api/extras?fn=insights" },
+    { "source": "/api/ai-insight", "destination": "/api/extras?fn=ai-insight" },
     { "source": "/api/sensors", "destination": "/api/extras?fn=sensors" },
     { "source": "/api/alerts", "destination": "/api/extras?fn=alerts" },
     { "source": "/api/air-tile", "destination": "/api/extras?fn=air-tile" },
