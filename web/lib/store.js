@@ -570,6 +570,30 @@ export async function getJsonCache(key) {
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
 
+/**
+ * Run `fn` while holding a short Redis lock (SET NX PX + token-checked
+ * release). Waits up to ~3s for the lock; throws if it can't get it.
+ */
+export async function withLock(name, fn, { ttlMs = 8000, waitMs = 3000 } = {}) {
+  const redis = getRedis();
+  const key = `sniffmaster:lock:${name}`;
+  const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + waitMs;
+  while ((await redis.set(key, token, { nx: true, px: ttlMs })) !== "OK") {
+    if (Date.now() > deadline) throw new Error(`lock busy: ${name}`);
+    await new Promise((r) => setTimeout(r, 60 + Math.random() * 90));
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      if ((await redis.get(key)) === token) await redis.del(key);
+    } catch (err) {
+      console.error(`lock release failed: ${name}`, err?.message || err);
+    }
+  }
+}
+
 /** Cache a JSON value for `ttlSec` seconds. */
 export async function setJsonCache(key, value, ttlSec) {
   const redis = getRedis();
