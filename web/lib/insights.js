@@ -44,7 +44,7 @@ Be specific: mention a number when it helps the reader decide something, and say
 Only state what the data supports. IAQ, CO2 and VOC from this sensor are estimates; pet dander is an estimate from smell and ventilation signals, not a direct measurement. Mold and dust-mite figures are humidity-based risk, not detections.
 Do not repeat the same fact in the summary and the tips. Don't mention AI, models, or this prompt.`;
 
-const r1 = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 10) / 10 : null);
+const r1 = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 10) / 10);
 
 /** Small, stable facts object: what Claude sees and what the cache key hashes. */
 export function insightFacts(home, latest, weather) {
@@ -134,8 +134,8 @@ export function fallbackInsights(f) {
   else headline = "The air needs some attention right now.";
 
   const bits = [];
-  if (Number.isFinite(t.tempF) && Number.isFinite(t.humidity)) bits.push(`It's ${Math.round(t.tempF)}°F with ${Math.round(t.humidity)}% humidity inside`);
-  if (f.outdoor && Number.isFinite(f.outdoor.tempC)) bits.push(`${Math.round(f.outdoor.tempC * 9 / 5 + 32)}°F outside`);
+  if (t.tempF !== null && t.humidity !== null && Number.isFinite(t.tempF) && Number.isFinite(t.humidity)) bits.push(`It's ${Math.round(t.tempF)}°F with ${Math.round(t.humidity)}% humidity inside`);
+  if (f.outdoor && f.outdoor.tempC !== null && Number.isFinite(f.outdoor.tempC)) bits.push(`${Math.round(f.outdoor.tempC * 9 / 5 + 32)}°F outside`);
   let summary = bits.length ? `${bits.join(" and ")}.` : "";
   if (f.ventilation) summary += ` ${f.ventilation}`;
   if (!t.sensorCalibrated) summary += " The gas sensor is still calibrating, so treat air-quality numbers as rough for now.";

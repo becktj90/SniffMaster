@@ -357,6 +357,7 @@
     if (!home) return noData();
     var sens = await load("sensors").catch(function () { return null; });
     var sniffs = await load("sniffs").catch(function () { return []; });
+    window.__sensorData = sens;
     var sm = home.smell || {};
     var latest = (sens && sens.latest) || {};
     var odors = Array.isArray(latest.odors) ? latest.odors : [];

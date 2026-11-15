@@ -21,7 +21,7 @@
  */
 
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { getJsonCache, setJsonCache, incrCounter } from "./store.js";
+import { getJsonCache, setJsonCache, incrCounter, withLock } from "./store.js";
 import { sendViaClickSend, PUBLIC_BASE_URL } from "./notify.js";
 
 export const MAX_SUBSCRIBERS = 100;
@@ -112,7 +112,9 @@ export function alertContext(snapshot = {}, home = {}) {
     voc: n(snapshot.voc),
     humidity: n(snapshot.humidity),
     tempF: n(snapshot.tempF),
-    outdoorAqi: n(snapshot.outdoorAqi ?? home?.outdoor?.usAqi),
+    // Prefer the server's normalized US AQI. The device may post a 1-5
+    // OpenWeatherMap index as outdoorAqi, which isn't on the same scale.
+    outdoorAqi: isFinite(n(home?.outdoor?.usAqi)) ? n(home.outdoor.usAqi) : n(snapshot.outdoorAqi) > 5 ? n(snapshot.outdoorAqi) : NaN,
     petIndex: n(home?.petAllergen?.index),
     smellsBad: !!home?.smell?.smellsBad,
     smellHeadline: home?.smell?.headline || "",
@@ -182,6 +184,16 @@ export async function loadSubscribers() {
 
 export async function saveSubscribers(list) {
   await setJsonCache(SUBS_KEY, list, SUBS_TTL_SEC);
+}
+
+/** Read-modify-write the subscriber list under a lock so concurrent writers don't drop each other's changes. */
+export async function updateSubscribers(fn) {
+  return withLock("subscribers", async () => {
+    const list = await loadSubscribers();
+    const next = await fn(list);
+    if (next !== list) await saveSubscribers(next);
+    return next;
+  });
 }
 
 const hashCode = (id, code) => createHash("sha256").update(`${id}:${code}`).digest("hex");
@@ -285,7 +297,6 @@ export async function confirmSubscription({ id, code }) {
   }
   await setJsonCache(key, { ...pending, tries: 99 }, 1);
 
-  const subs = (await loadSubscribers()).filter((s) => !(s.channel === pending.channel && s.address === pending.address));
   const sub = {
     id,
     channel: pending.channel,
@@ -296,7 +307,7 @@ export async function confirmSubscription({ id, code }) {
     createdAt: Date.now(),
     state: {},
   };
-  await saveSubscribers([...subs, sub]);
+  await updateSubscribers((subs) => [...subs.filter((s) => !(s.channel === pending.channel && s.address === pending.address)), sub]);
 
   const list = Object.entries(sub.rules).map(([k, v]) => (RULES[k].dir === "flag" ? RULES[k].label.toLowerCase() : `${RULES[k].label} ${RULES[k].dir} ${fmtVal(RULES[k], v)}`));
   try {
@@ -310,11 +321,13 @@ export async function confirmSubscription({ id, code }) {
 export async function unsubscribe(token) {
   const t = String(token || "");
   if (!t) return false;
-  const subs = await loadSubscribers();
-  const left = subs.filter((s) => !sameHash(s.token, t));
-  if (left.length === subs.length) return false;
-  await saveSubscribers(left);
-  return true;
+  let removed = false;
+  await updateSubscribers((subs) => {
+    const left = subs.filter((s) => !sameHash(s.token, t));
+    removed = left.length !== subs.length;
+    return removed ? left : subs;
+  });
+  return removed;
 }
 
 /** Called after each device post (rate-gated by the caller). Never throws. */
@@ -323,6 +336,7 @@ export async function runSubscriberAlerts(snapshot, home) {
   if (!subs.length) return 0;
   const ctx = alertContext(snapshot, home);
   const { sends, subs: next } = decideSubscriberAlerts(subs, ctx);
+  const failed = new Set();
   let sent = 0;
   await Promise.all(
     sends.map(async ({ sub, tripped }) => {
@@ -330,16 +344,19 @@ export async function runSubscriberAlerts(snapshot, home) {
         await deliver(sub, `SniffMaster: ${tripped.map((t) => t.rule.label).join(", ")}`, alertText(tripped, ctx));
         sent += 1;
       } catch (err) {
+        failed.add(sub.id);
         console.error("alerts: subscriber send failed:", err?.message || err);
       }
     })
   );
-  if (JSON.stringify(next) !== JSON.stringify(subs)) {
-    // Re-read so a sign-up or unsubscribe that landed while we were sending
-    // isn't overwritten; only the alert state is carried over.
-    const stateById = new Map(next.map((s) => [s.id, s.state]));
-    const fresh = await loadSubscribers();
-    await saveSubscribers(fresh.map((s) => (stateById.has(s.id) ? { ...s, state: stateById.get(s.id) } : s)));
+  // A failed send keeps the subscriber's previous state, so the next check retries it.
+  const stateById = new Map(next.filter((s) => !failed.has(s.id)).map((s) => [s.id, s.state]));
+  const prevById = new Map(subs.map((s) => [s.id, JSON.stringify(s.state || {})]));
+  const changed = [...stateById].some(([id, st]) => JSON.stringify(st || {}) !== prevById.get(id));
+  if (changed) {
+    // Merge only alert state into a fresh read, so a sign-up or unsubscribe
+    // that landed while we were sending isn't overwritten.
+    await updateSubscribers((fresh) => fresh.map((s) => (stateById.has(s.id) ? { ...s, state: stateById.get(s.id) } : s)));
   }
   return sent;
 }

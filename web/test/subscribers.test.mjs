@@ -65,3 +65,11 @@ test("fallback insights always produce the card shape", () => {
   const empty = fallbackInsights(insightFacts({}, {}, null));
   assert.match(empty.headline, /Waiting/);
 });
+
+test("missing readings stay missing in insight facts", () => {
+  const f = insightFacts({ climate: { tempF: null, humidity: null }, outdoor: { tempC: null, usAqi: null } }, {}, null);
+  assert.equal(f.indoor.tempF, null);
+  assert.equal(f.outdoor.tempC, null);
+  const out = fallbackInsights(f);
+  assert.ok(!/32°F/.test(out.summary), out.summary);
+});
