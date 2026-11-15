@@ -56,7 +56,7 @@ export function buildReportCardSvg(summary, opts = {}) {
     month: "short",
     day: "numeric",
   }).format(new Date(s.generatedAt || Date.now()));
-  const siteLabel = opts.siteLabel || (s.environmentType === "office" ? "Office" : "Work Area");
+  const siteLabel = opts.siteLabel || (s.environmentType === "home" ? "Home" : s.environmentType === "office" ? "Office" : "Work Area");
 
   const rows = [];
   let y = 118;

@@ -95,8 +95,9 @@ function render(s) {
   const dateLabel = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   }).format(new Date(s.generatedAt));
+  const isHome = s.environmentType === "home";
   const isOffice = s.environmentType === "office";
-  sub.textContent = `${isOffice ? "Office" : "Work area"} report · ${dateLabel} ET`;
+  sub.textContent = `${isHome ? "Home" : isOffice ? "Office" : "Work area"} report · ${dateLabel} ET`;
 
   const d = s.deltas || {};
   const parts = [];
@@ -117,7 +118,7 @@ function render(s) {
     s.humidity && tile("Humidity", `${fmt(s.humidity.avg)}%`, `${fmt(s.humidity.min)}–${fmt(s.humidity.max)}%`, d.humidity),
     s.co2 && tile("CO2", `${fmt(s.co2.avg)} ppm`, `${fmt(s.co2.min)}–${fmt(s.co2.max)}`, d.co2),
     s.iaq && tile("Air quality (IAQ)", fmt(s.iaq.avg), `${fmt(s.iaq.min)}–${fmt(s.iaq.max)}`, d.iaq),
-    !isOffice && s.gas && tile("Gas resistance", s.gas.avg >= 1e6 ? `${(s.gas.avg/1e6).toFixed(2)} MΩ` : `${Math.round(s.gas.avg/1e3)} kΩ`, "", d.gas, false),
+    !isOffice && !isHome && s.gas && tile("Gas resistance", s.gas.avg >= 1e6 ? `${(s.gas.avg/1e6).toFixed(2)} MΩ` : `${Math.round(s.gas.avg/1e3)} kΩ`, "", d.gas, false),
     s.pressure && tile("Pressure", `${fmt(s.pressure.avg)} hPa`, "", null),
   ].filter(Boolean).join("");
   if (tiles) parts.push(`<div class="card"><p class="section-title">24h readings${d.baselineDays ? ` (vs ${d.baselineDays}-day norm)` : ""}</p><div class="tiles">${tiles}</div></div>`);

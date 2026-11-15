@@ -5089,7 +5089,10 @@ body *::after {
 .rs-adjust-status.is-neutral { color: var(--muted-strong); }
 
 .rs-env-toggle {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
   gap: 4px;
   padding: 3px;
   border: 1px solid var(--line);
@@ -5244,9 +5247,9 @@ body *::after {
 }
 
 /* ── Home tab (home.js) ─────────────────────────────────────────────── */
-.hm-root { display: grid; gap: 14px; }
-.hm-card { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: var(--panel-soft); }
-.hm-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 700; margin-bottom: 10px; }
+.hm-root { display: grid; gap: 14px; min-width: 0; }
+.hm-card { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: var(--panel-soft); min-width: 0; }
+.hm-card-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 700; margin-bottom: 10px; }
 .hm-pill, .hm-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted-strong); white-space: nowrap; }
 .hm-badge { margin-left: 4px; font-weight: 500; }
 .hm-src-sensor { color: var(--mint); border-color: rgba(57, 255, 20, .35); }
@@ -5281,5 +5284,9 @@ body *::after {
 .hm-sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .hm-spark { width: 100%; height: 42px; } .hm-spark-title { font-size: 12px; color: var(--muted-strong); } .hm-spark-range, .hm-spark-empty { font-size: 11px; color: var(--muted); }
 .hm-empty { padding: 24px; text-align: center; color: var(--muted); }
-@media (max-width: 520px) { .hm-comp { grid-template-columns: 1fr 1fr 30px; } .hm-visitor-main { justify-content: center; text-align: center; } }
-#card-home { grid-column: 1 / -1; }
+@media (max-width: 520px) {
+  .hm-comp { grid-template-columns: minmax(0, 1.1fr) minmax(0, 2fr) 30px; }
+  .hm-visitor-main { justify-content: center; text-align: center; }
+  .hm-visitor-copy, .hm-drivers { min-width: 0; flex-basis: 100%; }
+}
+#card-home { grid-column: 1 / -1; min-width: 0; }

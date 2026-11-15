@@ -4,6 +4,8 @@ import * as h from "../lib/homeAir.js";
 import { fetchGooglePollen, parseGooglePollen, monthlyCap } from "../lib/pollen.js";
 import { parseOpenMeteoPollen } from "../lib/outdoor.js";
 import { startFakeUpstash } from "./fakeUpstash.mjs";
+import { shouldSampleCoarse, HOME_COARSE_STEP_MS, MAX_HOME_COARSE, MAX_HISTORY } from "../lib/store.js";
+import { buildSummary, reportFallbackText, composeReportSms } from "../api/daily-summary.js";
 
 const now = Date.now();
 const hist = (rh, n = 432) => Array.from({ length: n }, (_, i) => ({ receivedAt: now - i * 600000, humidity: rh, tempF: 73 }));
@@ -24,6 +26,58 @@ test("EPA AQI (2024 PM2.5 breakpoints)", () => {
 test("mold risk rises with sustained humidity, not a dry home", () => {
   assert.equal(h.moldRisk(hist(45), { humidity: 45 }, now).pct, 0);
   assert.ok(h.moldRisk(hist(75), { humidity: 75 }, now).pct >= 75);
+});
+
+test("home history retention covers the windows the dashboard claims", () => {
+  assert.equal(MAX_HOME_COARSE * HOME_COARSE_STEP_MS, 7 * 24 * 3600 * 1000);
+  assert.equal(MAX_HISTORY, 24 * 60);
+  assert.equal(shouldSampleCoarse(undefined, 1000), true);
+  assert.equal(shouldSampleCoarse(0, HOME_COARSE_STEP_MS - 1), false);
+  assert.equal(shouldSampleCoarse(0, HOME_COARSE_STEP_MS), true);
+});
+
+test("mold window matches the samples on hand, including 1-minute posts", () => {
+  const full = h.moldRisk(hist(65), { humidity: 65 }, now);
+  assert.equal(full.pct, 100);
+  assert.equal(full.windowComplete, true);
+  assert.ok(full.coverageHours > 70);
+
+  const minutes = Array.from({ length: 432 }, (_, i) => ({ receivedAt: now - i * 60000, humidity: 65, tempF: 73 }));
+  const short = h.moldRisk(minutes, { humidity: 65 }, now);
+  assert.equal(short.pct, 20);
+  assert.equal(short.windowComplete, false);
+  assert.ok(short.coverageHours > 7 && short.coverageHours < 8);
+
+  const compact = minutes.map((r) => ({ t: r.receivedAt, rh: r.humidity, tc: 23 }));
+  const viaCompact = h.moldRisk(h.mergeClimateHistory(compact), { humidity: 65 }, now);
+  assert.equal(viaCompact.pct, short.pct);
+  assert.equal(viaCompact.windowComplete, false);
+  const summary = h.buildHomeMetrics({ humidity: 65, tempF: 73, iaq: 40, co2: 600 }, minutes, { now });
+  assert.match(summary.visitor.notes.join(" "), /still filling in/);
+});
+
+test("dust-mite window covers 7 days of 10-minute samples", () => {
+  const week = Array.from({ length: 1008 }, (_, i) => ({ receivedAt: now - i * 600000, humidity: 70, tempF: 73 }));
+  const risk = h.dustMiteRisk(week, { humidity: 70, tempF: 73 }, now);
+  assert.equal(risk.windowComplete, true);
+  assert.ok(risk.coverageHours >= 160);
+});
+
+test("home morning report uses home wording and skips the launch line", async () => {
+  const samples = Array.from({ length: 4 }, (_, i) => ({
+    receivedAt: now - i * 60000,
+    humidity: 48,
+    tempC: 22,
+    iaq: 40,
+    co2: 700,
+  }));
+  const summary = buildSummary(samples, undefined, "home");
+  assert.equal(summary.environmentType, "home");
+  assert.match(summary.controlsNote, /house/i);
+  assert.match(reportFallbackText(summary), /home|house/i);
+  const sms = await composeReportSms(summary, [{ name: "Falcon 9", t0: new Date(now).toISOString() }]);
+  assert.doesNotMatch(sms.smsText, /Cape/);
+  assert.match(sms.smsText, /home|house/i);
 });
 
 test("data gaps are not counted as damp time", () => {
@@ -135,8 +189,20 @@ test("e2e: /api/home-stats against fake Redis + stubbed network", async () => {
     urls.push(String(u));
     return { ok: true, json: async () => String(u).includes("air-quality") ? { current: { pm2_5: 6, pm10: 11, us_aqi: 25, ozone: 40, uv_index: 2, grass_pollen: null } } : { current: { temperature_2m: 12, relative_humidity_2m: 60, dew_point_2m: 4, rain: 0 } } };
   };
-  const { putSnapshot } = await import("../lib/store.js");
+  const { putSnapshot, getHomeSeries, incrCounter } = await import("../lib/store.js");
   await putSnapshot({ voc: 0.5, iaq: 55, co2: 700, tempF: 72, humidity: 52, pressHpa: 1013, lat: 34.05, lon: -118.24, city: "LA", pm25: 12, pm10: 20 });
+  await putSnapshot({ voc: 0.5, iaq: 55, co2: 700, tempF: 72, humidity: 53, pressHpa: 1013, lat: 34.05, lon: -118.24, city: "LA", pm25: 12, pm10: 20 });
+  const series = await getHomeSeries();
+  assert.equal(series.fine.length, 2);
+  assert.equal(series.coarse.length, 1);
+  assert.equal(series.fine[0].rh, 53);
+  assert.equal(series.coarse[0].rh, 52);
+  const counterKey = "sniffmaster:counter:pollen_calls:test-repair";
+  assert.equal(await incrCounter("pollen_calls:test-repair", 100), 1);
+  assert.ok(up.expires.has(counterKey));
+  up.expires.delete(counterKey);
+  assert.equal(await incrCounter("pollen_calls:test-repair", 100), 2);
+  assert.ok(up.expires.has(counterKey));
   const extras = (await import("../api/extras.js")).default;
   let status = 0, payload = null;
   const res = { setHeader() {}, status(c) { status = c; return this; }, json(p) { payload = p; return this; }, end() { return this; } };

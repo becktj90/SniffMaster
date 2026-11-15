@@ -175,7 +175,8 @@ export function normalizeReading(snapshot) {
   if (!Number.isFinite(gasR)) gasR = num(s.gasResistance);
 
   const iaq = num(s.iaq);
-  const co2 = num(s.co2True) || num(s.co2);
+  const co2True = num(s.co2True);
+  const co2 = Number.isFinite(co2True) ? co2True : num(s.co2);
 
   // Optional add-on sensor fields (NaN when the device does not report them).
   const pm25 = num(s.pm25);

@@ -8,7 +8,7 @@
     "dev": "node server.js",
     "vercel-dev": "vercel dev",
     "deploy": "vercel --prod",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-sns": "^3.600.0",

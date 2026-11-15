@@ -32,6 +32,7 @@ import {
   THRESHOLDS,
   getEffectiveThresholds,
   getEffectiveEnvironmentType,
+  normalizeEnvironmentType,
 } from "../lib/thresholds.js";
 import { sendSms, isSmsConfigured, PUBLIC_BASE_URL, REPORT_CARD_PNG_URL } from "../lib/notify.js";
 // Shared SMS-text helpers (single source of truth; also used by the alert path).
@@ -213,7 +214,9 @@ function gasLabel(ohms) {
 
 function buildSummary(history, thresholds = THRESHOLDS, environmentType = "industrial") {
   const T = thresholds || THRESHOLDS;
-  const isOffice = environmentType === "office";
+  const env = normalizeEnvironmentType(environmentType);
+  const isHome = env === "home";
+  const isOffice = env === "office";
   const now = Date.now();
   const window = history.filter((h) => {
     const r = normalizeReading(h);
@@ -250,9 +253,11 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "indus
       Number.isFinite(humidityDelta) && humidityDelta < -0.5
         ? ` (humidity down ${Math.abs(humidityDelta).toFixed(0)}% over the window)`
         : "";
-    controlsNote = isOffice
-      ? `HVAC holding comfortable conditions${trend}.`
-      : `Cooling + dehumidifiers holding workable conditions${trend}.`;
+    controlsNote = isHome
+      ? `The house is holding a comfortable range${trend}.`
+      : isOffice
+        ? `HVAC holding comfortable conditions${trend}.`
+        : `Cooling + dehumidifiers holding workable conditions${trend}.`;
   } else {
     const reasons = [];
     if (!humidityInBand) reasons.push(`humidity avg ${fmt(humidity.avg)}% above the ${T.HUMIDITY_HIGH}% limit`);
@@ -260,9 +265,11 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "indus
     if (!co2InBand) reasons.push(`CO2 avg ${fmt(co2.avg)} ppm above the ${T.CO2_HIGH} ppm limit`);
     if (humidityInBand && tempInBand && co2InBand && !humidityFalling)
       reasons.push(`humidity rising (+${fmt(humidityDelta, 1)}%)`);
-    controlsNote = isOffice
-      ? `HVAC not keeping up: ${reasons.join("; ")}.`
-      : `Environmental controls not keeping up: ${reasons.join("; ")}.`;
+    controlsNote = isHome
+      ? `The house needs a look: ${reasons.join("; ")}.`
+      : isOffice
+        ? `HVAC not keeping up: ${reasons.join("; ")}.`
+        : `Environmental controls not keeping up: ${reasons.join("; ")}.`;
   }
 
   return {
@@ -274,7 +281,7 @@ function buildSummary(history, thresholds = THRESHOLDS, environmentType = "indus
     gas,
     iaq,
     co2,
-    environmentType: isOffice ? "office" : "industrial",
+    environmentType: env,
     humidityDelta,
     tempDelta,
     controlsStabilizing,
@@ -337,16 +344,25 @@ const REPORT_MAX_CHARS = 320;
  *   a canned line that reads identically regardless of history.
  */
 function reportFallbackText(s, streak = { streakDays: 0, justRecovered: false }) {
+  const isHome = s.environmentType === "home";
   const isOffice = s.environmentType === "office";
   if (s.controlsStabilizing) {
     const trend =
       Number.isFinite(s.humidityDelta) && s.humidityDelta < -0.5
         ? ` Humidity eased down ${Math.abs(s.humidityDelta).toFixed(0)}% overnight - conditions are comfortable.`
-        : " The HVAC is holding steady.";
+        : isHome
+          ? " The house is holding steady."
+          : " The HVAC is holding steady.";
     if (streak.justRecovered) {
+      if (isHome) {
+        return "Good morning! The house is back in a comfortable range this morning after yesterday's trouble - worth a quick check that whatever caused it hasn't just paused.";
+      }
       return isOffice
         ? "Good morning! The office is back to comfortable this morning after yesterday's trouble - worth a quick check that whatever caused it hasn't just paused."
         : "Good morning! The work area is back in the safe zone this morning after yesterday's trouble - worth a quick check that whatever caused it hasn't just paused.";
+    }
+    if (isHome) {
+      return `Good morning! Overnight report from home: the air stayed comfortable.${trend}`;
     }
     if (isOffice) {
       return `Good morning! Overnight report from the office: everything stayed comfortable.${trend}`;
@@ -363,6 +379,9 @@ function reportFallbackText(s, streak = { streakDays: 0, justRecovered: false })
       : streak.streakDays === 2
         ? " Second day in a row now."
         : "";
+  if (isHome) {
+    return `Morning - heads up on the house. ${s.controlsNote}${streakNote} Worth checking ventilation, the dehumidifier, or the cooling today.`;
+  }
   if (isOffice) {
     return `Morning - heads up on the office. ${s.controlsNote}${streakNote} Worth checking the HVAC today.`;
   }
@@ -413,14 +432,19 @@ async function generateReportText(s, baseline = null, streak = { streakDays: 0, 
   const apiKey = (process.env.OPENAI_API_KEY || "").trim();
   if (!apiKey) return null;
   const model = `${process.env.OPENAI_REPORT_MODEL || "gpt-5.4-nano"}`.trim();
+  const isHome = s.environmentType === "home";
   const isOffice = s.environmentType === "office";
 
-  const contextLine = isOffice
-    ? "Context: a sensor watches an office space, tracking air quality and comfort for the people working there. HVAC keeps CO2, humidity, and temp in a comfortable range."
-    : "Context: a sensor watches an industrial work area where a crew works around equipment. What matters is whether conditions are safe and workable for the people: heat stress, humidity, air quality, and ventilation (CO2).";
-  const verdictLine = isOffice
-    ? "Clearly state whether the office stayed comfortable overnight (HVAC and air quality); if there is a problem, say it plainly and what to check."
-    : "Clearly state whether conditions stayed safe and workable for the crew overnight; if there is a problem, say it plainly and what to check.";
+  const contextLine = isHome
+    ? "Context: a sensor watches a home, tracking comfort and air quality for the people (and pets) who live there. Humidity, ventilation, particles, and dryness matter more than industrial equipment."
+    : isOffice
+      ? "Context: a sensor watches an office space, tracking air quality and comfort for the people working there. HVAC keeps CO2, humidity, and temp in a comfortable range."
+      : "Context: a sensor watches an industrial work area where a crew works around equipment. What matters is whether conditions are safe and workable for the people: heat stress, humidity, air quality, and ventilation (CO2).";
+  const verdictLine = isHome
+    ? "Clearly state whether the house stayed comfortable overnight; if there is a problem, say it plainly and what to check (ventilation, dehumidifier, cooling)."
+    : isOffice
+      ? "Clearly state whether the office stayed comfortable overnight (HVAC and air quality); if there is a problem, say it plainly and what to check."
+      : "Clearly state whether conditions stayed safe and workable for the crew overnight; if there is a problem, say it plainly and what to check.";
 
   const prompt = [
     "Write a short, warm good-morning SMS from an environmental monitor to its owner.",
@@ -492,7 +516,7 @@ async function composeReportSms(s, launches, baseline = null, outlook = null, pr
   }
   if (!reportText) reportText = reportFallbackText(s, streak);
 
-  const launchLine = launchesTodayLine(launches);
+  const launchLine = s.environmentType === "home" ? "" : launchesTodayLine(launches);
   const smsText = sanitizeSmsAscii(
     [reportText, launchLine, `Full report: ${reportUrl}`].filter(Boolean).join("\n")
   );
@@ -598,7 +622,7 @@ export default async function handler(req, res) {
     }
 
     const [history, prevSummaries, storedSettings] = await Promise.all([
-      getHistory(288), // up to ~48h @ 10min, we filter to 24h
+      getHistory(24 * 60), // 24h at the 1-minute post interval; buildSummary filters to a day
       getDailySummaryHistory(14), // prior days' summaries → % vs norm
       getSettings().catch(() => ({})), // owner-adjusted alarm limits
     ]);

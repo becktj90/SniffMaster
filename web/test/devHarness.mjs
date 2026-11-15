@@ -19,8 +19,13 @@ up.kv.set("sniffmaster:latest", list[0]);
 const express = (await import("express")).default;
 const extras = (await import("../api/extras.js")).default;
 const app = express();
-app.get("/api/home-stats", (req, res) => { req.query = { fn: "home-stats" }; extras(req, res); });
-app.get("/api/settings", (req, res) => { req.query = { fn: "settings" }; extras(req, res); });
+app.use(express.json());
+app.get("/api/latest", (_req, res) => {
+  const raw = up.kv.get("sniffmaster:latest");
+  res.json(typeof raw === "string" ? JSON.parse(raw) : raw);
+});
+app.all("/api/home-stats", (req, res) => { req.query = { fn: "home-stats" }; extras(req, res); });
+app.all("/api/settings", (req, res) => { req.query = { fn: "settings" }; extras(req, res); });
 app.use((req, res, next) => { if (req.path.startsWith("/api/")) return res.status(204).end(); next(); });
 app.use(express.static(new URL("../public", import.meta.url).pathname, { setHeaders: (r) => r.setHeader("Cache-Control", "no-store") }));
 app.listen(5057, "127.0.0.1", () => console.log("harness on 5057"));

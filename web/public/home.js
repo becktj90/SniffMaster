@@ -73,6 +73,22 @@
       (detail ? '<div class="hm-meter-detail">' + esc(detail) + "</div>" : "") + "</div>";
   }
 
+  function fFromC(c) {
+    return c == null || !isFinite(Number(c)) ? null : Number(c) * 9 / 5 + 32;
+  }
+  function whoNote(pt) {
+    var bits = [];
+    var ratio = pt.whoRatio || {};
+    if (ratio.pm25 != null && isFinite(ratio.pm25)) bits.push("PM2.5 " + Math.round(ratio.pm25 * 100) + "%");
+    if (ratio.pm10 != null && isFinite(ratio.pm10)) bits.push("PM10 " + Math.round(ratio.pm10 * 100) + "%");
+    return bits.length ? "WHO 24-h guideline: " + bits.join(" · ") + " of the limit." : "";
+  }
+  function exposureDetail(base, risk) {
+    if (!risk || risk.windowComplete !== false) return base;
+    var recorded = isFinite(risk.coverageHours) ? Math.round(risk.coverageHours) : 0;
+    return base + " · " + recorded + "h of " + risk.windowHours + "h recorded, so a long damp spell can still be understated";
+  }
+
   function render(d) {
     var root = $("home-root");
     if (!root) return;
@@ -86,7 +102,7 @@
     var h = [];
 
     // ── Visitor card ────────────────────────────────────────────────────
-    h.push('<section class="hm-card hm-visitor"><div class="hm-visitor-main">' +
+    h.push('<section class="hm-card hm-visitor" id="hm-visitor"><div class="hm-visitor-main">' +
       '<div class="hm-ring hm-t-' + tone(v.airScore) + '"><b>' + fmt(v.airScore) + '</b><span>air score</span></div>' +
       '<div class="hm-visitor-copy"><div class="hm-kicker">Welcome — air in this home right now</div>' +
       '<h3>' + esc(v.headline || "") + '</h3>' +
@@ -96,7 +112,7 @@
       '<div class="hm-disclaimer">' + esc(v.disclaimer || "") + "</div></div></div></section>");
 
     // ── Score + drivers ────────────────────────────────────────────────
-    h.push('<section class="hm-card"><div class="hm-card-head"><span>Home Air Score</span><span class="hm-pill hm-t-' + tone(sc.value) + '">' +
+    h.push('<section class="hm-card" id="hm-score"><div class="hm-card-head"><span>Home Air Score</span><span class="hm-pill hm-t-' + tone(sc.value) + '">' +
       esc(sc.grade || "No data") + "</span></div>");
     h.push('<div class="hm-score-row"><div class="hm-bigscore hm-t-' + tone(sc.value) + '">' + fmt(sc.value) + '<small>/100</small></div><div class="hm-drivers">' +
       ((sc.drivers || []).length
@@ -108,24 +124,24 @@
     }).join("") + "</div></section>");
 
     // ── Particulate ────────────────────────────────────────────────────
-    h.push('<section class="hm-card"><div class="hm-card-head"><span>Particulate</span>' + badge(pt.measured ? "sensor" : "missing") + "</div>");
+    h.push('<section class="hm-card" id="hm-particulate"><div class="hm-card-head"><span>Particulate</span>' + badge(pt.measured ? "sensor" : "missing") + "</div>");
     if (pt.measured) {
       h.push('<div class="hm-grid">' +
         tile("PM1.0", fmt(pt.pm1, 1), "µg/m³", "na") +
         tile("PM2.5", fmt(pt.pm25, 1), "µg/m³ · AQI " + fmt(pt.aqiPm25), riskTone((pt.aqiPm25 || 0) / 3)) +
         tile("PM4", fmt(pt.pm4, 1), "µg/m³", "na") +
         tile("PM10", fmt(pt.pm10, 1), "µg/m³ · AQI " + fmt(pt.aqiPm10), riskTone((pt.aqiPm10 || 0) / 3)) + "</div>" +
-        '<div class="hm-note">Indoor air is <b>' + esc(pt.category || "—") + "</b>. WHO 24-h guideline: PM2.5 " + fmt((pt.whoRatio || {}).pm25 * 100) + "% · PM10 " + fmt((pt.whoRatio || {}).pm10 * 100) + "% of the limit.</div>");
+        '<div class="hm-note">Indoor air is <b>' + esc(pt.category || "—") + "</b>. " + esc(whoNote(pt)) + "</div>");
     } else {
       h.push('<div class="hm-note">No indoor particulate sensor is connected. The stock BME688 cannot see dust, smoke or pollen particles. Add a PM sensor (e.g. Sensirion SEN5x or PMS5003) and PM1/2.5/4/10 appear here automatically. Outdoor PM is shown below.</div>');
     }
     h.push("</section>");
 
     // ── Allergens & biological ─────────────────────────────────────────
-    h.push('<section class="hm-card"><div class="hm-card-head"><span>Allergens &amp; Biologicals</span>' + badge("estimated") + "</div>");
+    h.push('<section class="hm-card" id="hm-allergens"><div class="hm-card-head"><span>Allergens &amp; Biologicals</span>' + badge("estimated") + "</div>");
     h.push(meter("Pet dander (cats / dogs)", pet.index, pet.level, pet.index == null ? "No pet-related signals yet." : "Confidence: " + pet.confidence + " — " + (pet.basis || []).map(function (b) { return b.label; }).join(", ")));
-    h.push(meter("Mold growth risk", (bio.mold || {}).pct, (bio.mold || {}).category, "Hours ≥60% RH (72h): " + fmt((bio.mold || {}).hoursRh60, 1) + " · ≥70%: " + fmt((bio.mold || {}).hoursRh70, 1)));
-    h.push(meter("Dust-mite habitat", (bio.dustMite || {}).pct, (bio.dustMite || {}).category, "Hours ≥65% RH (7d): " + fmt((bio.dustMite || {}).hoursRh65, 1)));
+    h.push(meter("Mold growth risk", (bio.mold || {}).pct, (bio.mold || {}).category, exposureDetail("Hours ≥60% RH: " + fmt((bio.mold || {}).hoursRh60, 1) + " · ≥70%: " + fmt((bio.mold || {}).hoursRh70, 1), bio.mold)));
+    h.push(meter("Dust-mite habitat", (bio.dustMite || {}).pct, (bio.dustMite || {}).category, exposureDetail("Hours ≥65% RH: " + fmt((bio.dustMite || {}).hoursRh65, 1), bio.dustMite)));
     h.push(meter("Dry-air irritation", (bio.dryAir || {}).pct, (bio.dryAir || {}).category, "Below ~30% RH dries eyes, throat and skin."));
     h.push('<div class="hm-note">' + esc(pet.note || "") + "</div>");
     h.push('<div class="hm-subhead">Outdoor pollen ' + (pol.ok ? badge("outdoor-api") : badge("missing")) + "</div>");
@@ -140,22 +156,22 @@
     h.push("</section>");
 
     // ── Gases + climate ────────────────────────────────────────────────
-    h.push('<section class="hm-card"><div class="hm-card-head"><span>Gases, VOC &amp; Climate</span></div><div class="hm-grid">' +
+    h.push('<section class="hm-card" id="hm-gases"><div class="hm-card-head"><span>Gases, VOC &amp; Climate</span></div><div class="hm-grid">' +
       tile("IAQ", fmt(g.iaq), badge(g.iaqSource), tone(g.iaq == null ? null : 100 - g.iaq / 3)) +
       tile("CO₂", fmt(g.co2, 0, " ppm"), badge(g.co2Source) + " " + esc(g.co2Category || ""), tone(g.co2 == null ? null : 110 - g.co2 / 20)) +
       tile("Formaldehyde", g.hcho == null ? "—" : fmt(g.hcho, 0, " ppb"), g.hcho == null ? badge("missing") : esc(g.hchoCategory || ""), "na") +
       tile("bVOC", fmt(g.bvoc, 2, " ppm"), badge(g.bvoc == null ? "missing" : "estimated"), "na") +
       tile("Temperature", fmt(cl.tempF, 1, "°F"), esc(cl.comfort || ""), "na") +
-      tile("Humidity", fmt(cl.humidity, 0, "%"), "Dew point " + fmt(cl.dewPointC, 1, "°C"), "na") +
+      tile("Humidity", fmt(cl.humidity, 0, "%"), "Dew point " + fmt(fFromC(cl.dewPointC), 1, "°F"), "na") +
       tile("Abs. humidity", fmt(cl.absHumidity, 1, " g/m³"), "", "na") +
       tile("Pressure", fmt(cl.pressHpa, 0, " hPa"), "", "na") + "</div></section>");
 
     // ── Indoor vs outdoor ──────────────────────────────────────────────
-    h.push('<section class="hm-card"><div class="hm-card-head"><span>Indoor vs Outdoor</span><span class="hm-pill">' + esc(od.source || "") + "</span></div>" +
+    h.push('<section class="hm-card" id="hm-compare"><div class="hm-card-head"><span>Indoor vs Outdoor</span><span class="hm-pill">' + esc(od.source || "") + "</span></div>" +
       '<table class="hm-table"><tr><th></th><th>Indoor</th><th>Outdoor</th></tr>' +
       "<tr><td>PM2.5 µg/m³</td><td>" + fmt(pt.pm25, 1) + "</td><td>" + fmt(od.pm25, 1) + "</td></tr>" +
       "<tr><td>PM10 µg/m³</td><td>" + fmt(pt.pm10, 1) + "</td><td>" + fmt(od.pm10, 1) + "</td></tr>" +
-      "<tr><td>Temperature °C</td><td>" + fmt(cl.tempC, 1) + "</td><td>" + fmt(od.tempC, 1) + "</td></tr>" +
+      "<tr><td>Temperature °F</td><td>" + fmt(cl.tempF, 1) + "</td><td>" + fmt(fFromC(od.tempC), 1) + "</td></tr>" +
       "<tr><td>Humidity %</td><td>" + fmt(cl.humidity, 0) + "</td><td>" + fmt(od.humidity, 0) + "</td></tr>" +
       "<tr><td>Abs. humidity g/m³</td><td>" + fmt(cl.absHumidity, 1) + "</td><td>" + fmt(od.absHumidity, 1) + "</td></tr>" +
       "<tr><td>US AQI (outdoor)</td><td>—</td><td>" + fmt(od.usAqi) + "</td></tr>" +
@@ -166,12 +182,14 @@
       "</section>");
 
     // ── Trends ─────────────────────────────────────────────────────────
-    h.push('<section class="hm-card"><div class="hm-card-head"><span>Last 24 hours</span></div><div class="hm-sparks">' +
-      [["Humidity %", ser.humidity, "#00f2ff"], ["CO₂ ppm", ser.co2, "#f1c40f"], ["IAQ", ser.iaq, "#ff9958"], ["PM2.5 µg/m³", ser.pm25, "#b8ff3f"], ["Temp °C", ser.tempC, "#78c9ff"]]
+    var spanH = ser.t && ser.t.length > 1 ? (ser.t[ser.t.length - 1] - ser.t[0]) / 3600000 : 0;
+    var trendLabel = spanH >= 20 ? "Last 24 hours" : (spanH > 0 ? "Last " + Math.max(1, Math.round(spanH)) + " hours recorded" : "Last 24 hours");
+    h.push('<section class="hm-card" id="hm-trends"><div class="hm-card-head"><span>' + trendLabel + '</span></div><div class="hm-sparks">' +
+      [["Humidity %", ser.humidity, "#00f2ff"], ["CO₂ ppm", ser.co2, "#f1c40f"], ["IAQ", ser.iaq, "#ff9958"], ["PM2.5 µg/m³", ser.pm25, "#b8ff3f"], ["Temp °F", (ser.tempC || []).map(function (v) { return v == null || !isFinite(v) ? null : v * 9 / 5 + 32; }), "#78c9ff"]]
         .map(function (s) { return '<div class="hm-spark-box"><div class="hm-spark-title">' + s[0] + "</div>" + spark(s[1], s[2]) + "</div>"; }).join("") + "</div></section>");
 
     // ── Coverage ───────────────────────────────────────────────────────
-    h.push('<section class="hm-card"><div class="hm-card-head"><span>What is measured vs estimated</span></div><table class="hm-table">' +
+    h.push('<section class="hm-card" id="hm-coverage"><div class="hm-card-head"><span>What is measured vs estimated</span></div><table class="hm-table">' +
       (d.coverage || []).map(function (c) { return "<tr><td>" + esc(c.metric) + "</td><td>" + badge(c.source) + "</td><td class=\"hm-dim\">" + esc(c.detail) + "</td></tr>"; }).join("") + "</table></section>");
 
     root.innerHTML = h.join("");
@@ -184,13 +202,22 @@
     inflight = true;
     fetch("/api/home-stats", { cache: "no-store" })
       .then(function (r) { return r.status === 204 ? null : r.ok ? r.json() : Promise.reject(new Error("home-stats " + r.status)); })
-      .then(render)
+      .then(function (d) {
+        render(d);
+        var root = $("home-root");
+        if (root && d) root.dataset.loaded = "1";
+      })
       .catch(function (e) {
         console.error("home-stats failed:", e);
         var root = $("home-root");
-        if (root && !root.dataset.loaded) root.innerHTML = '<div class="hm-empty">Couldn\'t load home data. Retrying…</div>';
+        var stamp = $("home-updated");
+        if (root && root.dataset.loaded !== "1") {
+          root.innerHTML = '<div class="hm-empty">Couldn\'t load home data. Retrying…</div>';
+        } else if (stamp) {
+          stamp.textContent = "Update failed — showing the last reading";
+        }
       })
-      .then(function () { inflight = false; var r = $("home-root"); if (r) r.dataset.loaded = "1"; });
+      .then(function () { inflight = false; });
   }
 
   window.SniffHome = {

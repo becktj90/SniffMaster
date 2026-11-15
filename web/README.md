@@ -40,7 +40,9 @@ Browser / iPhone PWA         │
 
 ## Home mode
 
-The **Home** tab (and the `home` environment type) turns the dashboard into a whole-home air monitor with a visitor-friendly summary: Home Air Score, particulate (PM1/2.5/4/10 + AQI), mold / dust-mite / dry-air exposure, estimated pet-dander exposure, CO2 / VOC / formaldehyde, indoor-vs-outdoor comparison, outdoor pollen, and 24 h trends. Data: `GET /api/home-stats` (`lib/homeAir.js`).
+The **Home** tab (and the `home` environment type, selectable next to Industrial and Office) turns the dashboard into a whole-home air monitor with a visitor-friendly summary: Home Air Score, particulate (PM1/2.5/4/10 + AQI), mold / dust-mite / dry-air exposure, estimated pet-dander exposure, CO2 / VOC / formaldehyde, indoor-vs-outdoor comparison, outdoor pollen, and 24 h trends. Data: `GET /api/home-stats` (`lib/homeAir.js`).
+
+Humidity for those exposure scores is kept for 7 days at 10-minute steps, separate from the 24-hour full-snapshot buffer. Until that window has filled in, the Home tab says how many hours are actually recorded. Choosing Home also switches alert text, the morning report, and the PM2.5 limit.
 
 What it can and cannot know:
 

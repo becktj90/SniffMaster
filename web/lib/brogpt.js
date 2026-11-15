@@ -57,7 +57,7 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   if (!list.length) return "";
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 4000;
   const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 200;
-  const environmentType = opts.environmentType === "office" ? "office" : "industrial";
+  const environmentType = opts.environmentType === "office" ? "office" : opts.environmentType === "home" ? "home" : "industrial";
   // Every breach already active (not a fresh trip) means this is a re-notify
   // past cooldown, not the first alert for the problem.
   const ongoing = list.every((b) => b.isNew === false);
@@ -68,9 +68,11 @@ export async function buildAlertBroSummary(breaches, opts = {}) {
   if (!apiKey) return fallback;
 
   const model = `${process.env.OPENAI_REPORT_MODEL || "gpt-5.4-nano"}`.trim();
-  const contextLine = environmentType === "office"
-    ? "Context: a sensor watches an occupied office space, tracking comfort (temp/humidity) and air quality/ventilation (CO2, IAQ) for the people working there."
-    : "Context: a sensor watches an industrial work area where a crew is working around equipment; conditions matter for both the people (heat stress, air quality, ventilation) and the hardware (condensation).";
+  const contextLine = environmentType === "home"
+    ? "Context: a sensor watches a home. Conditions matter for the people and pets who live there: humidity and mold, dry air, ventilation, particles, and heat."
+    : environmentType === "office"
+      ? "Context: a sensor watches an occupied office space, tracking comfort (temp/humidity) and air quality/ventilation (CO2, IAQ) for the people working there."
+      : "Context: a sensor watches an industrial work area where a crew is working around equipment; conditions matter for both the people (heat stress, air quality, ventilation) and the hardware (condensation).";
   const statusLine = ongoing
     ? "This is a re-notification: every one of these alarms was already active and has now been going on long enough to remind about again - make that clear (e.g. \"still\", \"ongoing\"), don't write it like a fresh alert."
     : "At least one of these alarms just tripped for the first time this episode - write it like a fresh alert.";
@@ -118,6 +120,34 @@ export function alertFallbackText(breaches, environmentType = "industrial", ongo
 function alertFallbackCore(breaches, environmentType) {
   const keys = new Set((breaches || []).map((b) => b.key));
   const isOffice = environmentType === "office";
+
+  if (environmentType === "home") {
+    if (keys.has("hcho")) {
+      return "Heads up - formaldehyde in the home is elevated. Ventilate and check for new furniture, flooring, or paint.";
+    }
+    if (keys.has("pm25")) {
+      return "Heads up - fine particles are high in the home. Run a purifier, or ventilate if the outdoor air is cleaner.";
+    }
+    if (keys.has("dry")) {
+      return "Heads up - the air in the home is very dry. A humidifier will be easier on eyes and airways.";
+    }
+    if (keys.has("temp") && keys.has("humidity")) {
+      return "Heads up - the home is hot and humid. Check the cooling and a dehumidifier, and make sure people and pets are comfortable.";
+    }
+    if (keys.has("humidity")) {
+      return "Heads up - humidity in the home is high enough to favor mold and dust mites. Run a dehumidifier or ventilate.";
+    }
+    if (keys.has("temp")) {
+      return "Heads up - it is too hot inside. Check the cooling and that nobody, including pets, is stuck in the heat.";
+    }
+    if (keys.has("co2")) {
+      return "Heads up - CO2 in the home is high. Open a window or check the ventilation.";
+    }
+    if (keys.has("gas") || keys.has("iaq")) {
+      return "Heads up - the air in the home just went off. Worth airing the room out and looking for a smoke or odor source.";
+    }
+    return "Heads up - the home just tripped an air-quality alarm. Worth a look when you can.";
+  }
 
   if (isOffice) {
     if (keys.has("temp") && keys.has("humidity")) {

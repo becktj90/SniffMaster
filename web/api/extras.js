@@ -31,9 +31,10 @@ import {
   getJsonCache,
   setJsonCache,
   incrCounter,
+  getHomeSeries,
 } from "../lib/store.js";
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
-import { buildHomeMetrics } from "../lib/homeAir.js";
+import { buildHomeMetrics, mergeClimateHistory } from "../lib/homeAir.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
 import {
@@ -786,8 +787,15 @@ async function homeStats(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
 
   try {
-    const [latest, history] = await Promise.all([getLatest(), getHistory(432)]); // 72 h @ 10 min
+    // Full snapshots cover the last 24h. Mold (72h) and dust mites (7d) read
+    // the compact 10-minute series, which survives after the full buffer rolls.
+    const [latest, legacy, series] = await Promise.all([
+      getLatest(),
+      getHistory(24 * 60),
+      getHomeSeries(),
+    ]);
     if (!latest) return res.status(204).end();
+    const history = mergeClimateHistory(series.coarse, legacy, series.fine);
 
     const lat = Number(latest.lat);
     const lon = Number(latest.lon);
@@ -828,15 +836,16 @@ async function homeStats(req, res) {
 
     // 24 h oldest→newest series for the trend sparklines.
     const dayAgo = Date.now() - 24 * 3600 * 1000;
-    const rows = history
-      .filter((h) => num(h?.receivedAt, 0) >= dayAgo)
-      .sort((a, b) => num(a.receivedAt) - num(b.receivedAt));
-    const pick = (f) => rows.map((h) => (Number.isFinite(Number(f(h))) && f(h) !== null && f(h) !== undefined ? Number(f(h)) : null));
-    const series = {
-      t: rows.map((h) => num(h.receivedAt)),
+    const rows = history.filter((h) => Number(h?.receivedAt) >= dayAgo);
+    const pick = (f) => rows.map((h) => {
+      const v = f(h);
+      return Number.isFinite(Number(v)) ? Number(v) : null;
+    });
+    const trend = {
+      t: rows.map((h) => Number(h.receivedAt)),
       humidity: pick((h) => h.humidity),
-      tempC: pick((h) => (h.temperature ?? h.tempC ?? (Number.isFinite(Number(h.tempF)) ? ((Number(h.tempF) - 32) * 5) / 9 : null))),
-      co2: pick((h) => h.co2True ?? h.co2),
+      tempC: pick((h) => h.temperature),
+      co2: pick((h) => h.co2),
       iaq: pick((h) => h.iaq),
       pm25: pick((h) => h.pm25),
     };
@@ -848,7 +857,7 @@ async function homeStats(req, res) {
       located: haveLoc,
       ...metrics,
       pollen,
-      series,
+      series: trend,
     });
   } catch (err) {
     console.error("home-stats error:", err);

@@ -113,16 +113,57 @@ export const WHO_24H = { pm25: 15, pm10: 45 };
 
 // ── Biological / allergen exposure heuristics ──────────────────────────────
 
-/** Sorted-ascending (oldest→newest) readings with finite humidity/temp. */
+/** Sorted-ascending (oldest→newest) readings with a finite timestamp. */
 function chronological(history) {
   return (Array.isArray(history) ? history : [])
     .map((h) => ({
-      t: num(h?.receivedAt),
-      rh: num(h?.humidity),
-      tc: tempCOf(h),
+      t: num(h?.receivedAt ?? h?.t),
+      rh: num(h?.humidity ?? h?.rh),
+      tc: Number.isFinite(num(h?.tc)) ? num(h.tc) : tempCOf(h),
     }))
     .filter((r) => Number.isFinite(r.t))
     .sort((a, b) => a.t - b.t);
+}
+
+/**
+ * How many hours of the requested window are actually on hand.
+ * A 7-hour buffer must not be described as a 72-hour exposure.
+ */
+export function coverageHours(history, windowH, now = Date.now()) {
+  const rows = chronological(history).filter((r) => r.t <= now && now - r.t <= windowH * MS_H);
+  if (!rows.length) return 0;
+  const spanH = (now - rows[0].t) / MS_H;
+  return Math.round(Math.min(windowH, spanH) * 10) / 10;
+}
+
+function windowComplete(hours, windowH) {
+  return hours >= windowH * 0.85;
+}
+
+/**
+ * Merge compact series, the legacy snapshot buffer, and any other lists into
+ * one oldest-first climate history. Later lists win on the same minute.
+ */
+export function mergeClimateHistory(...lists) {
+  const byMinute = new Map();
+  for (const list of lists) {
+    for (const row of Array.isArray(list) ? list : []) {
+      const t = num(row?.receivedAt ?? row?.t);
+      if (!Number.isFinite(t)) continue;
+      const tempC = Number.isFinite(num(row?.tc))
+        ? num(row.tc)
+        : tempCOf(row);
+      byMinute.set(Math.round(t / 60000), {
+        receivedAt: t,
+        humidity: num(row?.humidity ?? row?.rh),
+        temperature: tempC,
+        co2: num(row?.co2True ?? row?.co2),
+        iaq: num(row?.iaq),
+        pm25: num(row?.pm25),
+      });
+    }
+  }
+  return [...byMinute.values()].sort((a, b) => a.receivedAt - b.receivedAt);
 }
 
 export function tempCOf(s) {
@@ -167,12 +208,15 @@ export function moldRisk(history, current, now = Date.now()) {
   const rh = num(current?.humidity);
   if (Number.isFinite(rh)) pct = Math.max(pct, interp(rh, [[65, 0], [75, 35], [85, 60]]));
   pct = Math.round(pct);
+  const covered = coverageHours(history, 72, now);
   return {
     pct,
     category: band(pct, [25, 50, 75], ["Low", "Moderate", "High", "Severe"]),
     hoursRh60: Math.round(h60 * 10) / 10,
     hoursRh70: Math.round(h70 * 10) / 10,
     windowHours: 72,
+    coverageHours: covered,
+    windowComplete: windowComplete(covered, 72),
   };
 }
 
@@ -189,11 +233,14 @@ export function dustMiteRisk(history, current, now = Date.now()) {
   const h65 = hoursAtOrAboveRh(history, 65, 168, now);
   const sustained = clamp(h65 / 48, 0, 1) * 30; // 48 h ≥65% over a week = +30
   const pct = Math.round(clamp(rhF * tF * 70 + sustained, 0, 100));
+  const covered = coverageHours(history, 168, now);
   return {
     pct,
     category: band(pct, [25, 50, 75], ["Low", "Moderate", "High", "Severe"]),
     hoursRh65: Math.round(h65 * 10) / 10,
     windowHours: 168,
+    coverageHours: covered,
+    windowComplete: windowComplete(covered, 168),
   };
 }
 
@@ -274,6 +321,10 @@ export function visitorSummary(m) {
     if (worst) lines.push(`Outdoor ${worst.name} pollen is elevated today.`);
   }
   if (m.particulate?.measured && m.particulate.aqi >= 101) lines.push(`Indoor particulate is ${m.particulate.category?.toLowerCase()}.`);
+  const partial = [];
+  if (mold && mold.windowComplete === false) partial.push(`mold ${mold.coverageHours}h of ${mold.windowHours}h`);
+  if (mite && mite.windowComplete === false) partial.push(`dust mites ${mite.coverageHours}h of ${mite.windowHours}h`);
+  if (partial.length) lines.push(`Exposure scores are still filling in (${partial.join("; ")} recorded). A long damp spell can still be understated.`);
   const score = m.score?.value;
   return {
     airScore: score ?? null,

@@ -3,7 +3,9 @@
  *
  * Keys:
  *   sniffmaster:latest   — most recent sensor snapshot (JSON)
- *   sniffmaster:history  — sorted list of recent snapshots (last 1008 = 7d @ 10min)
+ *   sniffmaster:history  — sorted list of recent snapshots (last 1440 = 24h @ 1min)
+ *   sniffmaster:home_fine — compact climate points, last 26h at the post interval
+ *   sniffmaster:home_coarse — compact climate points, 7d at 10-minute steps
  *   sniffmaster:sniff    — most recent priority sulfur/VSC event (JSON)
  *   sniffmaster:sniff_history — recent priority sulfur/VSC events
  *   sniffmaster:sniff_seq — monotonic sequence for live event streaming
@@ -53,7 +55,13 @@ const KEY_ALERT_SNAPSHOT = "sniffmaster:alert_snapshot";
 const KEY_DAILY_SUMMARY = "sniffmaster:daily_summary";
 const KEY_DAILY_SUMMARY_HISTORY = "sniffmaster:daily_summary_history";
 const KEY_SETTINGS = "sniffmaster:settings";
-const MAX_HISTORY = 1008; // 7 days at 10-minute intervals
+const MAX_HISTORY = 24 * 60; // 24 hours at the firmware's 1-minute post interval
+export { MAX_HISTORY };
+export const HOME_COARSE_STEP_MS = 10 * 60 * 1000;
+export const MAX_HOME_COARSE = 7 * 24 * 6; // 7 days at 10-minute steps
+export const MAX_HOME_FINE = 26 * 60; // 26 hours at a 1-minute post
+const KEY_HOME_COARSE = "sniffmaster:home_coarse";
+const KEY_HOME_FINE = "sniffmaster:home_fine";
 const MAX_SNIFF_HISTORY = 96;
 const MAX_COMMAND_HISTORY = 48;
 const MAX_BLE_OCCUPANCY_HISTORY = 288; // 24 hours at 5-minute intervals
@@ -76,7 +84,87 @@ export async function putSnapshot(data) {
   // Trim history to MAX_HISTORY entries
   await redis.ltrim(KEY_HISTORY, 0, MAX_HISTORY - 1);
 
+  // Compact climate series for the Home tab. A failure here must not reject
+  // the snapshot the device just posted.
+  try {
+    await recordHomeSeries(redis, entry);
+  } catch (err) {
+    console.error("home series append failed:", err);
+  }
+
   return entry;
+}
+
+/** True when this reading should start a new 10-minute coarse sample. */
+export function shouldSampleCoarse(lastTimestamp, nowMs, stepMs = HOME_COARSE_STEP_MS) {
+  const last = Number(lastTimestamp);
+  if (!Number.isFinite(last)) return true;
+  return nowMs - last >= stepMs;
+}
+
+function finiteOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Small climate point stored for mold, mite, and 24h home charts. */
+export function compactClimatePoint(entry) {
+  const t = Number(entry?.receivedAt);
+  const point = {};
+  if (!Number.isFinite(t)) return null;
+  point.t = t;
+  const rh = finiteOrNull(entry.humidity);
+  if (rh !== null) point.rh = Math.round(rh * 10) / 10;
+  let c = finiteOrNull(entry.temperature);
+  if (c === null) c = finiteOrNull(entry.tempC);
+  if (c === null) {
+    const f = finiteOrNull(entry.tempF);
+    if (f !== null) c = ((f - 32) * 5) / 9;
+  }
+  if (c !== null) point.tc = Math.round(c * 10) / 10;
+  const co2 = finiteOrNull(entry.co2True) ?? finiteOrNull(entry.co2);
+  if (co2 !== null) point.co2 = Math.round(co2);
+  const iaq = finiteOrNull(entry.iaq);
+  if (iaq !== null) point.iaq = Math.round(iaq);
+  const pm25 = finiteOrNull(entry.pm25);
+  if (pm25 !== null) point.pm25 = Math.round(pm25 * 10) / 10;
+  return point;
+}
+
+function parseStored(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw); } catch { return null; }
+  }
+  return raw;
+}
+
+async function recordHomeSeries(redis, entry) {
+  const point = compactClimatePoint(entry);
+  if (!point) return;
+  const json = JSON.stringify(point);
+  const last = parseStored(await redis.lindex(KEY_HOME_COARSE, 0));
+  const ops = [redis.lpush(KEY_HOME_FINE, json)];
+  if (shouldSampleCoarse(last?.t, point.t)) ops.push(redis.lpush(KEY_HOME_COARSE, json));
+  await Promise.all(ops);
+  await Promise.all([
+    redis.ltrim(KEY_HOME_FINE, 0, MAX_HOME_FINE - 1),
+    redis.ltrim(KEY_HOME_COARSE, 0, MAX_HOME_COARSE - 1),
+  ]);
+}
+
+/**
+ * Compact home climate history. `coarse` is up to 7 days at 10 minutes;
+ * `fine` is the last 26 hours at the device's post interval.
+ */
+export async function getHomeSeries() {
+  const redis = getRedis();
+  const [coarse, fine] = await Promise.all([
+    redis.lrange(KEY_HOME_COARSE, 0, MAX_HOME_COARSE - 1),
+    redis.lrange(KEY_HOME_FINE, 0, MAX_HOME_FINE - 1),
+  ]);
+  const parseList = (items) => (items || []).map(parseStored).filter(Boolean);
+  return { coarse: parseList(coarse), fine: parseList(fine) };
 }
 
 /**
@@ -91,7 +179,7 @@ export async function getLatest() {
 
 /**
  * Get recent history (newest first).
- * @param {number} count — max entries to return (default 48 = 8 hours @ 10min)
+ * @param {number} count — max entries to return (default 48). Capped at 24h of 1-minute posts.
  */
 export async function getHistory(count = 48) {
   const redis = getRedis();
@@ -496,6 +584,17 @@ export async function incrCounter(key, ttlSec) {
   const redis = getRedis();
   const k = `sniffmaster:counter:${key}`;
   const n = await redis.incr(k);
-  if (n === 1) await redis.expire(k, Math.max(1, Math.floor(ttlSec)));
+  // Repair a missing expiry on later calls too. The first increment is the
+  // common case; if that EXPIRE failed, the month counter would otherwise
+  // never reset and pollen would stay capped.
+  let ttl = -1;
+  try {
+    ttl = await redis.ttl(k);
+  } catch {
+    ttl = -1;
+  }
+  if (typeof ttl !== "number" || ttl < 0) {
+    await redis.expire(k, Math.max(1, Math.floor(ttlSec)));
+  }
   return n;
 }
