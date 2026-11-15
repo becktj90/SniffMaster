@@ -246,18 +246,21 @@
     // the label never vanishes on a zoom or range change. Breaches are
     // events: hidden when the toggle is off. Labels are capped so a busy
     // window stays readable; the toolbar shows the full breach count.
+    // All labels share one top row and are placed by layoutLabels, so
+    // two labels can never print on top of each other: gaps outrank
+    // breaches, and a label that would collide is dropped, not doubled.
     var Ch2 = window.SniffCharts;
     var evList = (opts.events || []).slice();
     var evShown = Ch2 && Ch2.eventsInWindow ? Ch2.eventsInWindow(evList, t0, t1) : evList.filter(function (e) { return e.t >= t0 && e.t <= t1; });
     var evParts = Ch2 && Ch2.partitionEvents ? Ch2.partitionEvents(evShown) : { gaps: evShown.filter(function (e) { return e.kind === "gap"; }), breaches: evShown.filter(function (e) { return e.kind !== "gap"; }) };
+    var labelCands = [];
     var gapLabels = 0;
     evParts.gaps.forEach(function (e) {
       var gx0 = Math.max(padL, x(Math.max(e.t0 || e.t, t0))), gx1 = Math.min(W - padR, x(Math.min(e.t1 || e.t, t1)));
       if (gx1 > gx0) {
         html += '<rect class="event-gap" x="' + gx0.toFixed(1) + '" y="' + padT + '" width="' + (gx1 - gx0).toFixed(1) + '" height="' + (H - padT - padB) + '"/>';
         if (gapLabels < 5) {
-          var gcx = (gx0 + gx1) / 2;
-          html += '<text class="gap-label" x="' + gcx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="middle">' + esc(e.label) + "</text>";
+          labelCands.push({ text: e.label, cx: (gx0 + gx1) / 2, kind: "gap", priority: 0 });
           gapLabels++;
         }
       }
@@ -270,12 +273,17 @@
         if (isNum(e.value)) html += '<circle class="event-dot" cx="' + ex.toFixed(1) + '" cy="' + y(Number(e.value)).toFixed(1) + '" r="4.5"/>';
         if (labelShown < 5) {
           var anchor = ex < W / 2 ? "start" : "end";
-          var lx = anchor === "start" ? Math.min(ex + 6, W - padR - 4) : Math.max(ex - 6, padL + 4);
-          html += '<text class="event-label" x="' + lx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="' + anchor + '">' + esc(e.label) + "</text>";
+          labelCands.push({ text: e.label, x: anchor === "start" ? ex + 6 : ex - 6, anchor: anchor, kind: "breach", priority: 1 });
           labelShown++;
         }
       });
     }
+    var placedLabels = Ch2 && Ch2.layoutLabels
+      ? Ch2.layoutLabels(labelCands, padL, W - padR)
+      : labelCands.map(function (c) { return { text: c.text, kind: c.kind, x: c.cx !== undefined ? c.cx : c.x, anchor: c.anchor || "middle" }; });
+    placedLabels.forEach(function (p) {
+      html += '<text class="' + (p.kind === "gap" ? "gap-label" : "event-label") + '" x="' + p.x.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="' + p.anchor + '">' + esc(p.text) + "</text>";
+    });
     // "Now" dot on the latest reading, so the current value is visible at a glance — with a soft halo so it reads at small sizes.
     var s0 = series[0], lastJ = -1;
     for (var j = s0.values.length - 1; j >= 0; j--) { if (isNum(s0.values[j])) { lastJ = j; break; } }

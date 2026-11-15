@@ -9,6 +9,8 @@ import path from "node:path";
 import {
   medianInterval,
   findGaps,
+  estimateLabelWidth,
+  layoutLabels,
   partitionEvents,
   eventsInWindow,
   smellEvents,
@@ -68,6 +70,79 @@ test("findGaps works on the 10-minute compact series too", () => {
   const gaps = findGaps(t);
   assert.equal(gaps.length, 1);
   assert.equal(gaps[0].mins, 70); // jump spans the missing buckets
+});
+
+// The Nov 15 router outage, as the live 6h series actually recorded it:
+// one stray post got through at 13:51, splitting the 62-minute outage
+// into two 32-minute jumps. That drew the same "Feed gap · 32 min"
+// label twice, 13px apart on a phone — the doubled text in Trevor's
+// screenshot. One sample between two jumps is still one outage.
+test("findGaps merges two jumps split by a single stray sample", () => {
+  const start = Date.UTC(2026, 10, 15, 12, 0, 0);
+  const t = [];
+  for (let m = 0; m < 180; m++) {
+    if (m >= 81 && m < 143 && m !== 111) continue; // 13:21–14:23 missing except a lone 13:51 post
+    t.push(start + m * 60000);
+  }
+  const gaps = findGaps(t);
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].t0, start + 80 * 60000); // last point before the outage, 13:20
+  assert.equal(gaps[0].t1, start + 143 * 60000); // first point back, 14:23
+  assert.equal(gaps[0].mins, 63);
+  assert.match(gaps[0].label, /Feed gap · 63 min/);
+  // Two or more samples between the jumps stay two separate gaps.
+  const twoStray = [];
+  for (let m = 0; m < 180; m++) {
+    if (m >= 81 && m < 143 && m !== 111 && m !== 112) continue;
+    twoStray.push(start + m * 60000);
+  }
+  assert.equal(findGaps(twoStray).length, 2);
+});
+
+// The label layout is the backstop for genuinely separate labels that
+// land close together: at phone width the two pre-merge "Feed gap ·
+// 32 min" labels sat 13px apart and printed on top of each other.
+test("layoutLabels never places two overlapping labels", () => {
+  const padL = 40, padR = 360; // phone plot: W 370, padR 10
+  // The screenshot case, as two candidates: identical labels 13px apart.
+  const dupes = layoutLabels([
+    { text: "Feed gap · 32 min", cx: 230, kind: "gap", priority: 0 },
+    { text: "Feed gap · 32 min", cx: 243, kind: "gap", priority: 0 },
+  ], padL, padR);
+  assert.equal(dupes.length, 1);
+  assert.equal(dupes[0].text, "Feed gap · 32 min");
+  // A gap outranks a breach at the same x: the breach label is dropped.
+  const gapVsBreach = layoutLabels([
+    { text: "Feed gap · 32 min", cx: 200, kind: "gap", priority: 0 },
+    { text: "Stuffy, above 1,200", x: 206, anchor: "start", kind: "breach", priority: 1 },
+  ], padL, padR);
+  assert.deepEqual(gapVsBreach.map((p) => p.kind), ["gap"]);
+  // Labels far apart all survive, in place.
+  const spread = layoutLabels([
+    { text: "Feed gap · 32 min", cx: 100, kind: "gap", priority: 0 },
+    { text: "Stuffy, above 1,200", x: 300, anchor: "start", kind: "breach", priority: 1 },
+  ], padL, padR);
+  assert.equal(spread.length, 2);
+  // A centered label at the very left edge is clamped inside the plot,
+  // never over the y-axis tick labels.
+  const edge = layoutLabels([{ text: "Feed gap · 32 min", cx: 45, kind: "gap", priority: 0 }], padL, padR);
+  assert.equal(edge.length, 1);
+  assert.equal(edge[0].anchor, "middle");
+  assert.ok(edge[0].x - estimateLabelWidth(edge[0].text) / 2 >= padL);
+  // Anchored breach labels clamp to the plot too, on both sides.
+  const anchored = layoutLabels([
+    { text: "Stuffy, above 1,200", x: 45, anchor: "end", kind: "breach", priority: 1 },
+    { text: "Stuffy, above 1,200", x: 355, anchor: "start", kind: "breach", priority: 1 },
+  ], padL, padR);
+  assert.equal(anchored.length, 2);
+  for (const p of anchored) {
+    const w = estimateLabelWidth(p.text);
+    const x0 = p.anchor === "start" ? p.x : p.anchor === "end" ? p.x - w : p.x - w / 2;
+    const x1 = p.anchor === "start" ? p.x + w : p.anchor === "end" ? p.x : p.x + w / 2;
+    assert.ok(x0 >= padL && x1 <= padR, "label inside plot");
+  }
+  // Width estimate is generous: the real 10.5px label fits inside it.
+  assert.ok(estimateLabelWidth("Feed gap · 32 min") >= 100);
 });
 
 test("sliceWindow keeps series aligned with timestamps", () => {
@@ -196,6 +271,9 @@ test("wiring: charts module is loaded and lineChart takes zoom/events/tools", ()
   assert.ok(jsText.includes("svgToPng"), "PNG export calls svgToPng");
   assert.ok(jsText.includes("buildEvents"), "callers build events from channel zones");
   assert.ok(jsText.includes("clearAllZoom"), "range change clears zoom state");
+  assert.ok(jsText.includes("layoutLabels(labelCands"), "lineChart places labels through layoutLabels");
+  assert.ok(jsText.includes("layoutLabels"), "layoutLabels is wired into the chart");
+  assert.ok(jsText.includes("gap-label") && jsText.includes("event-label"), "gap and breach label classes drawn");
 });
 
 test("partitionEvents splits gaps from breaches", () => {
@@ -280,7 +358,7 @@ test("wiring: data-vs-interpretation classes exist and sparklines use series col
 test("wiring: v0 polish — gap labels survive the toggle, heat legend + pills, pet tile summary", () => {
   // Gap band + amber label render outside the events toggle, breaches inside it.
   assert.ok(cssText.includes(".gap-label"), ".gap-label rule in style.css");
-  assert.ok(jsText.includes('class="gap-label"'), "gap labels use .gap-label in app.js");
+  assert.ok(jsText.includes('p.kind === "gap" ? "gap-label" : "event-label"'), "placed labels use .gap-label for gaps, .event-label for breaches");
   assert.ok(jsText.includes("evParts.gaps"), "lineChart renders gaps separately from breaches");
   assert.ok(jsText.includes("opts.showEvents !== false && evParts.breaches.length"), "breaches stay behind the toggle");
   assert.ok(jsText.includes("eventsInWindow"), "gap visibility uses window overlap, not point-in-window");
