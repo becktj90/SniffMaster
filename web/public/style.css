@@ -382,3 +382,35 @@ label.choice.off { opacity: .72; }
   /* No roaming: cats rest spread across the band at their --spot. */
   .roam-cat { animation: none; left: calc(var(--spot, 20) * 1%); transform: translateX(-50%); }
 }
+
+/* ── Animated header kitten ──────────────────────────────────────── */
+/* Inline-SVG brand mark (replaces the static kitten-logo.webp in the
+   header; the webp stays on disk as the favicon/app-icon source).
+   Big amber eyes that blink and glance around, a gently bobbing head,
+   breathing body, ear twitch, sniffing nose, and a tongue-lick that the
+   brand-cat.js scheduler triggers at random every 15–30s. */
+.brand-mark.brand-cat { overflow: hidden; }
+.brand-cat .bc-head { transform-box: fill-box; transform-origin: 50% 55%; animation: bc-bob 5s ease-in-out infinite alternate; }
+@keyframes bc-bob { from { transform: translateY(0) rotate(-1.1deg); } to { transform: translateY(.9px) rotate(1.1deg); } }
+.brand-cat .bc-body { transform-box: fill-box; transform-origin: 50% 100%; animation: bc-breathe 3.6s ease-in-out infinite alternate; }
+@keyframes bc-breathe { from { transform: scaleY(1); } to { transform: scaleY(1.035); } }
+.brand-cat .bc-eyes { transform-box: fill-box; transform-origin: 50% 50%; animation: bc-blink 4.4s infinite; transition: transform .15s ease; }
+@keyframes bc-blink { 0%, 90%, 100% { transform: scaleY(1); } 93%, 95% { transform: scaleY(.08); } }
+.brand-cat .bc-pupils { animation: bc-glance 14s infinite; }
+@keyframes bc-glance { 0%, 27%, 43%, 59%, 75%, 100% { transform: translateX(0); } 31%, 38% { transform: translateX(1.6px); } 64%, 70% { transform: translateX(-1.6px); } }
+.brand-cat .bc-ear-r { transform-box: fill-box; transform-origin: 50% 100%; animation: bc-ear-twitch 9s infinite; }
+@keyframes bc-ear-twitch { 0%, 86%, 100% { transform: rotate(0); } 88.5% { transform: rotate(-14deg); } 91% { transform: rotate(5deg); } 93% { transform: rotate(0); } }
+.brand-cat .bc-nose { transform-box: fill-box; transform-origin: 50% 50%; animation: bc-sniff 6s infinite; }
+@keyframes bc-sniff { 0%, 46%, 56%, 100% { transform: scale(1); } 50%, 52% { transform: scale(1.12); } }
+.brand-cat .bc-tongue { transform: scaleY(0); transform-box: fill-box; transform-origin: 50% 0; }
+.brand-cat.licking .bc-tongue { animation: bc-lick .9s ease-in-out; }
+@keyframes bc-lick { 0% { transform: scaleY(0); } 25%, 55% { transform: scaleY(1) translateX(0); } 40% { transform: scaleY(1) translateX(.7px); } 70% { transform: scaleY(1) translateX(-.7px); } 100% { transform: scaleY(0); } }
+.brand-cat.licking .bc-eyes { animation: none; transform: scaleY(.45); }
+.brand-cat.licking .bc-paw { animation: bc-paw-lift .9s ease-in-out; }
+@keyframes bc-paw-lift { 0%, 100% { transform: translateY(0); } 40%, 60% { transform: translateY(-2.4px); } }
+@media (prefers-reduced-motion: reduce) {
+  /* Parked cat: eyes open, still, no licking. */
+  .brand-cat .bc-head, .brand-cat .bc-body, .brand-cat .bc-eyes, .brand-cat .bc-pupils,
+  .brand-cat .bc-ear-r, .brand-cat .bc-nose, .brand-cat .bc-tongue, .brand-cat .bc-paw { animation: none !important; }
+  .brand-cat.licking .bc-eyes { transform: none; }
+}
