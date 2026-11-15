@@ -262,28 +262,103 @@ export function analyzeSmell(latest, history, { now = Date.now() } = {}) {
 
 // ── Sensitivities ──────────────────────────────────────────────────────────
 
-export const TRIGGERS = ["cat", "dog", "pollen", "dustMite", "mold", "smoke"];
+export const TRIGGERS = ["cat", "dog", "pollen", "treePollen", "grassPollen", "weedPollen", "dustMite", "mold", "dust", "voc", "dryAir", "smoke"];
 
 export function parseTriggers(input) {
   const raw = Array.isArray(input) ? input : String(input || "").split(",");
   return [...new Set(raw.map((x) => String(x).trim()).filter((x) => TRIGGERS.includes(x)))];
 }
 
+// ── Per-trigger severity ───────────────────────────────────────────────────
+// How strongly someone reacts to a trigger, on top of the measured
+// exposure. Mild softens the outlook by one level, severe sharpens it by
+// one; moderate leaves the measured level alone. Stored per-device in
+// localStorage (sm-trigger-severity) and sent with the triggers query
+// param as "cat:severe,pollen:mild" — the server applies it when it builds
+// the outlook, so the headline, the per-trigger level and the action all
+// move together.
+export const SEVERITIES = ["mild", "moderate", "severe"];
+
+export function parseSeverities(input) {
+  const out = {};
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    for (const [key, level] of Object.entries(input)) {
+      if (TRIGGERS.includes(key) && SEVERITIES.includes(level)) out[key] = level;
+    }
+    return out;
+  }
+  const raw = Array.isArray(input)
+    ? input
+    : String(input || "")
+        .split(",")
+        .map((x) => String(x).trim())
+        .filter(Boolean);
+  for (const pair of raw) {
+    const [key, level] = String(pair).split(":").map((x) => x.trim());
+    if (TRIGGERS.includes(key) && SEVERITIES.includes(level)) out[key] = level;
+  }
+  return out;
+}
+
+/** Canonical "key:level" string (non-moderate entries only) for cache keys. */
+export function canonicalSeverities(input) {
+  const sev = parseSeverities(input);
+  return Object.keys(sev)
+    .sort()
+    .filter((k) => sev[k] !== "moderate")
+    .map((k) => `${k}:${sev[k]}`)
+    .join(",");
+}
+
+/** Shift a 0–4 exposure rank by the user's severity for that trigger. */
+export function applySeverity(rank, severity) {
+  if (severity === "severe") return Math.min(4, rank + 1);
+  if (severity === "mild") return Math.max(0, rank - 1);
+  return rank;
+}
+
 const rank = { None: 0, Low: 1, Moderate: 2, High: 3, "Very high": 4 };
 const byRank = (r) => Object.keys(rank).find((k) => rank[k] === r) || "None";
+
+function pollenScore(it) {
+  const v = num(it.value, NaN);
+  const cat = it.category;
+  return Number.isFinite(v) ? v : cat ? ({ "Very low": 1, Low: 2, Moderate: 3, High: 4, "Very high": 5 }[cat] ?? 0) : 0;
+}
+
+function worstOf(items) {
+  let worst = null;
+  for (const it of items) {
+    const score = pollenScore(it);
+    if (!worst || score > worst.score) worst = { name: it.name, score, category: it.category };
+  }
+  return worst;
+}
 
 function worstPollen(pollen, prefer) {
   if (!pollen?.ok) return null;
   const items = [...(pollen.types || []), ...(pollen.plants || [])];
-  let worst = null;
-  for (const it of items) {
-    const v = num(it.value, NaN);
-    const cat = it.category;
-    const score = Number.isFinite(v) ? v : cat ? ({ "Very low": 1, Low: 2, Moderate: 3, High: 4, "Very high": 5 }[cat] ?? 0) : 0;
-    if (!worst || score > worst.score) worst = { name: it.name, score, category: cat };
-  }
-  if (prefer) return worst;
-  return worst;
+  if (prefer) return worstOf(items);
+  return worstOf(items);
+}
+
+// Pollen by family, for the tree/grass/weed triggers. Google types carry
+// GRASS/TREE/WEED codes; Open-Meteo plants carry the plant name as code
+// (ALDER, BIRCH, GRASS, MUGWORT, OLIVE, RAGWEED). Unknown codes are ignored
+// so a feed change degrades to "no data" instead of a wrong group.
+const POLLEN_GROUPS = {
+  treePollen: ["TREE", "ALDER", "BIRCH", "OLIVE"],
+  grassPollen: ["GRASS"],
+  weedPollen: ["WEED", "MUGWORT", "RAGWEED"],
+};
+
+function pollenByGroup(pollen, group) {
+  if (!pollen?.ok) return null;
+  const codes = POLLEN_GROUPS[group] || [];
+  const items = [...(pollen.types || []), ...(pollen.plants || [])].filter((it) =>
+    codes.includes(String(it.code || "").toUpperCase())
+  );
+  return worstOf(items);
 }
 
 function pollenRank(score) {
@@ -296,14 +371,22 @@ function pollenRank(score) {
  * Each trigger returns a level, the evidence, and one action. The overall
  * level is the worst applicable trigger — an allergy outlook is only as good
  * as its worst exposure.
+ * @param {object} [severities] — per-trigger mild/moderate/severe; severe
+ *   sharpens a trigger's level by one, mild softens it by one. The action
+ *   follows the adjusted level, so a severe trigger earns advice at lower
+ *   exposures and a mild one stays quiet until exposure is real.
  */
-export function allergyOutlook(metrics, triggers, smell = null) {
+export function allergyOutlook(metrics, triggers, smell = null, severities = {}) {
   const picked = parseTriggers(triggers);
+  const sev = parseSeverities(severities);
   const m = metrics || {};
   const items = [];
 
-  const add = (key, label, r, reason, action, confidence) =>
-    items.push({ key, label, level: byRank(r), rank: r, reason, action, confidence });
+  const add = (key, label, r, reason, action, confidence) => {
+    const severity = sev[key] || "moderate";
+    const adjusted = applySeverity(r, severity);
+    items.push({ key, label, level: byRank(adjusted), rank: adjusted, baseRank: r, severity, reason, action: adjusted >= 2 ? action : null, confidence });
+  };
 
   for (const key of picked) {
     if (key === "cat" || key === "dog") {
@@ -320,9 +403,7 @@ export function allergyOutlook(metrics, triggers, smell = null) {
         label,
         r,
         `Estimated from ${pet.basis.map((b) => b.label.toLowerCase()).join(", ")}. Allergen proteins settle into dust and fabric and are not measured directly.`,
-        r >= 2
-          ? "Run a HEPA purifier, keep pets out of the bedroom, wash bedding hot weekly, and vacuum with a HEPA filter."
-          : null,
+        "Run a HEPA purifier, keep pets out of the bedroom, wash bedding hot weekly, and vacuum with a HEPA filter.",
         lowBasis ? "low" : "medium"
       );
     } else if (key === "pollen") {
@@ -339,9 +420,24 @@ export function allergyOutlook(metrics, triggers, smell = null) {
         "Pollen",
         r,
         `Outdoors: ${w.name} is ${String(w.category || "").toLowerCase() || "present"}. Indoor pollen is not measured — this is the outdoor level that comes in on windows, clothes and pets.`,
-        r >= 2
-          ? "Keep windows shut, run the AC on recirculate, shower and change after being outside, and run a HEPA purifier." + (pm != null && pm > 1 ? "" : "")
-          : null,
+        "Keep windows shut, run the AC on recirculate, shower and change after being outside, and run a HEPA purifier." + (pm != null && pm > 1 ? "" : ""),
+        "medium"
+      );
+    } else if (key === "treePollen" || key === "grassPollen" || key === "weedPollen") {
+      const groupName = key === "treePollen" ? "Tree pollen" : key === "grassPollen" ? "Grass pollen" : "Weed pollen";
+      const pol = m.pollen;
+      const w = pollenByGroup(pol, key);
+      if (!w) {
+        add(key, groupName, 0, pol?.reason || "Pollen feed unavailable.", null, "none");
+        continue;
+      }
+      const r = pollenRank(w.score);
+      add(
+        key,
+        groupName,
+        r,
+        `Outdoors: ${w.name} is ${String(w.category || "").toLowerCase() || "present"}. Indoor pollen is not measured — this is the outdoor level that comes in on windows, clothes and pets.`,
+        "Keep windows shut, run the AC on recirculate, shower and change after being outside, and run a HEPA purifier.",
         "medium"
       );
     } else if (key === "dustMite") {
@@ -353,7 +449,7 @@ export function allergyOutlook(metrics, triggers, smell = null) {
         "Dust mites",
         r,
         `Habitat index ${d.pct}% from humidity and temperature${d.windowComplete === false ? ` (${d.coverageHours}h of ${d.windowHours}h recorded)` : ""}. Mites need ≥65% RH.`,
-        r >= 2 ? "Bring humidity below 50%, use a dehumidifier, and wash bedding at 130°F / 54°C." : null,
+        "Bring humidity below 50%, use a dehumidifier, and wash bedding at 130°F / 54°C.",
         d.windowComplete === false ? "low" : "medium"
       );
     } else if (key === "mold") {
@@ -366,8 +462,67 @@ export function allergyOutlook(metrics, triggers, smell = null) {
         "Mold",
         musty ? Math.max(r, 3) : r,
         `Growth exposure ${d.pct}% from ${d.hoursRh60}h at ≥60% RH in 72h${musty ? "; the room also smells musty right now" : ""}.`,
-        r >= 2 || musty ? "Dry the room below 55% RH and look for leaks, window condensation and damp corners." : null,
+        "Dry the room below 55% RH and look for leaks, window condensation and damp corners.",
         d.windowComplete === false ? "low" : "medium"
+      );
+    } else if (key === "dust") {
+      const pt = m.particulate;
+      const pm10 = pt?.pm10;
+      const out10 = m.outdoor?.pm10;
+      const v = Number.isFinite(pm10) ? pm10 : Number.isFinite(out10) ? out10 : null;
+      if (v === null) {
+        add(key, "Dust", 0, "No particulate sensor or outdoor feed.", null, "none");
+        continue;
+      }
+      // PM10 bands (µg/m³) track the US AQI PM10 breakpoints (55/155/255).
+      const r = v >= 150 ? 4 : v >= 100 ? 3 : v >= 55 ? 2 : 1;
+      add(
+        key,
+        "Dust",
+        r,
+        `${Number.isFinite(pm10) ? "Indoor" : "Outdoor"} coarse dust (PM10) ${Math.round(v)} µg/m³. Dust in the 2.5–10 µm range carries dander, skin flakes and other allergens.`,
+        "Damp-dust hard surfaces, vacuum with a HEPA filter, and run a HEPA purifier.",
+        Number.isFinite(pm10) ? "medium" : "low"
+      );
+    } else if (key === "voc") {
+      const g = m.gases || {};
+      const iaq = g.iaq;
+      const bvoc = g.bvoc;
+      const hcho = g.hcho;
+      if (!Number.isFinite(iaq) && !Number.isFinite(bvoc) && !Number.isFinite(hcho)) {
+        add(key, "Fragrances & chemicals", 0, "No gas readings yet.", null, "none");
+        continue;
+      }
+      // IAQ is the VOC-driven index this dashboard already uses (150 = poor).
+      let r = Number.isFinite(iaq) ? (iaq >= 150 ? 4 : iaq >= 100 ? 3 : iaq >= 50 ? 2 : 1) : 1;
+      if (Number.isFinite(hcho) && hcho >= 100) r = Math.max(r, 3);
+      const bits = [];
+      if (Number.isFinite(bvoc)) bits.push(`VOC ${bvoc.toFixed(2)} ppm`);
+      if (Number.isFinite(iaq)) bits.push(`IAQ ${Math.round(iaq)}`);
+      if (Number.isFinite(hcho)) bits.push(`formaldehyde ${Math.round(hcho)} ppb`);
+      add(
+        key,
+        "Fragrances & chemicals",
+        r,
+        bits.length ? bits.join("; ") + "." : "Gas readings present.",
+        "Ventilate, skip sprays and plug-ins while it clears, and find the source — cleaners, candles, fresh paint or new furniture.",
+        Number.isFinite(iaq) ? "medium" : "low"
+      );
+    } else if (key === "dryAir") {
+      const d = m.biological?.dryAir;
+      if (!d || !Number.isFinite(d.pct)) {
+        add(key, "Dry air", 0, "No humidity reading yet.", null, "none");
+        continue;
+      }
+      const r = d.pct >= 75 ? 4 : d.pct >= 50 ? 3 : d.pct >= 25 ? 2 : 1;
+      const rh = m.climate?.humidity;
+      add(
+        key,
+        "Dry air",
+        r,
+        `Dryness index ${d.pct}%${Number.isFinite(rh) ? ` at ${Math.round(rh)}% RH` : ""}. Air below ~30% RH dries airways and skin.`,
+        "Run a humidifier to 40–50% RH, and keep it below 55% so mold and mites don't move in.",
+        "medium"
       );
     } else if (key === "smoke") {
       const pt = m.particulate;
@@ -392,7 +547,7 @@ export function allergyOutlook(metrics, triggers, smell = null) {
         "Smoke & particles",
         r,
         bits.length ? bits.join("; ") + "." : "No particulate sensor or outdoor feed.",
-        r >= 2 ? "Use a HEPA purifier, keep windows shut if outdoor air is worse, and find the indoor source." : null,
+        "Use a HEPA purifier, keep windows shut if outdoor air is worse, and find the indoor source.",
         pt?.measured ? "high" : "low"
       );
     }

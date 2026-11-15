@@ -456,3 +456,17 @@ label.choice.off { opacity: .72; }
 .cal-steps .step.now.poor i { background: var(--poor); border-color: transparent; box-shadow: 0 0 0 4px var(--poor-bg); }
 .coach-points { margin: 8px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-2); }
 .coach-points li { margin: 4px 0; }
+
+/* ── Settings: per-trigger severity rows + alert-limit inputs ──────── */
+.sev-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.sev-row > span { font-weight: 600; }
+.thresh-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.thresh { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.thresh > span:first-child { flex: 1; min-width: 0; }
+.thresh input { width: 84px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+.thresh .unit { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+@media (max-width: 560px) {
+  .thresh-grid { grid-template-columns: 1fr; }
+  .sev-row { flex-direction: column; align-items: stretch; }
+  .sev-row .seg { align-self: flex-start; }
+}

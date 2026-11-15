@@ -38,7 +38,7 @@ import { buildHomeMetrics, mergeClimateHistory } from "../lib/homeAir.js";
 import { toGuestView, guestTopic } from "../lib/guest.js";
 import { analyzeCause } from "../lib/causes.js";
 import { toOledView } from "../lib/oled.js";
-import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
+import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers, canonicalSeverities } from "../lib/homeInsights.js";
 import { buildAirSense } from "../lib/airSense.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
@@ -803,13 +803,16 @@ const HOME_PAYLOAD_TTL_SEC = 60;
  * stale window is invisible at the dashboard's 2-minute poll and the
  * device's 1-minute post cadence, and a cache miss rebuilds identically.
  */
-export async function buildHomePayload(triggersInput) {
-  const key = `home-payload:${parseTriggers(triggersInput).join(",") || "none"}`;
+export async function buildHomePayload(triggersInput, severitiesInput) {
+  // The severity string is part of the cache key: two devices with the same
+  // triggers but different severities get different outlooks.
+  const sevKey = canonicalSeverities(severitiesInput);
+  const key = `home-payload:${parseTriggers(triggersInput).join(",") || "none"}|${sevKey || "std"}`;
   try {
     const hit = await getJsonCache(key);
     if (hit) return hit;
   } catch {}
-  const payload = await buildHomePayloadFresh(triggersInput);
+  const payload = await buildHomePayloadFresh(triggersInput, severitiesInput);
   if (payload) {
     try {
       await setJsonCache(key, payload, HOME_PAYLOAD_TTL_SEC);
@@ -818,7 +821,7 @@ export async function buildHomePayload(triggersInput) {
   return payload;
 }
 
-async function buildHomePayloadFresh(triggersInput) {
+async function buildHomePayloadFresh(triggersInput, severitiesInput) {
     const triggers = parseTriggers(triggersInput);
     // Full snapshots cover the last 24h. Mold (72h) and dust mites (7d) read
     // the compact 10-minute series, which survives after the full buffer rolls.
@@ -888,7 +891,7 @@ async function buildHomePayloadFresh(triggersInput) {
     const smell = analyzeSmell(latest, legacy);
     const cause = analyzeCause(latest, legacy, { outdoor, pollen });
     const withPollen = { ...metrics, pollen };
-    const outlook = allergyOutlook(withPollen, triggers, smell);
+    const outlook = allergyOutlook(withPollen, triggers, smell, severitiesInput);
     const ventilation = ventilationAdvice(withPollen, smell, triggers);
     const airSense = buildAirSense({
       latest,
@@ -955,7 +958,7 @@ async function homeStats(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
 
   try {
-    const payload = await buildHomePayload(req.query?.triggers);
+    const payload = await buildHomePayload(req.query?.triggers, req.query?.severity);
     if (!payload) return res.status(204).end();
     return res.status(200).json(payload);
   } catch (err) {
