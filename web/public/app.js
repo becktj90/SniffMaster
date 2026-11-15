@@ -1025,8 +1025,8 @@
     var L = null, loadErr = null;
     try { L = await load("latest"); } catch (err) { loadErr = err; }
     if (!L) return noData(loadErr);
-    var H = window.SniffHealth, C = window.SniffCal;
-    if (!H || !C || !C.calStage) {
+    var H = window.SniffHealth, C = window.SniffCal, Co = window.SniffCoach;
+    if (!H || !C || !C.calStage || !Co || !Co.coachAdvice) {
       // The helper modules load async after this classic script; the
       // sniff-health-ready listener below re-renders once they arrive.
       return head("Sensor health", "Calibration progress and the whole system's vital signs, live.") +
@@ -1080,8 +1080,29 @@
         ? '<p class="note">The device is publishing live readings.</p>'
         : '<p class="note">The device is not publishing complete readings yet — check the calibration stage above.</p>') + "</div>";
 
+    // Coaching: one next action for the learning process. Stage history is
+    // kept on this device (sm-cal-history) and only grows while the feed is
+    // live, so a stale snapshot never counts as learning time.
+    var calHistory = store("sm-cal-history") || [];
+    if (feed.state === "live" && stage.known) {
+      calHistory = Co.recordStage(calHistory, stage.index, Date.now());
+      store("sm-cal-history", calHistory);
+    }
+    var coach = Co.coachAdvice(L, Date.now(), calHistory);
+    var coachCard = "";
+    if (coach.known) {
+      coachCard = '<div class="card" style="margin-top:14px"><div class="card-head"><h3>What the sensor still needs</h3>' + pill(coach.headline, coach.tone) + "</div>" +
+        '<p style="margin:10px 0 0"><b>' + esc(coach.action) + "</b></p>" +
+        (coach.why ? '<p class="muted" style="margin:8px 0 0">' + esc(coach.why) + "</p>" : "") +
+        (coach.daysAtStage !== null && coach.daysAtStage >= 1 ? '<p class="muted small" style="margin:8px 0 0">At this stage for at least ' + Math.floor(coach.daysAtStage) + " day" + (Math.floor(coach.daysAtStage) === 1 ? "" : "s") + " (seen on this device).</p>" : "") +
+        (coach.freshBoot && coach.stage <= 1 ? '<p class="muted small" style="margin:8px 0 0">This boot started from scratch — no saved calibration was restored, so the full learning window applies.</p>' : "") +
+        (coach.stuck ? '<div class="callout bad" style="margin-top:12px">' + esc(coach.stuck) + "</div>" : "") +
+        '<p class="note" style="margin:12px 0 0"><b>What counts as progress. </b></p><ul class="coach-points">' + Co.PROGRESS_NOTES.map(function (n) { return "<li>" + esc(n) + "</li>"; }).join("") + "</ul></div>";
+    }
+
     return head("Sensor health", "Calibration progress and the whole system's vital signs, live.") +
       '<div class="grid g-2 top">' + calCard + sysCard + "</div>" +
+      coachCard +
       '<p style="margin:14px 0 0"><a href="#/sensors">Full channel charts on the Sensors page →</a></p>';
   }
 
@@ -1146,6 +1167,7 @@
   // The sensor-health helpers load async after this classic script;
   // re-render if the user is already on the Sensor Health page.
   window.addEventListener("sniff-health-ready", function () { if (currentRoute === "sensor-health") rerender(); });
+  window.addEventListener("sniff-coach-ready", function () { if (currentRoute === "sensor-health") rerender(); });
   var resizeT;
   window.addEventListener("resize", function () {
     clearTimeout(resizeT);
