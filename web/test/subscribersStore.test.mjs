@@ -76,10 +76,42 @@ test("no ClickSend credit explains itself and does not burn the resend limit", a
     }
   );
   creditFail = false;
+  // ClickSend's balance endpoint still says $5, but a real send was just
+  // refused for credit: Text must stay hidden instead of failing the next signup.
+  const hidden = await S.alertChannels();
+  assert.equal(hidden.channels.sms, false);
+  assert.equal(hidden.smsReason, "credit");
   const { setJsonCache } = await import("../lib/store.js");
+  await setJsonCache("clicksend-credit-block", { at: Date.now() - 31 * 60 * 1000 }, 5);
   await setJsonCache("clicksend-balance", { balance: 5, at: Date.now() }, 600);
+  const back = await S.alertChannels();
+  assert.equal(back.channels.sms, true, "after the block lapses the next signup probes again");
   const again = await signUp("3215550199", { co2: 1000 }, "credit-ok");
   assert.equal(again.code.length, 6);
+});
+
+test("a balance too small for one text hides Text before anyone tries", async () => {
+  const { setJsonCache } = await import("../lib/store.js");
+  await setJsonCache("clicksend-balance", { balance: 0.03, at: Date.now() }, 600);
+  const low = await S.alertChannels();
+  assert.equal(low.channels.sms, false);
+  assert.equal(low.smsReason, "credit");
+  await setJsonCache("clicksend-balance", { balance: 5, at: Date.now() }, 600);
+  assert.equal((await S.alertChannels()).channels.sms, true);
+});
+
+test("a credit rejection while sending alerts also pauses Text", async () => {
+  const { loadSubscribers } = S;
+  const subs = await loadSubscribers();
+  assert.ok(subs.some((x) => x.channel === "sms"));
+  creditFail = true;
+  await S.runSubscriberAlerts({ co2: 3000, iaq: 400 }, {});
+  creditFail = false;
+  const after = await S.alertChannels();
+  assert.equal(after.channels.sms, false);
+  assert.equal(after.smsReason, "credit");
+  const { setJsonCache } = await import("../lib/store.js");
+  await setJsonCache("clicksend-credit-block", { at: 0 }, 5);
 });
 
 test("a rejected sender number is retried without that From", async () => {
