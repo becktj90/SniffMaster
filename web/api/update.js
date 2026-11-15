@@ -36,6 +36,8 @@ import {
   getEffectiveThresholds,
   getEffectiveEnvironmentType,
   getEffectiveAlertCooldownMs,
+  nearAlertThreshold,
+  GAS_BASE_REFRESH_MS,
 } from "../lib/thresholds.js";
 import { buildHomePayload } from "./extras.js";
 import { toGuestView, decideGuestAlerts, publishGuestAlerts, guestTopic } from "../lib/guest.js";
@@ -66,16 +68,6 @@ function etTimeLabel(ts) {
 async function maybeSendAlerts(stored) {
   const reading = normalizeReading(stored);
 
-  // History returns newest-first and already includes the just-stored entry;
-  // drop it so the baseline reflects the recent past, not the current reading.
-  let priorHistory = [];
-  try {
-    const recent = await getHistory(25);
-    priorHistory = Array.isArray(recent) ? recent.slice(1) : [];
-  } catch (err) {
-    console.error("alerts: history fetch failed:", err);
-  }
-
   // Owner-adjustable limits (humidity/temp/etc) + environment preset + alert
   // cooldown; falls back to defaults on any error.
   let thresholds;
@@ -93,10 +85,34 @@ async function maybeSendAlerts(stored) {
     cooldownMs = getEffectiveAlertCooldownMs();
   }
 
+  // Gate: the history read below is the expensive part of this path, and the
+  // common case is all-clear. Only do a full evaluation when the snapshot is
+  // within a margin of a threshold or a breach is already active — otherwise
+  // evaluateBreaches would return [] and the persisted state would be
+  // unchanged, so skipping is behavior-identical (see nearAlertThreshold).
+  // A failed state read forces the full path rather than risking a skip.
+  let state = null;
+  try {
+    state = await getAlertState();
+  } catch (err) {
+    console.error("alerts: alert-state fetch failed:", err);
+  }
+  if (state && !nearAlertThreshold(reading, thresholds, environmentType, state)) return;
+  if (!state) state = { activeKeys: [], sentAt: {} };
+
+  // History returns newest-first and already includes the just-stored entry;
+  // drop it so the baseline reflects the recent past, not the current reading.
+  let priorHistory = [];
+  try {
+    const recent = await getHistory(25);
+    priorHistory = Array.isArray(recent) ? recent.slice(1) : [];
+  } catch (err) {
+    console.error("alerts: history fetch failed:", err);
+  }
+
   const base = baselineGasR(priorHistory);
   const breaches = evaluateBreaches(reading, base, thresholds, environmentType);
 
-  const state = await getAlertState();
   const prevActive = new Set(state.activeKeys);
   const sentAt = { ...state.sentAt };
   const now = Date.now();
@@ -124,11 +140,18 @@ async function maybeSendAlerts(stored) {
     const header = `SniffMaster ALERT (${etTimeLabel(reading.receivedAt)})`;
     const lines = toNotify.map((b) => `- ${b.message}`);
 
+    // Personal-voice summary only when a breach newly trips — re-notifies
+    // past cooldown get the breach lines + report link without it — and
+    // bounded at 2.5 s so a slow OpenAI call never holds up the device's
+    // POST response (buildAlertBroSummary falls back to a deterministic line
+    // on timeout/error, so the alert always ships).
     let broLine = "";
-    try {
-      broLine = await buildAlertBroSummary(toNotify, { environmentType });
-    } catch (err) {
-      console.error("alerts: bro summary failed:", err);
+    if (toNotify.some((b) => b.isNew)) {
+      try {
+        broLine = await buildAlertBroSummary(toNotify, { environmentType, timeoutMs: 2500 });
+      } catch (err) {
+        console.error("alerts: bro summary failed:", err);
+      }
     }
 
     // Still compute + store a fresh snapshot so /report and the MMS image
@@ -175,11 +198,28 @@ async function maybeSendAlerts(stored) {
   for (const key of activeKeys) {
     if (sentAt[key]) prunedSentAt[key] = sentAt[key];
   }
+  // Gas baseline: refresh the stored value when it is missing/stale or has
+  // drifted >10% since it was stored, so the ingest gate keeps a trustworthy
+  // baseline without a Redis write on every post.
+  const prevBase = Number(state.gasBase);
+  const prevBaseAt = Number(state.gasBaseAt);
+  const nextBase = Number.isFinite(base) ? base : prevBase;
+  const baseStale =
+    !Number.isFinite(prevBase) || !Number.isFinite(prevBaseAt) || now - prevBaseAt > GAS_BASE_REFRESH_MS;
+  const baseDrifted =
+    Number.isFinite(prevBase) && Number.isFinite(nextBase) && Math.abs(nextBase - prevBase) / prevBase > 0.1;
+  const gasBaseChanged = Number.isFinite(nextBase) && (baseStale || baseDrifted);
   const changed =
     JSON.stringify(activeKeys) !== JSON.stringify([...prevActive].sort()) ||
-    JSON.stringify(prunedSentAt) !== JSON.stringify(state.sentAt);
+    JSON.stringify(prunedSentAt) !== JSON.stringify(state.sentAt) ||
+    gasBaseChanged;
   if (changed) {
-    await setAlertState({ activeKeys, sentAt: prunedSentAt });
+    await setAlertState({
+      activeKeys,
+      sentAt: prunedSentAt,
+      gasBase: gasBaseChanged ? nextBase : state.gasBase,
+      gasBaseAt: gasBaseChanged ? now : state.gasBaseAt,
+    });
   }
 }
 

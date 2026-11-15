@@ -298,3 +298,70 @@ export function evaluateBreaches(reading, baseGasR, thresholds = THRESHOLDS, env
 
   return breaches;
 }
+
+// How long a stored gas baseline is trusted before the gate forces a re-learn.
+export const GAS_BASE_REFRESH_MS = 6 * 3600 * 1000;
+
+// Margins for the /api/update ingest gate (nearAlertThreshold): how close to
+// a limit counts as "near" and forces a full history-backed evaluation.
+// The gas-drop test is relative to a baseline, so its margin is a ratio
+// against the last computed baseline stored in alert state (trip is 0.6).
+export const ALERT_GATE_MARGINS = {
+  HUMIDITY: 5, // %RH below HUMIDITY_HIGH (and 5 above the 25% dry-air floor)
+  TEMP_C: 2, // °C below TEMP_HIGH_C
+  IAQ: 20, // IAQ points below IAQ_POOR
+  CO2: 100, // ppm below CO2_HIGH
+  PM25: 5, // µg/m³ below PM25_HIGH (home only)
+  HCHO: 10, // ppb below the 81 ppb formaldehyde limit (home only)
+  GAS_RATIO: 0.75, // gasR at/under 75% of stored baseline → full eval (trip: 60%)
+};
+
+/**
+ * Cheap pre-check for the /api/update ingest path: should this snapshot get a
+ * full threshold evaluation (history read + alert-state write + possible
+ * notify), or is it provably a no-op?
+ *
+ * A full evaluation can only change something when a breach could start
+ * (reading within a margin of a threshold), a breach is already active (it
+ * could clear, or re-notify past cooldown), or the stored gas baseline is
+ * stale/missing (the relative gas-drop test needs a fresh baseline). When
+ * none of those hold, evaluateBreaches would return [] and the persisted
+ * state would be unchanged, so skipping the history read is behavior-identical.
+ *
+ * @param {ReturnType<normalizeReading>} reading — normalized just-stored snapshot
+ * @param {typeof THRESHOLDS} [thresholds] — effective limits
+ * @param {"industrial"|"office"|"home"} [environmentType]
+ * @param {{activeKeys?:string[], gasBase?:number, gasBaseAt?:number}} [state] — persisted alert state
+ * @param {number} [nowMs] — clock, for the baseline-staleness check
+ */
+export function nearAlertThreshold(reading, thresholds = THRESHOLDS, environmentType = DEFAULT_ENVIRONMENT_TYPE, state = {}, nowMs = Date.now()) {
+  const r = reading || {};
+  const T = thresholds || THRESHOLDS;
+  const env = normalizeEnvironmentType(environmentType);
+  const active = new Set(Array.isArray(state?.activeKeys) ? state.activeKeys : []);
+  if (active.size > 0) return true; // an active breach could clear or re-notify
+
+  const isHome = env === "home";
+  const M = ALERT_GATE_MARGINS;
+  if (Number.isFinite(r.humidity) && r.humidity >= T.HUMIDITY_HIGH - M.HUMIDITY) return true;
+  if (Number.isFinite(r.tempC) && r.tempC >= T.TEMP_HIGH_C - M.TEMP_C) return true;
+  if (Number.isFinite(r.iaq) && r.iaq >= T.IAQ_POOR - M.IAQ) return true;
+  if (Number.isFinite(r.co2) && r.co2 >= T.CO2_HIGH - M.CO2) return true;
+  if (isHome) {
+    if (Number.isFinite(r.pm25) && r.pm25 >= T.PM25_HIGH - M.PM25) return true;
+    if (Number.isFinite(r.hcho) && r.hcho >= 81 - M.HCHO) return true;
+    if (Number.isFinite(r.humidity) && r.humidity <= 25 + M.HUMIDITY) return true; // dry-air floor
+  }
+  // Gas-drop test: needs a baseline. No stored baseline, or one older than
+  // the refresh window, means evaluate once to (re)learn it. Otherwise the
+  // gate uses the stored baseline with a wider ratio than the trip ratio, so
+  // baseline drift inside the window cannot hide a real breach (a miss would
+  // need the true baseline to have risen >25% since the stored one).
+  if (Number.isFinite(r.gasR)) {
+    const base = Number(state?.gasBase);
+    const baseAt = Number(state?.gasBaseAt);
+    if (!Number.isFinite(base) || !Number.isFinite(baseAt) || nowMs - baseAt > GAS_BASE_REFRESH_MS) return true;
+    if (base >= T.GAS_MIN_BASELINE && r.gasR <= base * M.GAS_RATIO) return true;
+  }
+  return false;
+}

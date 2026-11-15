@@ -793,7 +793,32 @@ async function officeStats(req, res) {
 // like the other dashboard GETs. Never returns any API key.
 const HOME_OUTDOOR_TTL_SEC = 15 * 60;
 
+const HOME_PAYLOAD_TTL_SEC = 60;
+
+/**
+ * Whole-home payload, cached 60 s per trigger set in Redis. This is the hot
+ * path: /api/oled, /api/home-stats, /api/guest, /api/insights and both
+ * /api/update alert gates all build it, ~4,000×/day, and a fresh build
+ * re-reads + re-parses the full 24 h history (~2 MB) every time. A 60 s
+ * stale window is invisible at the dashboard's 2-minute poll and the
+ * device's 1-minute post cadence, and a cache miss rebuilds identically.
+ */
 export async function buildHomePayload(triggersInput) {
+  const key = `home-payload:${parseTriggers(triggersInput).join(",") || "none"}`;
+  try {
+    const hit = await getJsonCache(key);
+    if (hit) return hit;
+  } catch {}
+  const payload = await buildHomePayloadFresh(triggersInput);
+  if (payload) {
+    try {
+      await setJsonCache(key, payload, HOME_PAYLOAD_TTL_SEC);
+    } catch {}
+  }
+  return payload;
+}
+
+async function buildHomePayloadFresh(triggersInput) {
     const triggers = parseTriggers(triggersInput);
     // Full snapshots cover the last 24h. Mold (72h) and dust mites (7d) read
     // the compact 10-minute series, which survives after the full buffer rolls.
@@ -946,7 +971,8 @@ async function homeStats(req, res) {
 async function oled(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+  // s-maxage matches the device's 60 s wall poll so alternate polls hit the edge.
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=60, stale-while-revalidate=60");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
   try {
@@ -1544,8 +1570,10 @@ async function insights(req, res) {
 // ── sensors ──────────────────────────────────────────────────────────────
 // GET /api/sensors?range=1h|6h|24h|7d — every BME688 / BSEC channel as
 // downsampled column arrays for the detail charts, plus the latest snapshot.
-// 1h–24h read the full 1-minute snapshot buffer; 7d reads the compact
-// 10-minute climate series (temperature, humidity, CO2, IAQ only).
+// 1h–6h read the full 1-minute snapshot buffer; 24h reads the compact
+// 1-minute climate series (temperature, humidity, CO2, IAQ only — same shape
+// as 7d, which reads the compact 10-minute series). Odor classifier scores
+// are only available from the full buffer, so 24h/7d return odors: null.
 const SENSOR_FIELDS = ["iaq", "staticIaq", "voc", "dVoc", "co2", "tempF", "humidity", "pressHpa", "gasR", "compGas", "gasPct", "airScore", "iaqAcc", "pm25", "pm10"];
 const RANGE_MIN = { "1h": 60, "6h": 360, "24h": 1440 };
 
@@ -1578,6 +1606,19 @@ async function sensors(req, res) {
       const { coarse } = await getHomeSeries();
       const rows = [...coarse].sort((a, b) => a.t - b.t);
       series = bucketMean(rows, 336, {
+        tempF: (r) => (Number.isFinite(Number(r.tc)) ? (r.tc * 9) / 5 + 32 : null),
+        humidity: (r) => r.rh,
+        co2: (r) => r.co2,
+        iaq: (r) => r.iaq,
+        pm25: (r) => r.pm25,
+      });
+    } else if (range === "24h") {
+      // Same compact shape as 7d, from the 1-minute fine series instead of
+      // the 10-minute coarse one — no 1,470-row full-history pull + bucket.
+      const { fine } = await getHomeSeries();
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      const rows = [...fine].filter((p) => Number(p.t) >= cutoff).sort((a, b) => a.t - b.t);
+      series = bucketMean(rows, 240, {
         tempF: (r) => (Number.isFinite(Number(r.tc)) ? (r.tc * 9) / 5 + 32 : null),
         humidity: (r) => r.rh,
         co2: (r) => r.co2,

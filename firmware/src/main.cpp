@@ -513,7 +513,9 @@ struct OutdoorAQI {
   int   heatF, uv, precipPct;
   char  source[12];             // google | open-meteo
 };
-// Server-computed Home mode metrics (GET /api/home-stats)
+// Server-computed Home mode metrics. Formerly fetched separately from
+// GET /api/home-stats every 2 min; now filled from the /api/oled wall feed
+// (fetchWallStatus, every 60 s), which carries the same scalars.
 struct HomeStats {
   bool  valid;
   unsigned long fetchedMs;
@@ -2877,12 +2879,10 @@ static float         lat = 0, lon = 0;
 static int32_t       utcOffsetSec = 0;
 static unsigned long lastLocationTryMs = 0;
 static unsigned long envOkMs = 0, envTryMs = 0;
-static unsigned long homeOkMs = 0, homeTryMs = 0;
 static unsigned long wallOkMs = 0, wallTryMs = 0;
 static unsigned long snarkOkMs = 0, snarkTryMs = 0;
 static int           snarkScore = -1000;    // device air score at last snark
-static const unsigned long HOME_STATS_MS   = 2UL * 60UL * 1000UL;
-static const unsigned long WALL_STATS_MS   = 60UL * 1000UL;   // server edge-caches 30 s
+static const unsigned long WALL_STATS_MS   = 60UL * 1000UL;   // server edge-caches 60 s
 static const unsigned long SNARK_REFRESH_MS = 20UL * 60UL * 1000UL;
 static const unsigned long SNARK_RETRY_MS   = 5UL * 60UL * 1000UL;
 
@@ -3201,60 +3201,6 @@ static bool fetchGoogleEnv() {
   return true;
 }
 
-// ── Dashboard → device: server-computed Home metrics ─────────
-static bool fetchHomeStats() {
-  String body;
-  int code = request(dashboardUrl("/api/home-stats"), nullptr, &body, false, 10000);
-  if (code != 200) { Serial.printf("[WEB] home-stats failed: %d\n", code); return false; }
-
-  // Filter keeps only what the OLED shows (the full response is ~7 KB)
-  JsonDocument filter;
-  filter["score"]["value"] = true;
-  filter["score"]["grade"] = true;
-  filter["score"]["components"][0]["key"] = true;
-  filter["score"]["components"][0]["score"] = true;
-  filter["climate"]["dewPointC"] = true;
-  filter["biological"]["mold"]["pct"] = true;
-  filter["biological"]["mold"]["category"] = true;
-  filter["biological"]["dustMite"]["pct"] = true;
-  filter["biological"]["dustMite"]["category"] = true;
-  filter["biological"]["dryAir"]["pct"] = true;
-  filter["biological"]["dryAir"]["category"] = true;
-  filter["petAllergen"]["index"] = true;
-  filter["petAllergen"]["level"] = true;
-  filter["visitor"]["headline"] = true;
-  JsonDocument doc;
-  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return false;
-  if (doc["score"]["value"].isNull()) return false;
-
-  HomeStats h = {};
-  h.valid = true;
-  h.fetchedMs = millis();
-  h.score = doc["score"]["value"] | 0;
-  strlcpy(h.grade, doc["score"]["grade"] | "", sizeof(h.grade));
-  static const char* const KEYS[4] = { "voc", "ventilation", "biological", "comfort" };
-  for (int i = 0; i < 4; i++) {
-    h.comp[i] = -1;
-    for (JsonObject c : doc["score"]["components"].as<JsonArray>())
-      if (strcmp(c["key"] | "", KEYS[i]) == 0 && !c["score"].isNull()) h.comp[i] = c["score"].as<int>();
-  }
-  JsonVariant dp = doc["climate"]["dewPointC"];
-  h.dewPointF = dp.isNull() ? NAN : dp.as<float>() * 9.0f / 5.0f + 32.0f;
-  JsonObject bio = doc["biological"];
-  h.moldPct = bio["mold"]["pct"] | 0;      strlcpy(h.moldCat, bio["mold"]["category"] | "--", sizeof(h.moldCat));
-  h.mitePct = bio["dustMite"]["pct"] | 0;  strlcpy(h.miteCat, bio["dustMite"]["category"] | "--", sizeof(h.miteCat));
-  h.dryPct  = bio["dryAir"]["pct"] | 0;    strlcpy(h.dryCat, bio["dryAir"]["category"] | "--", sizeof(h.dryCat));
-  h.petIdx  = doc["petAllergen"]["index"] | 0;
-  strlcpy(h.petLevel, doc["petAllergen"]["level"] | "--", sizeof(h.petLevel));
-  strlcpy(h.headline, doc["visitor"]["headline"] | "", sizeof(h.headline));
-
-  Serial.printf("[WEB] home-stats: score=%d %s\n", h.score, h.grade);
-  LockGuard g;
-  gNet.home = h;
-  return true;
-}
-
-
 // ── Dashboard → device: pre-formatted wall display feed ──────
 static bool fetchWallStatus() {
   String body;
@@ -3282,9 +3228,33 @@ static bool fetchWallStatus() {
   strlcpy(w.pn, doc["pn"] | "", sizeof(w.pn));
   strlcpy(w.wn, doc["wn"] | "", sizeof(w.wn));
   for (int i = 0; i < 2; i++) strlcpy(w.ac[i], doc["ac"][i] | "", sizeof(w.ac[i]));
+  // Home health scalars ride the wall feed now (see toOledView): fill the
+  // HomeStats the OLED screens render, so the separate /api/home-stats poll
+  // is no longer needed. Only when a score is present, mirroring the old
+  // fetchHomeStats() requirement; every field degrades to its "missing"
+  // default when an older server omits it.
+  HomeStats h = {};
+  bool haveHome = false;
+  if (!doc["sc"].isNull()) {
+    h.valid = true;
+    h.fetchedMs = millis();
+    h.score = w.sc;
+    strlcpy(h.grade, doc["gr"] | "", sizeof(h.grade));
+    for (int i = 0; i < 4; i++) h.comp[i] = doc["cp"][i] | -1;
+    JsonVariant dp = doc["dp"];
+    h.dewPointF = dp.isNull() ? NAN : dp.as<float>();
+    h.moldPct = doc["mo"] | 0;      strlcpy(h.moldCat, doc["mc"] | "--", sizeof(h.moldCat));
+    h.mitePct = doc["mi"] | 0;      strlcpy(h.miteCat, doc["ic"] | "--", sizeof(h.miteCat));
+    h.dryPct  = doc["dr"] | 0;      strlcpy(h.dryCat, doc["dc"] | "--", sizeof(h.dryCat));
+    h.petIdx  = doc["pi"] | 0;
+    strlcpy(h.petLevel, doc["pe"] | "--", sizeof(h.petLevel));
+    strlcpy(h.headline, doc["hl"] | "", sizeof(h.headline));
+    haveHome = true;
+  }
   Serial.printf("[WEB] oled: smell=%s cause=%s allergen=%s pollen=%s\n", w.sm, w.ca, w.al, w.pl);
   LockGuard g;
   gNet.wall = w;
+  if (haveHome) gNet.home = h;
   return true;
 }
 
@@ -3662,10 +3632,6 @@ static void task(void*) {
                  (!envTryMs || now - envTryMs >= OPTIONAL_RETRY_MS)) {
         envTryMs = now;
         if (fetchGoogleEnv()) envOkMs = millis();
-      } else if (lastPostOkMs && (!homeOkMs || now - homeOkMs >= HOME_STATS_MS) &&
-                 (!homeTryMs || now - homeTryMs >= OPTIONAL_RETRY_MS)) {
-        homeTryMs = now;
-        if (fetchHomeStats()) homeOkMs = millis();
       } else if (lastPostOkMs && (!wallOkMs || now - wallOkMs >= WALL_STATS_MS) &&
                  (!wallTryMs || now - wallTryMs >= OPTIONAL_RETRY_MS)) {
         wallTryMs = now;
