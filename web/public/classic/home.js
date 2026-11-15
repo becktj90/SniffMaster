@@ -119,7 +119,10 @@
       (sm.state === "bad" ? '<div class="hm-now-meta">' + esc(sm.level || "") +
         (sm.sinceMinutes != null ? " · for " + sm.sinceMinutes + " min" : "") +
         (sm.trend ? " · " + esc(sm.trend) : "") + "</div>" : "") +
-      (sm.action ? '<div class="hm-action' + (sm.safety ? " hm-action-safety" : "") + '">' + esc(sm.action) + "</div>" : "") +
+      (d.cause && d.cause.key && d.cause.key !== "none" ? '<div class="hm-cause"><b>Likely cause: ' + esc(d.cause.label) + '</b> <small>' + esc(d.cause.confidence === "none" ? "unconfirmed" : d.cause.confidence + " confidence") + '</small>' +
+        ((d.cause.evidence || []).length ? '<div class="hm-dim">' + d.cause.evidence.map(esc).join(" · ") + "</div>" : "") +
+        (d.cause.action ? '<div class="hm-action' + (d.cause.urgent ? " hm-action-safety" : "") + '">' + esc(d.cause.action) + "</div>" : "") + "</div>" : "") +
+      (sm.action && !(d.cause && d.cause.action) ? '<div class="hm-action' + (sm.safety ? " hm-action-safety" : "") + '">' + esc(sm.action) + "</div>" : "") +
       (sm.detail ? '<div class="hm-dim">' + esc(sm.detail) + (sm.confidence ? " Confidence: " + esc(sm.confidence) + "." : "") + "</div>" : "") + "</div>" +
       '<div class="hm-now-block hm-t-' + ({ None: "na", Low: "good", Moderate: "fair", High: "poor", "Very high": "bad" }[ol.level] || "na") + '"><div class="hm-kicker">My sensitivities</div>' +
       '<div class="hm-chips hm-triggers" id="hm-triggers">' + TRIGGER_LABELS.map(function (t) {

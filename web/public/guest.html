@@ -62,7 +62,8 @@ h1{font-size:1.1rem;margin:8px 0 2px}
 
     h.push('<section class="card"><div class="kicker">Does it smell?</div><div class="big t-' + st + '">' + esc(sm.headline || "No reading yet.") + "</div>" +
       (sm.state === "bad" ? '<div class="dim">' + esc(sm.level || "") + (sm.sinceMinutes != null ? " · for " + sm.sinceMinutes + " min" : "") + (sm.trend ? " · " + esc(sm.trend) : "") + "</div>" : "") +
-      (sm.action ? '<div class="action t-' + st + '"><span style="color:var(--ink)">' + esc(sm.action) + "</span></div>" : "") + "</section>");
+      (d.cause ? '<div class="item"><b>Likely cause: ' + esc(d.cause.label) + '</b><div class="dim">' + (d.cause.evidence || []).map(esc).join(" · ") + "</div>" + (d.cause.action ? '<div class="action t-' + st + '"><span style="color:var(--ink)">' + esc(d.cause.action) + "</span></div>" : "") + "</div>" : "") +
+      (sm.action && !d.cause ? '<div class="action t-' + st + '"><span style="color:var(--ink)">' + esc(sm.action) + "</span></div>" : "") + "</section>");
 
     h.push('<section class="card"><div class="kicker">Overall air</div><div class="row"><span class="score t-' + scoreTone(sc.value) + '">' + (sc.value == null ? "—" : sc.value) +
       '</span><span class="dim">/100 · ' + esc(sc.grade || "No data") + "</span></div>" +

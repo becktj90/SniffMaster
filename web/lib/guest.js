@@ -44,6 +44,7 @@ export function toGuestView(p, { topic = "" } = {}) {
       headline: ol.headline || "",
       items: (ol.items || []).map((i) => pick(i, ["key", "label", "level", "reason", "action", "confidence"])),
     },
+    cause: p.cause && p.cause.key && p.cause.key !== "none" ? { label: p.cause.label, confidence: p.cause.confidence, action: p.cause.action, evidence: p.cause.evidence || [] } : null,
     ventilation: pick(p.ventilation, ["action", "text"]),
     climate: pick(p.climate, ["tempF", "humidity", "comfort"]),
     gases: pick(p.gases, ["co2Category"]),

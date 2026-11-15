@@ -27,6 +27,7 @@ app.get("/api/latest", (_req, res) => {
 app.all("/api/home-stats", (req, res) => { req.query = { ...req.query, fn: "home-stats" }; extras(req, res); });
 app.all("/api/guest", (req, res) => { req.query = { ...req.query, fn: "guest" }; extras(req, res); });
 app.get("/guest", (_req, res) => res.sendFile(new URL("../public/guest.html", import.meta.url).pathname));
+app.all("/api/oled", (req, res) => { req.query = { ...req.query, fn: "oled" }; extras(req, res); });
 app.all("/api/settings", (req, res) => { req.query = { fn: "settings" }; extras(req, res); });
 app.use((req, res, next) => { if (req.path.startsWith("/api/")) return res.status(204).end(); next(); });
 app.use(express.static(new URL("../public", import.meta.url).pathname, { setHeaders: (r) => r.setHeader("Cache-Control", "no-store") }));
