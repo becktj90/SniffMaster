@@ -1,0 +1,362 @@
+/**
+ * subscribers.js — public email / text alert sign-ups.
+ *
+ * Anyone with the dashboard link can sign up to be told when a reading they
+ * care about gets too high. Flow:
+ *   1. POST subscribe {channel, address, rules}  → a 6-digit code is sent to
+ *      that address (proves they own it; stops someone signing up a stranger).
+ *   2. POST verify {id, code}                     → subscription goes live.
+ *   3. Every alert carries a one-tap unsubscribe link (/api/alerts?unsub=…).
+ *
+ * Delivery: email through Brevo (BREVO_API_KEY + ALERT_EMAIL_FROM), text
+ * through ClickSend (the same account the owner alerts use). A channel whose
+ * credentials are missing is reported as unavailable to the page instead of
+ * pretending to work.
+ *
+ * Storage is one small JSON document (capped at MAX_SUBSCRIBERS) plus
+ * short-lived pending-code entries, all through the existing Redis cache
+ * helpers, so no new Redis commands are needed.
+ *
+ * The rule evaluation (decideSubscriberAlerts) is pure and unit-tested.
+ */
+
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { getJsonCache, setJsonCache, incrCounter, withLock } from "./store.js";
+import { sendViaClickSend, PUBLIC_BASE_URL } from "./notify.js";
+
+export const MAX_SUBSCRIBERS = 100;
+const SUBS_KEY = "subscribers:v1"; // stored via setJsonCache with a long TTL
+const SUBS_TTL_SEC = 10 * 365 * 24 * 3600;
+const PENDING_TTL_SEC = 15 * 60;
+const COOLDOWN_MS = 3 * 3600 * 1000;
+const BREVO_URL = "https://api.brevo.com/v3/smtp/email";
+
+/**
+ * Every rule a subscriber can switch on. `get` reads the value from the
+ * merged {reading, home} context; `above` rules fire when value >= limit,
+ * `below` rules when value <= limit. Ranges keep values sane.
+ */
+export const RULES = {
+  iaq:        { label: "Indoor air quality (IAQ)", unit: "", dir: "above", def: 150, min: 50, max: 400, get: (c) => c.iaq },
+  co2:        { label: "CO₂ (estimated)",          unit: " ppm", dir: "above", def: 1200, min: 600, max: 3000, get: (c) => c.co2 },
+  voc:        { label: "Breath VOC",               unit: " ppm", dir: "above", def: 2.5, min: 0.5, max: 20, get: (c) => c.voc },
+  humidityHi: { label: "Humidity high",            unit: "%",    dir: "above", def: 65, min: 40, max: 95, get: (c) => c.humidity },
+  humidityLo: { label: "Humidity low",             unit: "%",    dir: "below", def: 25, min: 5, max: 45, get: (c) => c.humidity },
+  tempHi:     { label: "Temperature high",         unit: "°F",   dir: "above", def: 85, min: 70, max: 110, get: (c) => c.tempF },
+  tempLo:     { label: "Temperature low",          unit: "°F",   dir: "below", def: 60, min: 32, max: 72, get: (c) => c.tempF },
+  pet:        { label: "Pet dander index",         unit: "/100", dir: "above", def: 50, min: 10, max: 100, get: (c) => c.petIndex },
+  outdoorAqi: { label: "Outdoor AQI",              unit: "",     dir: "above", def: 100, min: 25, max: 300, get: (c) => c.outdoorAqi },
+  smell:      { label: "Room smells bad",          unit: "",     dir: "flag",  def: 1, min: 1, max: 1, get: (c) => (c.smellsBad ? 1 : 0) },
+};
+
+const env = (n) => (typeof process.env[n] === "string" ? process.env[n].trim() : "");
+
+export function channelStatus() {
+  return {
+    email: Boolean(env("BREVO_API_KEY") && env("ALERT_EMAIL_FROM")),
+    sms: Boolean(env("CLICKSEND_USERNAME") && env("CLICKSEND_API_KEY")),
+  };
+}
+
+// ── Validation ────────────────────────────────────────────────────────────
+
+const EMAIL_RE = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,190}\.[a-z]{2,24}$/i;
+
+export function normalizeAddress(channel, raw) {
+  const v = String(raw || "").trim();
+  if (channel === "email") return EMAIL_RE.test(v) ? v.toLowerCase() : null;
+  if (channel === "sms") {
+    const digits = v.replace(/[^0-9]/g, "");
+    if (v.startsWith("+") && digits.length >= 10 && digits.length <= 15) return `+${digits}`;
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return null;
+  }
+  return null;
+}
+
+/** Keep only known rules, clamp limits into range. Empty input → sensible defaults. */
+export function normalizeRules(input) {
+  const out = {};
+  const src = input && typeof input === "object" ? input : null;
+  if (!src || !Object.keys(src).length) {
+    for (const k of ["iaq", "co2", "humidityHi", "smell", "pet"]) out[k] = RULES[k].def;
+    return out;
+  }
+  for (const [k, v] of Object.entries(src)) {
+    const r = RULES[k];
+    if (!r || v === false || v === null) continue;
+    const n = r.dir === "flag" ? 1 : Number(v === true ? r.def : v);
+    if (!Number.isFinite(n)) continue;
+    out[k] = Math.min(r.max, Math.max(r.min, n));
+  }
+  return out;
+}
+
+export function maskAddress(channel, address) {
+  if (channel === "email") {
+    const [u, d] = address.split("@");
+    return `${u.slice(0, 2)}${"•".repeat(Math.max(1, u.length - 2))}@${d}`;
+  }
+  return `${"•".repeat(Math.max(0, address.length - 4))}${address.slice(-4)}`;
+}
+
+// ── Rule evaluation (pure) ────────────────────────────────────────────────
+
+/** Flatten a snapshot + home payload into the values rules read. */
+export function alertContext(snapshot = {}, home = {}) {
+  const n = (v) => (v === null || v === undefined || v === "" ? NaN : Number(v));
+  return {
+    iaq: n(snapshot.iaq),
+    co2: n(snapshot.co2True ?? snapshot.co2),
+    voc: n(snapshot.voc),
+    humidity: n(snapshot.humidity),
+    tempF: n(snapshot.tempF),
+    // Prefer the server's normalized US AQI. The device may post a 1-5
+    // OpenWeatherMap index as outdoorAqi, which isn't on the same scale.
+    outdoorAqi: isFinite(n(home?.outdoor?.usAqi)) ? n(home.outdoor.usAqi) : n(snapshot.outdoorAqi) > 5 ? n(snapshot.outdoorAqi) : NaN,
+    petIndex: n(home?.petAllergen?.index),
+    smellsBad: !!home?.smell?.smellsBad,
+    smellHeadline: home?.smell?.headline || "",
+  };
+}
+
+function fmtVal(rule, v) {
+  if (rule.dir === "flag") return "";
+  const d = Math.abs(v) < 10 && !Number.isInteger(v) ? 1 : 0;
+  return `${Number(v).toFixed(d)}${rule.unit}`;
+}
+
+/**
+ * Which subscribers should hear about what. A rule alerts once when it trips,
+ * stays quiet while it stays tripped (re-reminding after COOLDOWN_MS), and
+ * re-arms once it clears. Returns the messages and the updated per-sub state.
+ */
+export function decideSubscriberAlerts(subs, ctx, now = Date.now()) {
+  const sends = [];
+  const next = subs.map((s) => {
+    if (!s.verified) return s;
+    const state = { ...(s.state || {}) };
+    const tripped = [];
+    for (const [key, limit] of Object.entries(s.rules || {})) {
+      const rule = RULES[key];
+      if (!rule) continue;
+      const v = rule.get(ctx);
+      const bad = rule.dir === "flag" ? v === 1 : Number.isFinite(v) && (rule.dir === "above" ? v >= limit : v <= limit);
+      const prev = state[key] || { active: false, sentAt: 0 };
+      if (bad) {
+        if (!prev.active || now - prev.sentAt > COOLDOWN_MS) {
+          tripped.push({ key, rule, value: v, limit });
+          state[key] = { active: true, sentAt: now };
+        }
+      } else if (prev.active) {
+        state[key] = { active: false, sentAt: prev.sentAt };
+      }
+    }
+    if (tripped.length) sends.push({ sub: s, tripped });
+    return { ...s, state };
+  });
+  return { sends, subs: next };
+}
+
+/** Friendly, short alert text (also the email body). */
+export function alertText(tripped, ctx) {
+  const parts = tripped.map(({ key, rule, value, limit }) => {
+    if (key === "smell") return ctx.smellHeadline || "The room smells off.";
+    const word = rule.dir === "above" ? "above" : "below";
+    return `${rule.label} is ${fmtVal(rule, value)}, ${word} your ${fmtVal(rule, limit)} limit.`;
+  });
+  const tips = [];
+  const keys = new Set(tripped.map((t) => t.key));
+  if (keys.has("co2") || keys.has("iaq") || keys.has("voc") || keys.has("smell")) tips.push("Cracking a window or running a fan for 10–15 minutes usually clears it.");
+  if (keys.has("humidityHi")) tips.push("A dehumidifier or the bathroom fan will bring humidity down.");
+  if (keys.has("humidityLo")) tips.push("A humidifier or a few plants will help with the dry air.");
+  if (keys.has("pet")) tips.push("Running an air purifier and vacuuming soft surfaces helps with dander.");
+  if (keys.has("outdoorAqi")) tips.push("Outdoor air is worse than usual, so keep the windows shut for now.");
+  return [...parts, tips[0]].filter(Boolean).join(" ");
+}
+
+// ── Storage ───────────────────────────────────────────────────────────────
+
+export async function loadSubscribers() {
+  return (await getJsonCache(SUBS_KEY)) || [];
+}
+
+export async function saveSubscribers(list) {
+  await setJsonCache(SUBS_KEY, list, SUBS_TTL_SEC);
+}
+
+/** Read-modify-write the subscriber list under a lock so concurrent writers don't drop each other's changes. */
+export async function updateSubscribers(fn) {
+  return withLock("subscribers", async () => {
+    const list = await loadSubscribers();
+    const next = await fn(list);
+    if (next !== list) await saveSubscribers(next);
+    return next;
+  });
+}
+
+const hashCode = (id, code) => createHash("sha256").update(`${id}:${code}`).digest("hex");
+
+function sameHash(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+// ── Delivery ──────────────────────────────────────────────────────────────
+
+export async function sendEmail(to, subject, text, unsubUrl) {
+  const html = `<div style="font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#1d2433;max-width:520px">
+<p style="font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:#5b6b85;margin:0 0 8px">SniffMaster</p>
+<p>${escapeHtml(text).replace(/\n/g, "<br>")}</p>
+<p><a href="${PUBLIC_BASE_URL}" style="color:#2f6fed">Open the dashboard</a></p>
+${unsubUrl ? `<p style="font-size:12px;color:#8a96aa">Don't want these? <a href="${unsubUrl}" style="color:#8a96aa">Unsubscribe</a>.</p>` : ""}
+</div>`;
+  const resp = await fetch(BREVO_URL, {
+    method: "POST",
+    headers: { "api-key": env("BREVO_API_KEY"), "Content-Type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      sender: { email: env("ALERT_EMAIL_FROM"), name: env("ALERT_EMAIL_NAME") || "SniffMaster" },
+      to: [{ email: to }],
+      subject,
+      textContent: unsubUrl ? `${text}\n\nUnsubscribe: ${unsubUrl}` : text,
+      htmlContent: html,
+    }),
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!resp.ok) {
+    const detail = (await resp.text().catch(() => "")).slice(0, 200);
+    throw new Error(`brevo ${resp.status} ${detail}`);
+  }
+}
+
+async function deliver(sub, subject, text, withUnsub = true) {
+  const unsubUrl = withUnsub ? `${PUBLIC_BASE_URL}/api/alerts?unsub=${encodeURIComponent(sub.token)}` : null;
+  if (sub.channel === "email") return sendEmail(sub.address, subject, text, unsubUrl);
+  const body = ascii(`SniffMaster: ${text}${unsubUrl ? ` Stop: ${unsubUrl}` : ""}`).slice(0, 600);
+  const r = await sendViaClickSend(body, [sub.address]);
+  if (!r.sent) throw new Error(r.failures?.[0]?.error || "sms not sent");
+}
+
+const ascii = (t) =>
+  String(t || "")
+    .replace(/₂/g, "2").replace(/°/g, " deg").replace(/[–—]/g, "-").replace(/•/g, "*")
+    .replace(/[^\x20-\x7e]/g, "");
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ── Public operations ─────────────────────────────────────────────────────
+
+export class AlertError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export async function startSubscription({ channel, address, rules, ip }) {
+  if (!["email", "sms"].includes(channel)) throw new AlertError(400, "Pick email or text.");
+  if (!channelStatus()[channel]) throw new AlertError(503, channel === "sms" ? "Text alerts aren't set up on this dashboard yet." : "Email alerts aren't set up on this dashboard yet.");
+  const addr = normalizeAddress(channel, address);
+  if (!addr) throw new AlertError(400, channel === "sms" ? "That phone number doesn't look right." : "That email address doesn't look right.");
+
+  const ipKey = createHash("sha256").update(String(ip || "?")).digest("hex").slice(0, 16);
+  if ((await incrCounter(`alerts-ip:${ipKey}`, 3600)) > 6) throw new AlertError(429, "Too many sign-ups from here. Try again in an hour.");
+  if ((await incrCounter(`alerts-addr:${createHash("sha256").update(addr).digest("hex").slice(0, 16)}`, 3600)) > 3) {
+    throw new AlertError(429, "We just sent a code there. Give it a few minutes.");
+  }
+
+  const subs = await loadSubscribers();
+  if (subs.filter((s) => s.verified).length >= MAX_SUBSCRIBERS) throw new AlertError(409, "This dashboard has reached its alert limit.");
+
+  const id = randomBytes(9).toString("base64url");
+  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  await setJsonCache(`alerts-pending:${id}`, { channel, address: addr, rules: normalizeRules(rules), codeHash: hashCode(id, code), tries: 0 }, PENDING_TTL_SEC);
+
+  const msg = `Your SniffMaster code is ${code}. It expires in 15 minutes.`;
+  try {
+    await deliver({ channel, address: addr }, "Your SniffMaster alert code", msg, false);
+  } catch (err) {
+    console.error("alerts: code delivery failed:", err?.message || err);
+    throw new AlertError(502, "We couldn't send the code. Double-check the address and try again.");
+  }
+  return { id, masked: maskAddress(channel, addr) };
+}
+
+export async function confirmSubscription({ id, code }) {
+  const key = `alerts-pending:${String(id || "")}`;
+  const pending = await getJsonCache(key);
+  if (!pending) throw new AlertError(410, "That code expired. Start again.");
+  if (pending.tries >= 5) throw new AlertError(429, "Too many wrong codes. Start again.");
+  if (!sameHash(hashCode(id, String(code || "").trim()), pending.codeHash)) {
+    await setJsonCache(key, { ...pending, tries: pending.tries + 1 }, PENDING_TTL_SEC);
+    throw new AlertError(400, "That code isn't right.");
+  }
+  await setJsonCache(key, { ...pending, tries: 99 }, 1);
+
+  const sub = {
+    id,
+    channel: pending.channel,
+    address: pending.address,
+    rules: pending.rules,
+    token: randomBytes(18).toString("base64url"),
+    verified: true,
+    createdAt: Date.now(),
+    state: {},
+  };
+  await updateSubscribers((subs) => [...subs.filter((s) => !(s.channel === pending.channel && s.address === pending.address)), sub]);
+
+  const list = Object.entries(sub.rules).map(([k, v]) => (RULES[k].dir === "flag" ? RULES[k].label.toLowerCase() : `${RULES[k].label} ${RULES[k].dir} ${fmtVal(RULES[k], v)}`));
+  try {
+    await deliver(sub, "You're signed up for SniffMaster alerts", `You're all set. We'll let you know when: ${list.join("; ")}.`);
+  } catch (err) {
+    console.error("alerts: welcome delivery failed:", err?.message || err);
+  }
+  return { masked: maskAddress(sub.channel, sub.address), rules: sub.rules };
+}
+
+export async function unsubscribe(token) {
+  const t = String(token || "");
+  if (!t) return false;
+  let removed = false;
+  await updateSubscribers((subs) => {
+    const left = subs.filter((s) => !sameHash(s.token, t));
+    removed = left.length !== subs.length;
+    return removed ? left : subs;
+  });
+  return removed;
+}
+
+/** Called after each device post (rate-gated by the caller). Never throws. */
+export async function runSubscriberAlerts(snapshot, home) {
+  const subs = await loadSubscribers();
+  if (!subs.length) return 0;
+  const ctx = alertContext(snapshot, home);
+  const { sends, subs: next } = decideSubscriberAlerts(subs, ctx);
+  const failed = new Set();
+  let sent = 0;
+  await Promise.all(
+    sends.map(async ({ sub, tripped }) => {
+      try {
+        await deliver(sub, `SniffMaster: ${tripped.map((t) => t.rule.label).join(", ")}`, alertText(tripped, ctx));
+        sent += 1;
+      } catch (err) {
+        failed.add(sub.id);
+        console.error("alerts: subscriber send failed:", err?.message || err);
+      }
+    })
+  );
+  // A failed send keeps the subscriber's previous state, so the next check retries it.
+  const stateById = new Map(next.filter((s) => !failed.has(s.id)).map((s) => [s.id, s.state]));
+  const prevById = new Map(subs.map((s) => [s.id, JSON.stringify(s.state || {})]));
+  const changed = [...stateById].some(([id, st]) => JSON.stringify(st || {}) !== prevById.get(id));
+  if (changed) {
+    // Merge only alert state into a fresh read, so a sign-up or unsubscribe
+    // that landed while we were sending isn't overwritten.
+    await updateSubscribers((fresh) => fresh.map((s) => (stateById.has(s.id) ? { ...s, state: stateById.get(s.id) } : s)));
+  }
+  return sent;
+}

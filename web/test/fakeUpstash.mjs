@@ -13,7 +13,12 @@ export function startFakeUpstash() {
         const [op, k, ...a] = cmd; const O = String(op).toUpperCase();
         let result = null;
         if (O === "GET") result = kv.get(k) ?? null;
+        else if (O === "DEL") { result = kv.delete(k) ? 1 : 0; expires.delete(k); }
         else if (O === "SET") {
+          const live = kv.has(k) && !(expires.has(k) && expires.get(k) < Date.now());
+          if (a.some((x) => String(x).toUpperCase() === "NX") && live) return { result: null };
+          const px = a.findIndex((x) => String(x).toUpperCase() === "PX");
+          if (px >= 0) expires.set(k, Date.now() + Number(a[px + 1]));
           kv.set(k, a[0]);
           const ex = a.findIndex((x) => String(x).toUpperCase() === "EX");
           if (ex >= 0 && Number.isFinite(Number(a[ex + 1]))) expires.set(k, Date.now() + Number(a[ex + 1]) * 1000);

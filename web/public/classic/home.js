@@ -8,7 +8,16 @@
   var POLL_MS = 120000;
   var timer = null;
   var inflight = false;
+  var queued = false;
   var active = false;
+
+  var TRIGGER_LABELS = [["cat", "Cats"], ["dog", "Dogs"], ["pollen", "Pollen"], ["dustMite", "Dust mites"], ["mold", "Mold"], ["smoke", "Smoke"]];
+  function getTriggers() {
+    try { return JSON.parse(localStorage.getItem("sm-triggers") || "[]"); } catch (e) { return []; }
+  }
+  function setTriggers(list) {
+    try { localStorage.setItem("sm-triggers", JSON.stringify(list)); } catch (e) { /* private mode */ }
+  }
 
   function $(id) { return document.getElementById(id); }
   function esc(v) {
@@ -101,15 +110,31 @@
     var pol = d.pollen || {}, ser = d.series || {};
     var h = [];
 
-    // ── Visitor card ────────────────────────────────────────────────────
-    h.push('<section class="hm-card hm-visitor" id="hm-visitor"><div class="hm-visitor-main">' +
-      '<div class="hm-ring hm-t-' + tone(v.airScore) + '"><b>' + fmt(v.airScore) + '</b><span>air score</span></div>' +
-      '<div class="hm-visitor-copy"><div class="hm-kicker">Welcome — air in this home right now</div>' +
-      '<h3>' + esc(v.headline || "") + '</h3>' +
-      (v.petAllergen ? '<div class="hm-pet hm-t-' + levelTone(v.petAllergen.level) + '">Pet allergen exposure (estimate): <b>' + esc(v.petAllergen.level) +
-        '</b> <small>' + esc(v.petAllergen.confidence) + ' confidence</small></div>' : "") +
-      ((v.notes || []).length ? "<ul>" + v.notes.map(function (n) { return "<li>" + esc(n) + "</li>"; }).join("") + "</ul>" : "") +
-      '<div class="hm-disclaimer">' + esc(v.disclaimer || "") + "</div></div></div></section>");
+    // ── Right now: smell + personal outlook ─────────────────────────────
+    var sm = d.smell || {}, ol = d.outlook || {}, vt = d.ventilation || {};
+    var mine = getTriggers();
+    var smellTone = sm.state === "bad" ? (sm.tone || "poor") : sm.state === "ok" ? (sm.tone || "good") : "na";
+    h.push('<section class="hm-card hm-visitor" id="hm-now"><div class="hm-now-grid">' +
+      '<div class="hm-now-block hm-t-' + smellTone + '"><div class="hm-kicker">Room smell</div><h3>' + esc(sm.headline || "No gas reading yet.") + '</h3>' +
+      (sm.state === "bad" ? '<div class="hm-now-meta">' + esc(sm.level || "") +
+        (sm.sinceMinutes != null ? " · for " + sm.sinceMinutes + " min" : "") +
+        (sm.trend ? " · " + esc(sm.trend) : "") + "</div>" : "") +
+      (d.cause && d.cause.key && d.cause.key !== "none" ? '<div class="hm-cause"><b>Likely cause: ' + esc(d.cause.label) + '</b> <small>' + esc(d.cause.confidence === "none" ? "unconfirmed" : d.cause.confidence + " confidence") + '</small>' +
+        ((d.cause.evidence || []).length ? '<div class="hm-dim">' + d.cause.evidence.map(esc).join(" · ") + "</div>" : "") +
+        (d.cause.action ? '<div class="hm-action' + (d.cause.urgent ? " hm-action-safety" : "") + '">' + esc(d.cause.action) + "</div>" : "") + "</div>" : "") +
+      (sm.action && !(d.cause && d.cause.action) ? '<div class="hm-action' + (sm.safety ? " hm-action-safety" : "") + '">' + esc(sm.action) + "</div>" : "") +
+      (sm.detail ? '<div class="hm-dim">' + esc(sm.detail) + (sm.confidence ? " Confidence: " + esc(sm.confidence) + "." : "") + "</div>" : "") + "</div>" +
+      '<div class="hm-now-block hm-t-' + ({ None: "na", Low: "good", Moderate: "fair", High: "poor", "Very high": "bad" }[ol.level] || "na") + '"><div class="hm-kicker">My sensitivities</div>' +
+      '<div class="hm-chips hm-triggers" id="hm-triggers">' + TRIGGER_LABELS.map(function (t) {
+        var on = mine.indexOf(t[0]) !== -1;
+        return '<button type="button" class="hm-chip hm-trig' + (on ? " is-on" : "") + '" data-trig="' + t[0] + '" aria-pressed="' + on + '">' + t[1] + "</button>";
+      }).join("") + "</div><h3>" + esc(ol.headline || "") + "</h3>" +
+      (ol.items || []).map(function (i) {
+        return '<div class="hm-trig-row hm-t-' + levelTone(i.level) + '"><b>' + esc(i.label) + ": " + esc(i.confidence === "none" ? "no data" : i.level) + "</b> <small>" + (i.confidence === "none" ? "" : esc(i.confidence || "") + " confidence") + "</small><div class=\"hm-dim\">" + esc(i.reason) + "</div>" +
+          (i.action ? '<div class="hm-action">' + esc(i.action) + "</div>" : "") + "</div>";
+      }).join("") + "</div></div>" +
+      (vt.text && vt.action !== "none" ? '<div class="hm-vent"><b>Windows:</b> ' + esc(vt.text) + "</div>" : "") +
+      '<div class="hm-disclaimer">' + esc((v.disclaimer || "Estimates from home sensors and outdoor feeds. Not a medical device.")) + "</div></section>");
 
     // ── Score + drivers ────────────────────────────────────────────────
     h.push('<section class="hm-card" id="hm-score"><div class="hm-card-head"><span>Home Air Score</span><span class="hm-pill hm-t-' + tone(sc.value) + '">' +
@@ -198,9 +223,9 @@
   }
 
   function load() {
-    if (inflight) return;
+    if (inflight) { queued = true; return; }
     inflight = true;
-    fetch("/api/home-stats", { cache: "no-store" })
+    fetch("/api/home-stats?triggers=" + encodeURIComponent(getTriggers().join(",")), { cache: "no-store" })
       .then(function (r) { return r.status === 204 ? null : r.ok ? r.json() : Promise.reject(new Error("home-stats " + r.status)); })
       .then(function (d) {
         render(d);
@@ -217,8 +242,17 @@
           stamp.textContent = "Update failed — showing the last reading";
         }
       })
-      .then(function () { inflight = false; });
+      .then(function () { inflight = false; if (queued) { queued = false; load(); } });
   }
+
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest ? e.target.closest(".hm-trig") : null;
+    if (!b) return;
+    var k = b.getAttribute("data-trig"), list = getTriggers(), i = list.indexOf(k);
+    if (i === -1) list.push(k); else list.splice(i, 1);
+    setTriggers(list);
+    load();
+  });
 
   window.SniffHome = {
     onView: function (view) {

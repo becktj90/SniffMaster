@@ -3,6 +3,9 @@
   "outputDirectory": "public",
   "rewrites": [
     { "source": "/report", "destination": "/report.html" },
+    { "source": "/guest", "destination": "/guest.html" },
+    { "source": "/api/guest", "destination": "/api/extras?fn=guest" },
+    { "source": "/api/oled", "destination": "/api/extras?fn=oled" },
     { "source": "/api/apod", "destination": "/api/extras?fn=apod" },
     { "source": "/api/command", "destination": "/api/extras?fn=command" },
     { "source": "/api/launches", "destination": "/api/extras?fn=launches" },
@@ -14,6 +17,10 @@
     { "source": "/api/settings", "destination": "/api/extras?fn=settings" },
     { "source": "/api/report-card", "destination": "/api/extras?fn=report-card" },
     { "source": "/api/report-card.png", "destination": "/api/extras?fn=report-card&format=png" },
+    { "source": "/api/insights", "destination": "/api/extras?fn=insights" },
+    { "source": "/api/sensors", "destination": "/api/extras?fn=sensors" },
+    { "source": "/api/alerts", "destination": "/api/extras?fn=alerts" },
+    { "source": "/classic", "destination": "/classic/index.html" },
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
   "crons": [

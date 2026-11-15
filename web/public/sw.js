@@ -4,8 +4,8 @@
 // 404s, so the install event failed and NO shell caching ever happened.
 // Also: navigations are now network-first, so a fresh deploy shows up on the
 // next load without waiting for the skip-waiting handshake.
-const CACHE_NAME = "sniffmaster-v49"; // v49: gas % shows n/a when firmware reports gasPctValid:false
-const SHELL = ["/", "/style.css", "/app.js", "/home.js", "/manifest.json", "/icon-192.png", "/icon-512.png"];
+const CACHE_NAME = "sniffmaster-v49"; // v49: rebuilt dashboard; classic moved to /classic
+const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 self.addEventListener("install", (e) => {
  e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL)));
  self.skipWaiting();           // new SW activates immediately
