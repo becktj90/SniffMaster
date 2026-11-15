@@ -239,32 +239,40 @@
     // Significant events, from the data only: feed gaps (the timestamps
     // jump — a shaded region, no fabricated points) and threshold
     // breaches (a dashed line + dot + short label at the entry point).
-    // Labels are capped so a busy window stays readable; the toolbar
-    // shows the full count. Hidden when the events toggle is off.
-    var evList = (opts.events || []).filter(function (e) { return e.t >= t0 && e.t <= t1; });
-    if (opts.showEvents !== false && evList.length) {
+    // The two kinds render by different rules. A gap is data integrity,
+    // not an event: its band and amber label stay visible even when the
+    // Events toggle is off, and a gap counts when it overlaps the window
+    // at all — one that started before the window opened still shows, so
+    // the label never vanishes on a zoom or range change. Breaches are
+    // events: hidden when the toggle is off. Labels are capped so a busy
+    // window stays readable; the toolbar shows the full breach count.
+    var Ch2 = window.SniffCharts;
+    var evList = (opts.events || []).slice();
+    var evShown = Ch2 && Ch2.eventsInWindow ? Ch2.eventsInWindow(evList, t0, t1) : evList.filter(function (e) { return e.t >= t0 && e.t <= t1; });
+    var evParts = Ch2 && Ch2.partitionEvents ? Ch2.partitionEvents(evShown) : { gaps: evShown.filter(function (e) { return e.kind === "gap"; }), breaches: evShown.filter(function (e) { return e.kind !== "gap"; }) };
+    var gapLabels = 0;
+    evParts.gaps.forEach(function (e) {
+      var gx0 = Math.max(padL, x(Math.max(e.t0 || e.t, t0))), gx1 = Math.min(W - padR, x(Math.min(e.t1 || e.t, t1)));
+      if (gx1 > gx0) {
+        html += '<rect class="event-gap" x="' + gx0.toFixed(1) + '" y="' + padT + '" width="' + (gx1 - gx0).toFixed(1) + '" height="' + (H - padT - padB) + '"/>';
+        if (gapLabels < 5) {
+          var gcx = (gx0 + gx1) / 2;
+          html += '<text class="gap-label" x="' + gcx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="middle">' + esc(e.label) + "</text>";
+          gapLabels++;
+        }
+      }
+    });
+    if (opts.showEvents !== false && evParts.breaches.length) {
       var labelShown = 0;
-      evList.forEach(function (e) {
-        if (e.kind === "gap") {
-          var gx0 = Math.max(padL, x(Math.max(e.t0 || e.t, t0))), gx1 = Math.min(W - padR, x(Math.min(e.t1 || e.t, t1)));
-          if (gx1 > gx0) {
-            html += '<rect class="event-gap" x="' + gx0.toFixed(1) + '" y="' + padT + '" width="' + (gx1 - gx0).toFixed(1) + '" height="' + (H - padT - padB) + '"/>';
-            if (labelShown < 5) {
-              var gcx = (gx0 + gx1) / 2;
-              html += '<text class="event-label" x="' + gcx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="middle">' + esc(e.label) + "</text>";
-              labelShown++;
-            }
-          }
-        } else {
-          var ex = x(e.t);
-          html += '<line class="event-line" x1="' + ex.toFixed(1) + '" x2="' + ex.toFixed(1) + '" y1="' + padT + '" y2="' + (H - padB) + '"/>';
-          if (isNum(e.value)) html += '<circle class="event-dot" cx="' + ex.toFixed(1) + '" cy="' + y(Number(e.value)).toFixed(1) + '" r="4.5"/>';
-          if (labelShown < 5) {
-            var anchor = ex < W / 2 ? "start" : "end";
-            var lx = anchor === "start" ? Math.min(ex + 6, W - padR - 4) : Math.max(ex - 6, padL + 4);
-            html += '<text class="event-label" x="' + lx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="' + anchor + '">' + esc(e.label) + "</text>";
-            labelShown++;
-          }
+      evParts.breaches.forEach(function (e) {
+        var ex = x(e.t);
+        html += '<line class="event-line" x1="' + ex.toFixed(1) + '" x2="' + ex.toFixed(1) + '" y1="' + padT + '" y2="' + (H - padB) + '"/>';
+        if (isNum(e.value)) html += '<circle class="event-dot" cx="' + ex.toFixed(1) + '" cy="' + y(Number(e.value)).toFixed(1) + '" r="4.5"/>';
+        if (labelShown < 5) {
+          var anchor = ex < W / 2 ? "start" : "end";
+          var lx = anchor === "start" ? Math.min(ex + 6, W - padR - 4) : Math.max(ex - 6, padL + 4);
+          html += '<text class="event-label" x="' + lx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="' + anchor + '">' + esc(e.label) + "</text>";
+          labelShown++;
         }
       });
     }
@@ -452,6 +460,13 @@
     var out = home.outdoor || {};
     var cur = wx && wx.current;
     var vent = home.ventilation || {};
+    // The Pet meter tile is the one Overview tile without a plain-English
+    // line — Smell, Comfort and CO₂ already have one. The server already
+    // writes pet.note; the first sentence is the summary, the rest is the
+    // caveat the Pets page shows in full.
+    var petNote = pet.note || "";
+    var petDot = petNote.indexOf(". ");
+    if (petDot >= 0) petNote = petNote.slice(0, petDot + 1);
     // Sparklines are measurement traces, so they take the series color
     // (blue/violet/cyan) like every other chart line — never a state
     // color. The state still shows in the words and pills beside them.
@@ -460,7 +475,7 @@
       '<a class="card stat" href="#/smell"><p class="kicker">Smell</p><div class="value value-md">' + esc(smell.level || "—") + '</div><div class="line interp">' + esc(smell.headline || "") + "</div>" + (smell.sinceMinutes ? '<div class="line muted small">For ' + smell.sinceMinutes + " min · " + esc(smell.trend || "") + "</div>" : "") + "</a>",
       '<a class="card stat" href="#/sensors"><p class="kicker">Comfort</p><div class="value num">' + fmt(cl.tempF, 1) + "<small>°F</small> " + fmt(cl.humidity) + '<small>% RH</small></div><div class="line interp">' + esc(cl.comfort || "") + " · dew point " + fmt(cToF(cl.dewPointC)) + "°F</div>" + spark(s.tempC, css("--series-2")) + "</a>",
       '<a class="card stat" href="#/sensors"><p class="kicker">' + (g.co2Source === "sensor" ? "CO₂ sensor" : g.co2Source === "estimated" ? "CO₂ estimate" : "CO₂") + '</p><div class="value num">' + fmt(g.co2) + '<small>ppm CO₂</small></div><div class="line interp">' + esc(vent.text || g.co2Category || "") + (g.co2Source === "estimated" ? " · same BSEC estimate as the OLED" : "") + "</div>" + spark(s.co2, css("--series-1")) + "</a>",
-      '<a class="card stat" href="#/pets"><p class="kicker">Pet meter</p><div class="value num">' + fmt(pet.index) + '<small>/ 100</small></div><div class="line">' + pill(pet.level || "Unknown", levelTone(pet.level)) + ' <span class="muted small">' + esc(pet.confidence ? pet.confidence + " confidence" : "") + "</span></div></a>",
+      '<a class="card stat" href="#/pets"><p class="kicker">Pet meter</p><div class="value num">' + fmt(pet.index) + '<small>/ 100</small></div><div class="line">' + pill(pet.level || "Unknown", levelTone(pet.level)) + ' <span class="muted small">' + esc(pet.confidence ? pet.confidence + " confidence" : "") + "</span></div>" + (petNote ? '<div class="line interp">' + esc(petNote) + "</div>" : "") + "</a>",
     ];
 
     var outside = '<a class="card" href="#/outside"><div class="card-head"><h3>Outside' + (home.city ? " in " + esc(home.city) : "") + "</h3>" + pill("AQI " + fmt(out.usAqi), levelTone(wx && wx.outdoorLevel || (out.usAqi <= 50 ? "good" : out.usAqi <= 100 ? "moderate" : "high"))) + "</div>" +
@@ -683,6 +698,10 @@
       var visVals = [];
       shown.series.forEach(function (s) { (s.values || []).forEach(function (v) { visVals.push(v); }); });
       var events = Ch ? Ch.buildEvents(d.series.t, vals, c.zones) : [];
+      // The toggle hides breach labels only — a feed gap is data
+      // integrity, so its band and label stay. The count says what the
+      // toggle controls.
+      var breachCount = Ch && Ch.partitionEvents ? Ch.partitionEvents(events).breaches.length : events.filter(function (e) { return e.kind !== "gap"; }).length;
       lineChart(el, {
         t: shown.t, series: shown.series, unit: c.unit, label: c.title,
         zones: c.zones, marks: c.marks,
@@ -695,7 +714,7 @@
       if (Ch) {
         chartTools(box.querySelector(".chart-tools"), {
           seriesName: c.title, color: css(c.color),
-          zoomed: Boolean(win), eventsCount: events.length, eventsOn: Ch.store.eventsOn(c.key),
+          zoomed: Boolean(win), eventsCount: breachCount, eventsOn: Ch.store.eventsOn(c.key),
           onReset: function () { Ch.store.clearZoom(c.key); drawSensorCharts(); },
           onToggleEvents: function () { Ch.store.setEventsOn(c.key, !Ch.store.eventsOn(c.key)); drawSensorCharts(); },
           onCsv: function () {
@@ -810,14 +829,14 @@
       '<div class="grid g-2 mt">' + bouquetCard + familyCard + "</div>" +
       '<div class="mt">' + atlasCard + "</div>" +
       (derivedCard ? '<div class="mt">' + derivedCard + "</div>" : "") +
-      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div class="chart-box"><div class="chart-tools" id="heat-tools"></div><div id="heat"></div></div><p class="note">Darker means a stronger smell (score 8–100). A row appears once a class rises above background.</p></div>' +
+      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div class="chart-box"><div class="chart-tools" id="heat-tools"></div><div id="heat"></div></div><div class="heat-legend"><span>Low intensity</span><i class="heat-grad" aria-hidden="true"></i><span>Strong</span><span class="heat-gap-key"><i aria-hidden="true"></i>Feed gap</span></div><div class="heat-pills" id="heat-events"></div><p class="note">Darker means a stronger smell (score 8–100). A row appears once a class rises above background.</p></div>' +
       '<div class="card"><h3 style="margin-bottom:8px">Recent sulfur events</h3>' + events + "</div></div>";
   }
   function drawHeat() {
     var el = $("#heat");
     var toolsEl = $("#heat-tools");
     var d = window.__sensorData;
-    if (!el || !d || !Array.isArray(d.odors) || !d.odors.length) { if (el) el.innerHTML = '<div class="chart-empty" style="height:80px">Not enough history yet</div>'; return; }
+    if (!el || !d || !Array.isArray(d.odors) || !d.odors.length) { if (el) el.innerHTML = '<div class="chart-empty" style="height:80px">Not enough history yet</div>'; var pe0 = document.getElementById("heat-events"); if (pe0) pe0.innerHTML = ""; return; }
     var Ch = window.SniffCharts;
     // Zoom slices the timeline columns, like the line charts slice points.
     // The heatmap's cells already are the events, and the sulfur list
@@ -849,7 +868,7 @@
       });
     };
     var rows = ODORS.map(function (_, i) { return odors.some(function (col) { return col && col[i] >= 20; }) ? i : -1; }).filter(function (i) { return i >= 0; });
-    if (!rows.length) { el.innerHTML = '<div class="chart-empty" style="height:80px">Quiet the whole window. Nothing above background.</div>'; renderTools(); return; }
+    if (!rows.length) { el.innerHTML = '<div class="chart-empty" style="height:80px">Quiet the whole window. Nothing above background.</div>'; var pe1 = document.getElementById("heat-events"); if (pe1) pe1.innerHTML = ""; renderTools(); return; }
     var cols = odors.length, W = el.clientWidth || 800, labelW = 120, rowH = 18, H = rows.length * rowH + 20, cw = (W - labelW) / cols;
     // Cell color means strength in the same state language as the smell
     // bars (mild / noticeable / strong): warmer and more opaque as the
@@ -865,8 +884,33 @@
         svg += '<rect x="' + (labelW + c * cw).toFixed(1) + '" y="' + (r * rowH + 2) + '" width="' + Math.max(1, cw - 0.5).toFixed(1) + '" height="' + (rowH - 4) + '" rx="2" fill="' + cellFill(v) + '" fill-opacity="' + cellOp(v) + '"><title>' + esc(ODORS[oi]) + " " + v + " · " + clock(t[c]) + "</title></rect>";
       });
     });
+    // Feed gaps are data integrity, not smell events: where the timestamps
+    // jump, the columns compress, so the boundary gets an amber dashed
+    // line (explained in the legend below the chart). Computed from the
+    // full series on every render and filtered to the visible window, so
+    // a zoom or range change cannot drop it.
+    if (Ch) {
+      var heatGaps = Ch.eventsInWindow ? Ch.eventsInWindow(Ch.findGaps(d.series.t), t[0], t[t.length - 1]) : Ch.findGaps(t);
+      heatGaps.forEach(function (g) {
+        var c = 0;
+        while (c < t.length && t[c] < (g.t1 || g.t)) c++;
+        var gx = labelW + c * cw;
+        svg += '<line x1="' + gx.toFixed(1) + '" x2="' + gx.toFixed(1) + '" y1="2" y2="' + (H - 22) + '" style="stroke:var(--fair);stroke-width:2;stroke-dasharray:4 3"><title>' + esc(g.label) + "</title></line>";
+      });
+    }
     svg += '<text class="axis-text" x="' + labelW + '" y="' + (H - 3) + '">' + esc(clock(t[0])) + '</text><text class="axis-text" x="' + W + '" y="' + (H - 3) + '" text-anchor="end">' + esc(clock(t[t.length - 1])) + "</text></svg>";
     el.innerHTML = svg;
+    // Notable smell events in this window, as pills: one per run of a
+    // class at strong strength, timed at the run's peak column — the same
+    // cells the heatmap draws, so pill times and heatmap cells always
+    // agree. Nothing is shown when no class is strong in this window.
+    var pillsEl = document.getElementById("heat-events");
+    if (pillsEl) {
+      var smEv = Ch && Ch.smellEvents ? Ch.smellEvents(t, odors, ODORS) : [];
+      pillsEl.innerHTML = smEv.map(function (e) {
+        return '<span class="tone fair">Strong smell: ' + esc(e.name) + " · " + esc(clock(e.t)) + "</span>";
+      }).join("");
+    }
     // Drag across the timeline to zoom into those columns; double-click
     // resets. The columns are discrete, so the window snaps to column
     // edges rather than interpolating between readings.
@@ -956,6 +1000,9 @@
     // The pet alert rule fires above 50, so that is the breach line here.
     var zones = [{ lo: 50, hi: 100, tone: "bad", label: "Pet smell high, above 50" }];
     var events = Ch ? Ch.buildEvents(d.series.t, series[0].values, zones) : [];
+    // Same rule as the Sensors charts: the toggle hides breach labels
+    // only; the count says what the toggle controls.
+    var breachCount = Ch && Ch.partitionEvents ? Ch.partitionEvents(events).breaches.length : events.filter(function (e) { return e.kind !== "gap"; }).length;
     lineChart(el, {
       t: shown.t, series: shown.series, yRange: [0, 100], label: "Pet smell score",
       fmt: function (v) { return fmt(v); },
@@ -966,7 +1013,7 @@
     if (Ch && box) {
       chartTools(toolsEl, {
         seriesName: "Pet / litter", color: css("--series-1"),
-        zoomed: Boolean(win), eventsCount: events.length, eventsOn: Ch.store.eventsOn("pet"),
+        zoomed: Boolean(win), eventsCount: breachCount, eventsOn: Ch.store.eventsOn("pet"),
         onReset: function () { Ch.store.clearZoom("pet"); drawPetChart(); },
         onToggleEvents: function () { Ch.store.setEventsOn("pet", !Ch.store.eventsOn("pet")); drawPetChart(); },
         onCsv: function () {
