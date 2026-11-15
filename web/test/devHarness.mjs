@@ -31,6 +31,7 @@ app.get("/api/latest", (_req, res) => {
 app.get("/api/version", (_req, res) => res.json({ version: "1.1.0", commitSha: null, commitRef: null, environment: "local", label: "v1.1.0 (local)" }));
 app.get("/api/health", (_req, res) => res.json({ storage: "upstash-redis", configured: true, reachable: true, latestPresent: true, latestSniffPresent: false, latestCommandPresent: false, snapshotHistoryDepth: 432, sniffHistoryDepth: 0, commandHistoryDepth: 0 }));
 app.all("/api/home-stats", (req, res) => { req.query = { ...req.query, fn: "home-stats" }; extras(req, res); });
+app.all("/api/ai-insight", (req, res) => { req.query = { ...req.query, fn: "ai-insight" }; extras(req, res); });
 app.all("/api/guest", (req, res) => { req.query = { ...req.query, fn: "guest" }; extras(req, res); });
 app.get("/guest", (_req, res) => res.sendFile(new URL("../public/guest.html", import.meta.url).pathname));
 app.all("/api/oled", (req, res) => { req.query = { ...req.query, fn: "oled" }; extras(req, res); });

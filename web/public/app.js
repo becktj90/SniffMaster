@@ -69,12 +69,20 @@
 
   // ── data cache with visibility-aware polling ───────────────────────
   var cache = {};
+  // Per-trigger severity (sm-trigger-severity) rides along so the server
+  // can sharpen/soften the outlook per trigger; only non-moderate levels
+  // are sent, the rest default to moderate server-side. The AI insight
+  // endpoint takes the same parameters so it is tailored the same way.
+  function triggersQs() {
+    var t = store("sm-triggers") || [];
+    var sev = store("sm-trigger-severity") || {};
+    var s = t.filter(function (k) { return sev[k] && sev[k] !== "moderate"; }).map(function (k) { return k + ":" + sev[k]; }).join(",");
+    return "triggers=" + encodeURIComponent(t.join(",")) + (s ? "&severity=" + encodeURIComponent(s) : "");
+  }
   var sources = {
-    // Per-trigger severity (sm-trigger-severity) rides along so the server
-    // can sharpen/soften the outlook per trigger; only non-moderate levels
-    // are sent, the rest default to moderate server-side.
-    home: { url: function () { var t = store("sm-triggers") || []; var sev = store("sm-trigger-severity") || {}; var s = t.filter(function (k) { return sev[k] && sev[k] !== "moderate"; }).map(function (k) { return k + ":" + sev[k]; }).join(","); return "/api/home-stats?triggers=" + encodeURIComponent(t.join(",")) + (s ? "&severity=" + encodeURIComponent(s) : ""); }, every: 120000 },
+    home: { url: function () { return "/api/home-stats?" + triggersQs(); }, every: 120000 },
     insights: { url: function () { return "/api/insights"; }, every: 600000 },
+    aiInsight: { url: function () { return "/api/ai-insight?" + triggersQs(); }, every: 300000 },
     weather: { url: function () { return "/api/weather-briefing"; }, every: 1800000 },
     sniffs: { url: function () { return "/api/sniff-history?count=12"; }, every: 300000 },
     alerts: { url: function () { return "/api/alerts"; }, every: 0 },
@@ -405,6 +413,7 @@
     var home = await load("home");
     if (!home) return noData();
     var ins = await load("insights").catch(function () { return null; });
+    var ai = await load("aiInsight").catch(function () { return null; });
     var wx = await load("weather").catch(function () { return null; });
     var s = home.series || {};
     var comps = (home.score && home.score.components) || [];
@@ -477,11 +486,22 @@
         '<small>Lower is cleaner. The OLED prints the other number, 100 minus this one, only when it cannot reach the dashboard. Dominant odor uses the same 20% cutoff as the OLED footer.</small></div>';
     }
 
+    // Tailored insight: what this air means for focus and breathing.
+    // The server only changes the text on a material state change (breach,
+    // big swing, move to steady air), so the card holds still across polls.
+    var aiCard = "";
+    if (ai && ai.text) {
+      aiCard = '<div class="card ai-insight"><p class="kicker">' + (ai.mode === "openai" ? '<span class="ai-tag">AI insight</span>' : "What this means for you") + "</p>" +
+        '<p class="interp ai-insight-text">' + esc(ai.text) + "</p>" +
+        '<p class="muted small ai-insight-meta">Updated ' + esc(clock(ai.generatedAt)) + (ai.mode === "openai" ? " · written by AI from your live readings" : "") + "</p></div>";
+    }
+
     return '<div class="grid g-hero overview-hero">' +
       '<div class="card score-card"><p class="kicker">Home health score</p>' + scoreRing(home.score && home.score.value, home.score && home.score.grade) +
       noteHtml + driverHtml +
       '<div class="where">Higher is healthier · this is the OLED Home Score · updated ' + esc(ago(home.receivedAt)) + "</div>" + deviceRows + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
+      aiCard +
       '<div class="grid g-4 mt">' + tiles.join("") + "</div>" +
       '<div class="grid g-2 top mt overview-bottom">' + outside + risks + sampleCard + "</div>";
   }
@@ -1501,7 +1521,7 @@
 
   // ── router ─────────────────────────────────────────────────────────
   var ROUTES = {
-    home: { render: pageHome, poll: ["home", "insights", "weather"], title: "Overview" },
+    home: { render: pageHome, poll: ["home", "insights", "weather", "aiInsight"], title: "Overview" },
     sensors: { render: pageSensors, poll: ["sensors"], title: "Sensors", after: drawSensorCharts },
     smell: { render: pageSmell, poll: ["home", "sensors"], title: "Smell", after: drawHeat },
     pets: { render: pagePets, poll: ["home", "sensors"], title: "Pet meter", after: drawPetChart, bind: bindPets },
