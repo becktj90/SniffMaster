@@ -12,9 +12,15 @@
   --ink-3: #7d8899;
   --accent: #6aa8ff;
   --accent-ink: #0b1220;
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
+  /* Series palette (chart lines, default bars): deliberately disjoint in hue
+     from the state colors below — blue / violet / cyan, so a series line
+     never reads as a good/fair/poor/bad state. */
+  --series-1: #4f8ff0;
+  --series-2: #8b7cf6;
+  --series-3: #2fb3c4;
+  /* Soft chart gridlines: visible enough to read values against, faint
+     enough not to compete with the data. */
+  --viz-grid: rgba(148, 163, 184, 0.16);
   --good: #3ccf74;
   --fair: #fab219;
   --poor: #ec835a;
@@ -33,7 +39,8 @@
     color-scheme: light;
     --bg: #f5f6f8; --bg-2: #eef0f3; --card: #ffffff; --card-2: #f7f8fa; --line: #e3e6eb; --line-2: #d4d9e0;
     --ink: #121722; --ink-2: #485365; --ink-3: #6f7a8b; --accent: #2a6fdb; --accent-ink: #ffffff;
-    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+    --series-1: #2f6fd0; --series-2: #6a5ae0; --series-3: #128a9e;
+    --viz-grid: rgba(71, 85, 105, 0.20);
     --good: #0f8a3c; --fair: #a66b00; --poor: #c4501f; --bad: #c62f2f;
     --good-bg: rgba(15, 138, 60, 0.09); --fair-bg: rgba(250, 178, 25, 0.16); --poor-bg: rgba(236, 131, 90, 0.14); --bad-bg: rgba(198, 47, 47, 0.09);
     --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px rgba(16, 24, 40, 0.06);
@@ -43,7 +50,8 @@
   color-scheme: light;
   --bg: #f5f6f8; --bg-2: #eef0f3; --card: #ffffff; --card-2: #f7f8fa; --line: #e3e6eb; --line-2: #d4d9e0;
   --ink: #121722; --ink-2: #485365; --ink-3: #6f7a8b; --accent: #2a6fdb; --accent-ink: #ffffff;
-  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --series-1: #2f6fd0; --series-2: #6a5ae0; --series-3: #128a9e;
+  --viz-grid: rgba(71, 85, 105, 0.20);
   --good: #0f8a3c; --fair: #a66b00; --poor: #c4501f; --bad: #c62f2f;
   --good-bg: rgba(15, 138, 60, 0.09); --fair-bg: rgba(250, 178, 25, 0.16); --poor-bg: rgba(236, 131, 90, 0.14); --bad-bg: rgba(198, 47, 47, 0.09);
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px rgba(16, 24, 40, 0.06);
@@ -168,8 +176,8 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .device-readout small { grid-column: 1 / -1; color: var(--ink-3); }
 .components { width: 100%; display: grid; gap: 7px; margin-top: 10px; text-align: left; }
 .comp { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 12.5px; color: var(--ink-2); }
-.comp .bar { grid-column: 1 / -1; height: 5px; border-radius: 4px; background: var(--card-2); overflow: hidden; }
-.comp .bar i { display: block; height: 100%; border-radius: 4px; }
+.comp .bar { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--card-2); overflow: hidden; }
+.comp .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--bar, var(--series-1)), color-mix(in srgb, var(--bar, var(--series-1)) 58%, white)); }
 
 .brief { position: relative; overflow: hidden; }
 .brief::after { content: ""; position: absolute; inset: -40% -20% auto auto; width: 320px; height: 320px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--series-1) 16%, transparent), transparent 70%); pointer-events: none; }
@@ -199,7 +207,7 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .chart { position: relative; width: 100%; height: 190px; touch-action: pan-y; }
 .chart.tall { height: 240px; }
 .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.chart .grid-line { stroke: var(--line); stroke-width: 1; }
+.chart .grid-line { stroke: var(--viz-grid); stroke-width: 1; }
 .chart .axis-text { fill: var(--ink-3); font-size: 10.5px; font-family: var(--sans); }
 .chart .crosshair { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart .dot { stroke: var(--card); stroke-width: 2; }
@@ -239,7 +247,10 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .hbars { display: grid; gap: 9px; }
 .hbar { display: grid; grid-template-columns: minmax(90px, 140px) 1fr 38px; align-items: center; gap: 10px; font-size: 13px; }
 .hbar .track { height: 8px; background: var(--card-2); border-radius: 4px; overflow: hidden; }
-.hbar .track i { display: block; height: 100%; border-radius: 4px; background: var(--series-1); }
+/* Bars read as a left-to-right gradient (base color → a lighter tint of
+   itself). The color comes from an inline --bar custom property where the
+   bar means a state; otherwise it defaults to the series blue. */
+.hbar .track i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--bar, var(--series-1)), color-mix(in srgb, var(--bar, var(--series-1)) 58%, white)); }
 .hbar .v { text-align: right; font-family: var(--mono); color: var(--ink-2); font-size: 12px; }
 .hbar.dim { color: var(--ink-3); }
 .note { font-size: 12.5px; color: var(--ink-3); margin: 12px 0 0; }

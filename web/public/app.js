@@ -179,18 +179,26 @@
     var id = "g" + (++chartId);
     var toneStroke = { good: css("--good"), fair: css("--fair"), poor: css("--poor"), bad: css("--bad") };
     var html = '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" role="img" aria-label="' + esc(opts.label || "chart") + '">';
-    (opts.zones || []).forEach(function (z) {
+    (opts.zones || []).forEach(function (z, zi) {
       var topV = Math.min(r[1], z.hi), botV = Math.max(r[0], z.lo);
       if (topV <= botV) return;
       var top = y(topV), bot = y(botV);
-      html += '<rect x="' + padL + '" y="' + top.toFixed(1) + '" width="' + (W - padL - padR) + '" height="' + Math.max(0, bot - top).toFixed(1) + '" fill="' + (toneStroke[z.tone] || "transparent") + '" fill-opacity="0.16"/>';
+      // Zone bands fade top-to-bottom (denser at the top edge) via the
+      // gradient defined in the <defs> below — a flat tint competes with
+      // the line; a fade reads as background.
+      html += '<rect x="' + padL + '" y="' + top.toFixed(1) + '" width="' + (W - padL - padR) + '" height="' + Math.max(0, bot - top).toFixed(1) + '" fill="url(#' + id + "z" + zi + ')"/>';
     });
     (opts.marks || []).forEach(function (m) {
       if (m.y < r[0] || m.y > r[1]) return;
       var yy = y(m.y).toFixed(1);
       html += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy + '" y2="' + yy + '" stroke="' + (toneStroke[m.tone] || css("--ink-3")) + '" stroke-width="2" stroke-dasharray="6 4"/>';
     });
-    html += '<defs><linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + series[0].color + '" stop-opacity=".22"/><stop offset="1" stop-color="' + series[0].color + '" stop-opacity="0"/></linearGradient></defs>';
+    html += '<defs><linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + series[0].color + '" stop-opacity=".22"/><stop offset="1" stop-color="' + series[0].color + '" stop-opacity="0"/></linearGradient>';
+    (opts.zones || []).forEach(function (z, zi) {
+      var zc = toneStroke[z.tone] || "transparent";
+      html += '<linearGradient id="' + id + "z" + zi + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + zc + '" stop-opacity="0.14"/><stop offset="1" stop-color="' + zc + '" stop-opacity="0.03"/></linearGradient>';
+    });
+    html += "</defs>";
     for (var i = 0; i <= 3; i++) {
       var gv = r[0] + ((r[1] - r[0]) * i) / 3;
       var gy = y(gv);
@@ -217,10 +225,10 @@
       if (si === 0 && area) html += '<path d="' + area + "L" + lastX + " " + (H - padB) + "L" + firstX + " " + (H - padB) + 'Z" fill="url(#' + id + ')"/>';
       html += '<path d="' + d + '" fill="none" stroke="' + s.color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' + (s.dash ? ' stroke-dasharray="4 4"' : "") + "/>";
     });
-    // "Now" dot on the latest reading, so the current value is visible at a glance.
+    // "Now" dot on the latest reading, so the current value is visible at a glance — with a soft halo so it reads at small sizes.
     var s0 = series[0], lastJ = -1;
     for (var j = s0.values.length - 1; j >= 0; j--) { if (isNum(s0.values[j])) { lastJ = j; break; } }
-    if (lastJ >= 0) html += '<circle class="now-dot" cx="' + x(t[lastJ]).toFixed(1) + '" cy="' + y(Number(s0.values[lastJ])).toFixed(1) + '" r="4" fill="' + s0.color + '" stroke="' + css("--card") + '" stroke-width="2"/>';
+    if (lastJ >= 0) html += '<circle cx="' + x(t[lastJ]).toFixed(1) + '" cy="' + y(Number(s0.values[lastJ])).toFixed(1) + '" r="7.5" fill="' + s0.color + '" fill-opacity="0.22"/>' + '<circle class="now-dot" cx="' + x(t[lastJ]).toFixed(1) + '" cy="' + y(Number(s0.values[lastJ])).toFixed(1) + '" r="4" fill="' + s0.color + '" stroke="' + css("--card") + '" stroke-width="2"/>';
     html += '<line class="crosshair" y1="' + padT + '" y2="' + (H - padB) + '" visibility="hidden"/>';
     series.forEach(function (s) { html += '<circle class="dot" r="4.5" fill="' + s.color + '" visibility="hidden"/>'; });
     html += "</svg>";
@@ -257,7 +265,9 @@
     if (v.length < 2) return "";
     var mn = Math.min.apply(null, v), mx = Math.max.apply(null, v), rg = mx - mn || 1;
     var d = v.map(function (p, i) { return (i ? "L" : "M") + ((i / (v.length - 1)) * 100).toFixed(2) + " " + (30 - ((p - mn) / rg) * 26 - 2).toFixed(2); }).join("");
-    return '<svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linecap="round"/></svg>';
+    // Soft area fill under the line — the spark reads as a shape, not a thread.
+    var area = d + "L100 30L0 30Z";
+    return '<svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><path d="' + area + '" fill="' + color + '" fill-opacity="0.14"/><path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linecap="round"/></svg>';
   }
   function stats(values) {
     var v = (values || []).filter(isNum).map(Number);
@@ -301,7 +311,7 @@
     var scored = comps.filter(function (c) { return isNum(c.score); });
     var sorted = scored.slice().sort(function (a, b) { return a.score - b.score; });
     var compHtml = sorted.map(function (c) {
-      return '<div class="comp"><span>' + esc(c.label) + '</span><span class="num">' + fmt(c.score) + '</span><span class="bar"><i style="width:' + c.score + "%;background:" + css("--" + toneFor(c.score)) + '"></i></span></div>';
+      return '<div class="comp"><span>' + esc(c.label) + '</span><span class="num">' + fmt(c.score) + '</span><span class="bar"><i style="width:' + c.score + "%;--bar:" + css("--" + toneFor(c.score)) + '"></i></span></div>';
     }).join("");
     // Plain-language takeaway + what's driving the score, from the same
     // data the bars show — nothing invented. Appears once /gauge.js
@@ -543,7 +553,7 @@
       // Bar color means strength in the shared state language: mild is fine,
       // noticeable is worth watching, strong is the one to act on.
       var barTone = v >= 65 ? "--poor" : v >= 40 ? "--fair" : "--good";
-      return '<div class="hbar' + (v < 20 ? " dim" : "") + '"><span>' + esc(o.name || ODORS[o.index]) + '</span><span class="track"><i style="width:' + Math.min(100, v) + "%;background:" + css(barTone) + '"></i></span><span class="v">' + fmt(v) + "</span></div>";
+      return '<div class="hbar' + (v < 20 ? " dim" : "") + '"><span>' + esc(o.name || ODORS[o.index]) + '</span><span class="track"><i style="width:' + Math.min(100, v) + "%;--bar:" + css(barTone) + '"></i></span><span class="v">' + fmt(v) + "</span></div>";
     }).join("");
     var tone = sm.smellsBad ? (sm.safety ? "bad" : "poor") : sm.tone === "fair" ? "fair" : "good";
     var nose = sense.sensoryLoad || {};
@@ -631,14 +641,18 @@
     var rows = ODORS.map(function (_, i) { return d.odors.some(function (col) { return col && col[i] >= 20; }) ? i : -1; }).filter(function (i) { return i >= 0; });
     if (!rows.length) { el.innerHTML = '<div class="chart-empty" style="height:80px">Quiet the whole window. Nothing above background.</div>'; return; }
     var cols = d.odors.length, W = el.clientWidth || 800, labelW = 120, rowH = 18, H = rows.length * rowH + 20, cw = (W - labelW) / cols;
-    var base = css("--series-1");
+    // Cell color means strength in the same state language as the smell
+    // bars (mild / noticeable / strong): warmer and more opaque as the
+    // score rises, instead of one flat blue ramp.
+    var cellFill = function (v) { return v >= 65 ? css("--poor") : v >= 40 ? css("--fair") : css("--good"); };
+    var cellOp = function (v) { return v >= 65 ? 0.95 : v >= 40 ? 0.7 : 0.45; };
     var svg = '<svg class="heat" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Smell class strength over time">';
     rows.forEach(function (oi, r) {
       svg += '<text class="axis-text" x="0" y="' + (r * rowH + 13) + '" fill="currentColor" style="fill:var(--ink-2);font-size:11px">' + esc(ODORS[oi]) + "</text>";
       d.odors.forEach(function (col, c) {
         var v = col ? col[oi] : 0;
         if (!v || v < 8) return;
-        svg += '<rect x="' + (labelW + c * cw).toFixed(1) + '" y="' + (r * rowH + 2) + '" width="' + Math.max(1, cw - 0.5).toFixed(1) + '" height="' + (rowH - 4) + '" rx="2" fill="' + base + '" fill-opacity="' + Math.min(1, 0.12 + v / 100).toFixed(2) + '"><title>' + esc(ODORS[oi]) + " " + v + " · " + clock(d.series.t[c]) + "</title></rect>";
+        svg += '<rect x="' + (labelW + c * cw).toFixed(1) + '" y="' + (r * rowH + 2) + '" width="' + Math.max(1, cw - 0.5).toFixed(1) + '" height="' + (rowH - 4) + '" rx="2" fill="' + cellFill(v) + '" fill-opacity="' + cellOp(v) + '"><title>' + esc(ODORS[oi]) + " " + v + " · " + clock(d.series.t[c]) + "</title></rect>";
       });
     });
     var t = d.series.t;
@@ -662,7 +676,7 @@
       return "M" + s[0].toFixed(1) + " " + s[1].toFixed(1) + "A120 120 0 0 1 " + e[0].toFixed(1) + " " + e[1].toFixed(1);
     };
     var meter = '<div class="meter"><svg viewBox="0 0 300 170" aria-hidden="true">' +
-      bands.map(function (b) { return '<path d="' + arc(b[1] + 0.8, b[2] - 0.8) + '" stroke="' + css(b[0]) + '" stroke-width="18" fill="none" stroke-linecap="butt" opacity="' + (idx !== null && idx >= b[1] && idx < b[2] + (b[2] === 100 ? 1 : 0) ? 1 : 0.28) + '"/>'; }).join("") +
+      bands.map(function (b) { return '<path d="' + arc(b[1] + 0.8, b[2] - 0.8) + '" stroke="' + css(b[0]) + '" stroke-width="20" fill="none" stroke-linecap="butt" opacity="' + (idx !== null && idx >= b[1] && idx < b[2] + (b[2] === 100 ? 1 : 0) ? 1 : 0.22) + '"/>'; }).join("") +
       [[0, "0"], [50, "50"], [100, "100"]].map(function (tv) {
         var a = Math.PI * (1 - tv[0] / 100);
         var px = 150 + 138 * Math.cos(a), py = 150 - 138 * Math.sin(a);
