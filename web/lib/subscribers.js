@@ -59,7 +59,9 @@ const env = (n) => (typeof process.env[n] === "string" ? process.env[n].trim() :
 export function channelStatus() {
   return {
     email: Boolean(env("BREVO_API_KEY") && env("ALERT_EMAIL_FROM")),
-    sms: Boolean(env("CLICKSEND_USERNAME") && env("CLICKSEND_API_KEY")),
+    // Text retired Nov 15, 2026 (ClickSend out of credit) — email + push only.
+    // Kept in the shape so old clients don't break; always false.
+    sms: false,
     // ntfy.sh accepts a publish to any topic. No API key and no credit.
     push: true,
   };
@@ -91,7 +93,7 @@ async function creditBlocked() {
   }
 }
 
-/** Channels the page can offer right now. Text is hidden when it can't be paid for. */
+/** Channels the page can offer right now. Text is retired (see channelStatus). */
 export async function alertChannels() {
   const channels = channelStatus();
   let smsReason = null;
@@ -392,14 +394,12 @@ export class AlertError extends Error {
 }
 
 export async function startSubscription({ channel, address, rules, ip }) {
-  if (!["email", "sms", "push"].includes(channel)) throw new AlertError(400, "Pick email, text, or a phone notification.");
+  if (!["email", "sms", "push"].includes(channel)) throw new AlertError(400, "Pick email or a phone notification.");
   if (channel === "sms") {
-    const availability = await alertChannels();
-    if (!availability.channels.sms) {
-      throw new AlertError(503, availability.smsReason === "credit"
-        ? "Text alerts are paused because the texting account is out of credit."
-        : "Text alerts aren't set up on this dashboard yet.");
-    }
+    // Text retired Nov 15, 2026 — no new text sign-ups, even if ClickSend
+    // credit returns. Existing verified text subscribers (if any) still
+    // receive alerts through deliver(); this only closes the signup door.
+    throw new AlertError(503, "Text alerts are no longer available on this dashboard.");
   } else if (channel === "email" && !channelStatus().email) {
     throw new AlertError(503, "Email alerts aren't set up on this dashboard yet.");
   }

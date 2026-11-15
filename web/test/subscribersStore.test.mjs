@@ -16,6 +16,7 @@ globalThis.fetch = async (url, opts) => {
     return new Response(JSON.stringify({ data: { balance: creditFail ? "0" : "5.00" } }), { status: 200 });
   }
   if (u.includes("ntfy.sh")) {
+    if (failNext > 0) { failNext--; return new Response("{}", { status: 500 }); }
     pushed.push({ url: u, body: String(opts?.body || ""), title: opts?.headers?.Title || "" });
     return new Response("{}", { status: 200 });
   }
@@ -33,26 +34,26 @@ globalThis.fetch = async (url, opts) => {
 const S = await import("../lib/subscribers.js");
 test.after(() => { globalThis.fetch = realFetch; up.close(); });
 
-async function signUp(phone, rules, ip) {
-  const before = sent.length;
-  const { id } = await S.startSubscription({ channel: "sms", address: phone, rules, ip });
-  return { id, code: sent[before].body.match(/\d{6}/)[0] };
+async function signUpPush(rules, ip) {
+  const before = pushed.length;
+  const { id } = await S.startSubscription({ channel: "push", rules, ip });
+  return { id, code: pushed[before].body.match(/\d{6}/)[0] };
 }
 
 test("two confirmations at the same time both stay subscribed", async () => {
-  const a = await signUp("3215550101", { co2: 1000 }, "a");
-  const b = await signUp("3215550102", { co2: 1000 }, "b");
+  const a = await signUpPush({ co2: 1000 }, "a");
+  const b = await signUpPush({ co2: 1000 }, "b");
   await Promise.all([S.confirmSubscription(a), S.confirmSubscription(b)]);
   const list = await S.loadSubscribers();
-  assert.deepEqual(list.map((s) => s.address).sort(), ["+13215550101", "+13215550102"]);
+  assert.equal(list.filter((s) => s.channel === "push" && s.verified).length, 2);
 });
 
 test("a failed alert send is retried on the next check", async () => {
-  const before = sent.length;
+  const before = pushed.length;
   failNext = 2; // both subscribers' first alert fails
   assert.equal(await S.runSubscriberAlerts({ co2: 1500 }, {}), 0);
   assert.equal(await S.runSubscriberAlerts({ co2: 1500 }, {}), 2, "retried, not suppressed for 3h");
-  assert.equal(sent.length - before, 2);
+  assert.equal(pushed.length - before, 2);
   assert.equal(await S.runSubscriberAlerts({ co2: 1500 }, {}), 0, "no repeat after success");
 });
 
@@ -64,62 +65,48 @@ test("unsubscribing while alerts run is not undone", async () => {
   assert.ok(!list.some((s) => s.id === first.id));
 });
 
-test("no ClickSend credit explains itself and does not burn the resend limit", async () => {
-  creditFail = true;
+test("Text is retired: the channel is never offered and sign-ups are refused", async () => {
+  const { channels, smsReason } = await S.alertChannels();
+  assert.equal(channels.sms, false);
+  assert.equal(smsReason, null);
+  // Even with ClickSend reporting no credit, the reason is retirement, not credit.
+  const { setJsonCache } = await import("../lib/store.js");
+  await setJsonCache("clicksend-balance", { balance: 0.03, at: Date.now() }, 600);
+  await setJsonCache("clicksend-credit-block", { at: Date.now() }, 600);
+  const still = await S.alertChannels();
+  assert.equal(still.channels.sms, false);
+  assert.equal(still.smsReason, null);
   await assert.rejects(
-    () => S.startSubscription({ channel: "sms", address: "3215550199", rules: { co2: 1000 }, ip: "credit" }),
+    () => S.startSubscription({ channel: "sms", address: "3215550199", rules: { co2: 1000 }, ip: "retired" }),
     (err) => {
       assert.equal(err.status, 503);
-      assert.match(err.message, /out of credit/);
-      assert.doesNotMatch(err.message, /Double-check/);
+      assert.match(err.message, /no longer available/);
       return true;
     }
   );
-  creditFail = false;
-  // ClickSend's balance endpoint still says $5, but a real send was just
-  // refused for credit: Text must stay hidden instead of failing the next signup.
-  const hidden = await S.alertChannels();
-  assert.equal(hidden.channels.sms, false);
-  assert.equal(hidden.smsReason, "credit");
-  const { setJsonCache } = await import("../lib/store.js");
-  await setJsonCache("clicksend-credit-block", { at: Date.now() - 31 * 60 * 1000 }, 5);
-  await setJsonCache("clicksend-balance", { balance: 5, at: Date.now() }, 600);
-  const back = await S.alertChannels();
-  assert.equal(back.channels.sms, true, "after the block lapses the next signup probes again");
-  const again = await signUp("3215550199", { co2: 1000 }, "credit-ok");
-  assert.equal(again.code.length, 6);
+  // Refusing the signup must not burn any limit for a real signup right after.
+  const ok = await S.startSubscription({ channel: "push", rules: { co2: 1000 }, ip: "retired" });
+  assert.ok(ok.id);
 });
 
-test("a balance too small for one text hides Text before anyone tries", async () => {
-  const { setJsonCache } = await import("../lib/store.js");
-  await setJsonCache("clicksend-balance", { balance: 0.03, at: Date.now() }, 600);
-  const low = await S.alertChannels();
-  assert.equal(low.channels.sms, false);
-  assert.equal(low.smsReason, "credit");
-  await setJsonCache("clicksend-balance", { balance: 5, at: Date.now() }, 600);
-  assert.equal((await S.alertChannels()).channels.sms, true);
-});
-
-test("a credit rejection while sending alerts also pauses Text", async () => {
-  const { loadSubscribers } = S;
-  const subs = await loadSubscribers();
-  assert.ok(subs.some((x) => x.channel === "sms"));
+test("an already-verified text subscriber still gets alerts (legacy delivery)", async () => {
+  await S.updateSubscribers((subs) => [...subs, { id: "legacy-sms", channel: "sms", address: "+13215550199", rules: { co2: 1000 }, token: "legacy-token", verified: true, createdAt: Date.now(), state: {} }]);
+  const before = sent.length;
+  // The surviving phone subscriber trips too, but its send goes to ntfy.
   creditFail = true;
-  await S.runSubscriberAlerts({ co2: 3000, iaq: 400 }, {});
+  assert.equal(await S.runSubscriberAlerts({ co2: 1500 }, {}), 1, "phone alert lands; the text send fails for credit");
+  assert.equal(sent.length, before, "no text queued while credit fails");
   creditFail = false;
-  const after = await S.alertChannels();
-  assert.equal(after.channels.sms, false);
-  assert.equal(after.smsReason, "credit");
-  const { setJsonCache } = await import("../lib/store.js");
-  await setJsonCache("clicksend-credit-block", { at: 0 }, 5);
+  assert.equal(await S.runSubscriberAlerts({ co2: 1500 }, {}), 1, "failed text send is retried, not suppressed");
+  assert.equal(sent.length - before, 1);
 });
 
 test("a rejected sender number is retried without that From", async () => {
+  await S.updateSubscribers((subs) => [...subs, { id: "legacy-sms-2", channel: "sms", address: "+13215550188", rules: { humidityHi: 65 }, token: "legacy-token-2", verified: true, createdAt: Date.now(), state: {} }]);
   rejectOwnedFrom = true;
   const before = sent.length;
-  const { code } = await signUp("3215550188", { co2: 1000 }, "from");
+  assert.equal(await S.runSubscriberAlerts({ humidity: 70 }, {}), 1);
   rejectOwnedFrom = false;
-  assert.equal(code.length, 6);
   assert.equal(sent[sent.length - 1].from, undefined);
   assert.ok(sent.length > before);
 });

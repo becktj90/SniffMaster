@@ -726,8 +726,8 @@
     var info = await load("alerts").catch(function () { return null; });
     if (!info) return head("Alerts") + '<div class="card"><p class="muted">Alerts are unavailable right now.</p></div>';
     var ch = info.channels || {};
-    if (!ch[alertState.channel]) alertState.channel = ch.sms ? "sms" : ch.push ? "push" : ch.email ? "email" : "push";
-    var none = !ch.email && !ch.sms && !ch.push;
+    if (!ch[alertState.channel]) alertState.channel = ch.push ? "push" : ch.email ? "email" : "push";
+    var none = !ch.email && !ch.push;
     var saved = store("sm-alert-rules") || {};
     var presetOn = ["pet", "mold", "pollen", "smell", "humidityHi"];
     var ruleList = Object.keys(info.rules).map(function (k) { return [k, info.rules[k]]; }).sort(function (a, b) {
@@ -752,8 +752,6 @@
     var msg = (alertState.error ? '<div class="msg err" role="alert">' + esc(alertState.error) + "</div>" : "") + (alertState.ok ? '<div class="msg ok" role="status">' + esc(alertState.ok) + "</div>" : "");
     var notes = [];
     if (!ch.email) notes.push("Email isn't set up on this dashboard.");
-    if (!ch.sms && info.smsReason === "credit") notes.push("Text messages are paused because the texting account is out of credit.");
-    else if (!ch.sms) notes.push("Text messages aren't set up on this dashboard.");
     var channelBtn = function (id, label, title) {
       var enabled = !!ch[id];
       return '<button type="button" data-ch="' + id + '" aria-pressed="' + (alertState.channel === id) + '"' +
@@ -780,25 +778,22 @@
       var bad = alertState.error ? ' aria-invalid="true"' : "";
       var addressField = alertState.channel === "push"
         ? '<p class="muted" style="margin:0">A notification on this phone. You\'ll open it to read a code, and later alerts arrive the same way.</p>'
-        : '<div class="field"><label for="addr">' + (alertState.channel === "sms" ? "Mobile number" : "Email address") + "</label>" +
-          (alertState.channel === "sms"
-            ? '<input id="addr" type="tel" autocomplete="tel" inputmode="tel" placeholder="(321) 555-0100" value="' + addr + '"' + bad + " required>"
-            : '<input id="addr" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" value="' + addr + '"' + bad + " required>") +
+        : '<div class="field"><label for="addr">Email address</label>' +
+          '<input id="addr" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" value="' + addr + '"' + bad + " required>" +
           "</div>";
       body = '<form class="form" id="subform">' + msg +
         '<div class="seg" role="group" aria-label="How should we reach you?">' +
         channelBtn("email", "Email", "Email isn't set up") +
-        channelBtn("sms", "Text", info.smsReason === "credit" ? "Texting is out of credit" : "Text isn't set up") +
         channelBtn("push", "App", "") + "</div>" +
         (notes.length ? '<p class="note" style="margin:0">' + esc(notes.join(" ")) + "</p>" : "") +
         addressField +
         '<fieldset class="field"><legend>Tell me when…</legend>' + rules + "</fieldset>" +
-        '<p class="muted small" style="margin:0">You\'ll get one message when a reading crosses your limit, a reminder at most every 3 hours if it stays there, and nothing more until it clears.' + (alertState.channel === "sms" ? " Message and data rates may apply." : "") + "</p>" +
+        '<p class="muted small" style="margin:0">You\'ll get one message when a reading crosses your limit, a reminder at most every 3 hours if it stays there, and nothing more until it clears.</p>' +
         '<div><button class="btn block" type="submit"' + (none ? " disabled" : "") + ">Send my code</button></div></form>";
     }
-    return head("Alerts", "Pick what you want to hear about. A text, email, or phone notification arrives when it happens, and each message has a link to stop.") +
+    return head("Alerts", "Pick what you want to hear about. An email or phone notification arrives when it happens, and each message has a link to stop.") +
       '<div class="grid g-side"><div class="card">' + body + "</div>" +
-      '<div class="card"><h3>How it works</h3><ol class="muted" style="padding-left:18px;margin:10px 0 0;display:grid;gap:8px"><li>Pick email, text, or a phone notification, and the readings you care about.</li><li>Confirm with the code we send, so nobody can sign you up by mistake.</li><li>SniffMaster checks every couple of minutes and only messages you when something changes.</li></ol>' +
+      '<div class="card"><h3>How it works</h3><ol class="muted" style="padding-left:18px;margin:10px 0 0;display:grid;gap:8px"><li>Pick email or a phone notification, and the readings you care about.</li><li>Confirm with the code we send, so nobody can sign you up by mistake.</li><li>SniffMaster checks every couple of minutes and only messages you when something changes.</li></ol>' +
       '<p class="note">' + info.subscriberCount + " " + (info.subscriberCount === 1 ? "person is" : "people are") + " signed up." + (none ? " Alerts aren't configured on this dashboard yet." : "") + "</p></div></div>";
   }
   function bindAlerts() {
