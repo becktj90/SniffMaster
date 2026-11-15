@@ -27,6 +27,7 @@ import {
   getSettings,
   getDailySummaryHistory,
   putAlertSnapshot,
+  getPendingCommand,
 } from "../lib/store.js";
 import {
   normalizeReading,
@@ -182,6 +183,38 @@ async function maybeSendAlerts(stored) {
   }
 }
 
+function healthchecksPingUrl() {
+  const raw = String(process.env.HEALTHCHECKS_PING_URL || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Tell Healthchecks.io this ingest succeeded. The check alerts through ntfy
+ * when pings stop. A Vercel Hobby cron runs at most once a day, so it cannot
+ * notice a device that goes quiet this afternoon. Never throws.
+ */
+async function pingHealthchecks() {
+  const url = healthchecksPingUrl();
+  if (!url) return;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: AbortSignal.timeout(2500),
+      headers: { "User-Agent": "SniffMaster-update" },
+    });
+    if (!res.ok) console.error("healthchecks ping status:", res.status);
+  } catch (err) {
+    console.error("healthchecks ping failed:", err?.message || err);
+  }
+}
+
 const GUEST_CHECK_EVERY_MS = 5 * 60 * 1000;
 
 /**
@@ -235,7 +268,9 @@ export default async function handler(req, res) {
 
   if (!requireDeviceAuth(req, res)) return;
 
+  const commandAfter = Number(body.commandAfter || 0);
   const data = sanitizePostedBody(body);
+  delete data.commandAfter;
 
   try {
     const stored = await putSnapshot(data);
@@ -263,7 +298,14 @@ export default async function handler(req, res) {
     } catch (subErr) {
       console.error("maybeSendSubscriberAlerts error:", subErr);
     }
-    return res.status(200).json({ ok: true, receivedAt: stored.receivedAt });
+    const [command] = await Promise.all([
+      getPendingCommand(commandAfter).catch((err) => {
+        console.error("pending command read failed:", err);
+        return null;
+      }),
+      pingHealthchecks(),
+    ]);
+    return res.status(200).json({ ok: true, receivedAt: stored.receivedAt, command });
   } catch (err) {
     console.error("putSnapshot error:", err);
     return res.status(500).json({ error: "storage error" });

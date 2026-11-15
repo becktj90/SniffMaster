@@ -21,7 +21,7 @@ import {
   getLatestBleOccupancy,
   getBleOccupancyHistory,
   getHistory,
-  getLatestCommand,
+  getPendingCommand,
   putCommand,
   getLatestSniff,
   getSettings,
@@ -277,7 +277,6 @@ async function apod(req, res) {
 // ── command ──────────────────────────────────────────────────────────────
 // GET  — device polls for the newest owner-issued command
 // POST — owner queues a new command from the portal
-const COMMAND_TTL_MS = 10 * 60 * 1000;
 const ALLOWED_ACTIONS = new Set(["refresh", "breath_check", "presence_probe", "gas_scan"]);
 
 function setCommandHeaders(res) {
@@ -295,17 +294,11 @@ async function command(req, res) {
     const after = Number(req.query?.after || 0);
 
     try {
-      const latest = await getLatestCommand();
+      const latest = await getPendingCommand(after);
       if (!latest) return res.status(204).end();
-      if (Number.isFinite(after) && Number(latest.seq || 0) <= after) {
-        return res.status(204).end();
-      }
-      if (Date.now() - Number(latest.receivedAt || 0) > COMMAND_TTL_MS) {
-        return res.status(204).end();
-      }
       return res.status(200).json(latest);
     } catch (err) {
-      console.error("getLatestCommand error:", err);
+      console.error("getPendingCommand error:", err);
       return res.status(500).json({ error: "storage error" });
     }
   }

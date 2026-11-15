@@ -174,6 +174,12 @@ let historyData = [];
 let sniffHistoryData = [];
 let lastSniffEvent = null;
 let sniffStream = null;
+let unchangedPolls = 0;
+let latestTimer = null;
+let historyTimer = null;
+let sniffHistTimer = null;
+let ageTimer = null;
+let weatherTimer = null;
 let weatherMap = null;
 let weatherMarker = null;
 let weatherBaseLayer = null;
@@ -4702,6 +4708,9 @@ async function fetchLatest() {
         if (!res.ok) throw new Error(`latest ${res.status}`);
 
         const data = await res.json();
+        const prevAt = lastData?.receivedAt;
+        if (prevAt != null && data?.receivedAt === prevAt) unchangedPolls += 1;
+        else unchangedPolls = 0;
         lastData = data;
         render(data);
     } catch (err) {
@@ -4800,7 +4809,7 @@ async function queueRemoteAction(action, extra = {}) {
       breath_check: "Breath check queued",
       presence_probe: "Presence probe queued",
     };
-    setRemoteControlsState(`${labels[action] || "Action queued"}. Device will pick it up on its next command poll.`, "good");
+    setRemoteControlsState(`${labels[action] || "Action queued"}. Device will pick it up on its next update.`, "good");
 
     if (action === "refresh") {
       await manualRefreshDashboard();
@@ -4844,9 +4853,19 @@ async function fetchSniffHistory() {
   } catch (_) {}
 }
 
+function stopSniffStream() {
+  const stream = sniffStream;
+  sniffStream = null;
+  if (!stream) return;
+  stream.onerror = null;
+  stream.onmessage = null;
+  stream.close();
+}
+
 function startSniffStream() {
+  if (document.hidden) return;
   if (!("EventSource" in window)) return;
-  if (sniffStream) sniffStream.close();
+  stopSniffStream();
 
   const after = activeSniffEvent()?.seq ? `?after=${encodeURIComponent(activeSniffEvent().seq)}` : "";
   sniffStream = new EventSource(`/api/sniff-stream${after}`);
@@ -5025,23 +5044,89 @@ renderThemeUi(loadThemePref());
 setDashboardView(activeView);
 renderThemeUi(loadThemePref());
 
-fetchLatest();
-fetchHistory();
-fetchLatestSniff();
-fetchSniffHistory();
+function latestDelay() {
+  if (unchangedPolls <= 0) return POLL_MS;
+  return Math.min(60000, 30000 + (unchangedPolls - 1) * 15000);
+}
+
+function stopLivePolling() {
+  clearTimeout(latestTimer);
+  clearTimeout(historyTimer);
+  clearTimeout(sniffHistTimer);
+  clearInterval(ageTimer);
+  clearInterval(weatherTimer);
+  latestTimer = historyTimer = sniffHistTimer = null;
+  ageTimer = weatherTimer = null;
+  stopSniffStream();
+}
+
+function scheduleLatest() {
+  clearTimeout(latestTimer);
+  if (document.hidden) { latestTimer = null; return; }
+  latestTimer = setTimeout(() => {
+    fetchLatest().finally(scheduleLatest);
+  }, latestDelay());
+}
+
+function scheduleHistory() {
+  clearTimeout(historyTimer);
+  if (document.hidden) { historyTimer = null; return; }
+  historyTimer = setTimeout(() => {
+    Promise.resolve(fetchHistory()).finally(scheduleHistory);
+  }, POLL_MS * 8);
+}
+
+function scheduleSniffHistory() {
+  clearTimeout(sniffHistTimer);
+  if (document.hidden) { sniffHistTimer = null; return; }
+  sniffHistTimer = setTimeout(() => {
+    Promise.resolve(fetchSniffHistory()).finally(scheduleSniffHistory);
+  }, POLL_MS * 4);
+}
+
+function startLivePolling() {
+  stopLivePolling();
+  if (document.hidden) return;
+  startSniffStream();
+  scheduleLatest();
+  scheduleHistory();
+  scheduleSniffHistory();
+  ageTimer = setInterval(tickAge, 1000);
+  // Hourly AI weather prediction refresh — force-expire cache so briefing
+  // regenerates even when device data is not flowing. Paused while hidden.
+  weatherTimer = setInterval(() => {
+    weatherBriefingState.key = "";
+    if (lastData) ensureWeatherBriefing(lastData);
+  }, WEATHER_BRIEFING_TTL_MS);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopLivePolling();
+    return;
+  }
+  unchangedPolls = 0;
+  Promise.all([
+    fetchLatest(),
+    fetchHistory(),
+    fetchLatestSniff(),
+    fetchSniffHistory(),
+  ]).finally(() => {
+    if (document.hidden) return;
+    if (lastData) ensureWeatherBriefing(lastData);
+    startLivePolling();
+  });
+});
+
 fetchVersion();
 ensureApod();
-startSniffStream();
-setInterval(fetchLatest, POLL_MS);
-setInterval(fetchHistory, POLL_MS * 8);
-setInterval(fetchSniffHistory, POLL_MS * 4);
-setInterval(tickAge, 1000);
-// Hourly AI weather prediction refresh — force-expire cache so briefing
-// regenerates even when device data is not flowing.
-setInterval(() => {
-  weatherBriefingState.key = "";
-  if (lastData) ensureWeatherBriefing(lastData);
-}, WEATHER_BRIEFING_TTL_MS);
+if (!document.hidden) {
+  fetchLatest();
+  fetchHistory();
+  fetchLatestSniff();
+  fetchSniffHistory();
+  startLivePolling();
+}
 
 $("manual-refresh-btn")?.addEventListener("click", () => {
   manualRefreshDashboard();

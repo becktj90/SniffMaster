@@ -66,6 +66,19 @@ const MAX_SNIFF_HISTORY = 96;
 const MAX_COMMAND_HISTORY = 48;
 const MAX_BLE_OCCUPANCY_HISTORY = 288; // 24 hours at 5-minute intervals
 const MAX_DAILY_SUMMARY_HISTORY = 30; // ~1 month of morning reports
+export const COMMAND_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * One Upstash REST round-trip for a latest-value overwrite plus its history ring.
+ * Each command inside the pipeline still counts toward the Redis quota.
+ */
+async function writeLatestAndRing(redis, latestKey, historyKey, json, max) {
+  const pipe = redis.pipeline();
+  pipe.set(latestKey, json);
+  pipe.lpush(historyKey, json);
+  pipe.ltrim(historyKey, 0, max - 1);
+  await pipe.exec();
+}
 
 /**
  * Store a new sensor snapshot.
@@ -75,14 +88,7 @@ export async function putSnapshot(data) {
   const redis = getRedis();
   const entry = { ...data, receivedAt: Date.now() };
   const json = JSON.stringify(entry);
-
-  await Promise.all([
-    redis.set(KEY_LATEST, json),
-    redis.lpush(KEY_HISTORY, json),
-  ]);
-
-  // Trim history to MAX_HISTORY entries
-  await redis.ltrim(KEY_HISTORY, 0, MAX_HISTORY - 1);
+  await writeLatestAndRing(redis, KEY_LATEST, KEY_HISTORY, json, MAX_HISTORY);
 
   // Compact climate series for the Home tab. A failure here must not reject
   // the snapshot the device just posted.
@@ -144,13 +150,12 @@ async function recordHomeSeries(redis, entry) {
   if (!point) return;
   const json = JSON.stringify(point);
   const last = parseStored(await redis.lindex(KEY_HOME_COARSE, 0));
-  const ops = [redis.lpush(KEY_HOME_FINE, json)];
-  if (shouldSampleCoarse(last?.t, point.t)) ops.push(redis.lpush(KEY_HOME_COARSE, json));
-  await Promise.all(ops);
-  await Promise.all([
-    redis.ltrim(KEY_HOME_FINE, 0, MAX_HOME_FINE - 1),
-    redis.ltrim(KEY_HOME_COARSE, 0, MAX_HOME_COARSE - 1),
-  ]);
+  const pipe = redis.pipeline();
+  pipe.lpush(KEY_HOME_FINE, json);
+  if (shouldSampleCoarse(last?.t, point.t)) pipe.lpush(KEY_HOME_COARSE, json);
+  pipe.ltrim(KEY_HOME_FINE, 0, MAX_HOME_FINE - 1);
+  pipe.ltrim(KEY_HOME_COARSE, 0, MAX_HOME_COARSE - 1);
+  await pipe.exec();
 }
 
 /**
@@ -202,13 +207,7 @@ export async function putSniffEvent(data) {
     receivedAt: Date.now(),
   };
   const json = JSON.stringify(entry);
-
-  await Promise.all([
-    redis.set(KEY_SNIFF, json),
-    redis.lpush(KEY_SNIFF_HISTORY, json),
-  ]);
-
-  await redis.ltrim(KEY_SNIFF_HISTORY, 0, MAX_SNIFF_HISTORY - 1);
+  await writeLatestAndRing(redis, KEY_SNIFF, KEY_SNIFF_HISTORY, json, MAX_SNIFF_HISTORY);
   return entry;
 }
 
@@ -246,14 +245,26 @@ export async function putCommand(data) {
     receivedAt: Date.now(),
   };
   const json = JSON.stringify(entry);
-
-  await Promise.all([
-    redis.set(KEY_COMMAND, json),
-    redis.lpush(KEY_COMMAND_HISTORY, json),
-  ]);
-
-  await redis.ltrim(KEY_COMMAND_HISTORY, 0, MAX_COMMAND_HISTORY - 1);
+  await writeLatestAndRing(redis, KEY_COMMAND, KEY_COMMAND_HISTORY, json, MAX_COMMAND_HISTORY);
   return entry;
+}
+
+/**
+ * Latest owner command the device has not already applied and that is still
+ * inside COMMAND_TTL_MS. `after` is the last seq the device executed.
+ */
+export function commandIfPending(latest, after = 0, now = Date.now()) {
+  if (!latest || typeof latest !== "object") return null;
+  const seq = Number(latest.seq || 0);
+  const afterSeq = Number(after || 0);
+  if (!Number.isFinite(seq) || seq <= (Number.isFinite(afterSeq) ? afterSeq : 0)) return null;
+  const at = Number(latest.receivedAt || 0);
+  if (!Number.isFinite(at) || now - at > COMMAND_TTL_MS) return null;
+  return latest;
+}
+
+export async function getPendingCommand(after = 0) {
+  return commandIfPending(await getLatestCommand(), after);
 }
 
 /**
@@ -350,13 +361,7 @@ export async function putBleOccupancyEntry(data) {
     receivedAt: data.receivedAt || Date.now(),
   };
   const json = JSON.stringify(entry);
-
-  await Promise.all([
-    redis.set(KEY_BLE_OCCUPANCY, json),
-    redis.lpush(KEY_BLE_OCCUPANCY_HISTORY, json),
-  ]);
-
-  await redis.ltrim(KEY_BLE_OCCUPANCY_HISTORY, 0, MAX_BLE_OCCUPANCY_HISTORY - 1);
+  await writeLatestAndRing(redis, KEY_BLE_OCCUPANCY, KEY_BLE_OCCUPANCY_HISTORY, json, MAX_BLE_OCCUPANCY_HISTORY);
   return entry;
 }
 
@@ -479,13 +484,7 @@ export async function putDailySummary(data) {
   const redis = getRedis();
   const entry = { ...data, generatedAt: data?.generatedAt || Date.now() };
   const json = JSON.stringify(entry);
-
-  await Promise.all([
-    redis.set(KEY_DAILY_SUMMARY, json),
-    redis.lpush(KEY_DAILY_SUMMARY_HISTORY, json),
-  ]);
-
-  await redis.ltrim(KEY_DAILY_SUMMARY_HISTORY, 0, MAX_DAILY_SUMMARY_HISTORY - 1);
+  await writeLatestAndRing(redis, KEY_DAILY_SUMMARY, KEY_DAILY_SUMMARY_HISTORY, json, MAX_DAILY_SUMMARY_HISTORY);
   return entry;
 }
 

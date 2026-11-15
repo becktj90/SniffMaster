@@ -2313,7 +2313,6 @@ static const unsigned long WIFI_ROTATE_AFTER_MS   = 120000UL;
 static const unsigned long WEB_POST_INTERVAL_MS   = 60000UL;
 static const unsigned long WEB_RETRY_MS           = 30000UL;
 static const unsigned long WEB_EVENT_COOLDOWN_MS  = 15000UL;
-static const unsigned long COMMAND_POLL_MS        = 20000UL;
 static const unsigned long SNIFF_RETRY_MS         = 10000UL;
 static const unsigned long SNIFF_COOLDOWN_MS      = 45000UL;
 static const unsigned long WEATHER_REFRESH_MS     = 10UL * 60UL * 1000UL;
@@ -2334,7 +2333,6 @@ static int           rotateIdx = 0;
 // Portal state (task-local)
 static unsigned long lastPostOkMs = 0;
 static unsigned long lastPostAttemptMs = 0;
-static unsigned long lastPollMs = 0;
 static unsigned long lastCommandSeq = 0;
 static unsigned long lastSniffOkMs = 0;
 static unsigned long lastSniffAttemptMs = 0;
@@ -2882,7 +2880,39 @@ static bool sendSniffEvent(const SniffEvent& e) {
   return code == 200;
 }
 
-static bool sendSnapshot(const Telemetry& t) {
+// Owner commands ride back on POST /api/update. The old 20s GET /api/command
+// poll is gone; a queued action arrives on the next successful snapshot.
+static void applyRemoteCommand(JsonVariantConst cmd) {
+  if (!cmd.is<JsonObjectConst>()) return;
+  unsigned long seq = cmd["seq"] | 0UL;
+  const char* action = cmd["action"] | "";
+  if (!seq || seq <= lastCommandSeq || !action[0]) return;
+  lastCommandSeq = seq;
+
+  if (strcmp(action, "refresh") == 0) {
+    Serial.println(F("[WEB] Remote command: refresh"));
+    pushPending = true;
+    lastPostAttemptMs = 0;
+  } else if (strcmp(action, "gas_scan") == 0) {
+    if (gScanBusy || gGasScanRequest) {
+      Serial.println(F("[GAS] scan busy — command dropped"));
+    } else {
+      gGasScanRequest = true;
+      Serial.println(F("[WEB] Remote command: gas_scan"));
+    }
+  } else {
+    Serial.printf("[WEB] Remote command '%s' not supported in this build\n", action);
+  }
+}
+
+static void applyUpdateResponse(const String& body) {
+  if (!body.length()) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return;
+  applyRemoteCommand(doc["command"]);
+}
+
+static bool sendSnapshot(const Telemetry& t, String* responseOut) {
   NetStatus ns;
   { LockGuard g; ns = gNet; }
 
@@ -2947,6 +2977,7 @@ static bool sendSnapshot(const Telemetry& t) {
   doc["wifiIp"]   = ns.ip;
   doc["wifiRssi"] = ns.rssi;
   doc["uptime"]   = (unsigned long)(millis() / 1000UL);
+  doc["commandAfter"] = lastCommandSeq;
   if (locationOk) {
     doc["lat"] = roundf(lat * 10000.0f) / 10000.0f;
     doc["lon"] = roundf(lon * 10000.0f) / 10000.0f;
@@ -2999,41 +3030,12 @@ static bool sendSnapshot(const Telemetry& t) {
       LockGuard g;
       if (gTelem.gasScanGen == t.gasScanGen) gTelem.gasScanPost = false;
     }
+    if (responseOut) *responseOut = resp;
     Serial.println(F("[WEB] Dashboard updated"));
     return true;
   }
   Serial.printf("[WEB] POST failed: %d %s\n", code, resp.substring(0, 120).c_str());
   return false;
-}
-
-static void pollCommand() {
-  String resp;
-  String url = dashboardUrl("/api/command?after=") + String(lastCommandSeq);
-  int code = request(url, nullptr, &resp, true, 6000);
-  if (code == 204) return;
-  if (code != 200) { Serial.printf("[WEB] Command poll failed: %d\n", code); return; }
-
-  JsonDocument doc;
-  if (deserializeJson(doc, resp)) return;
-  unsigned long seq = doc["seq"] | 0UL;
-  const char* action = doc["action"] | "";
-  if (!seq || seq <= lastCommandSeq || !action[0]) return;
-  lastCommandSeq = seq;
-
-  if (strcmp(action, "refresh") == 0) {
-    Serial.println(F("[WEB] Remote command: refresh"));
-    pushPending = true;
-    lastPostAttemptMs = 0;
-  } else if (strcmp(action, "gas_scan") == 0) {
-    if (gScanBusy || gGasScanRequest) {
-      Serial.println(F("[GAS] scan busy — command dropped"));
-    } else {
-      gGasScanRequest = true;
-      Serial.println(F("[WEB] Remote command: gas_scan"));
-    }
-  } else {
-    Serial.printf("[WEB] Remote command '%s' not supported in this build\n", action);
-  }
 }
 
 // Force a radio reset if the relay has been unreachable for a long time.
@@ -3094,13 +3096,13 @@ static void task(void*) {
         }
       } else if (postDue) {
         lastPostAttemptMs = now;
-        if (sendSnapshot(t)) {
+        String updateResp;
+        if (sendSnapshot(t, &updateResp)) {
           lastPostOkMs = millis();
           pushPending = false;
+          // A refresh command sets pushPending again after this clear.
+          applyUpdateResponse(updateResp);
         }
-      } else if (lastPostOkMs && now - lastPollMs >= COMMAND_POLL_MS) {
-        lastPollMs = now;
-        pollCommand();
       } else if (!locationOk && (!lastLocationTryMs || now - lastLocationTryMs >= OPTIONAL_RETRY_MS)) {
         lastLocationTryMs = now;
         fetchLocation();

@@ -142,6 +142,9 @@ vercel env add UPSTASH_REDIS_REST_TOKEN   # from Upstash step 1
 # Optional: add OpenAI for weather briefing
 vercel env add OPENAI_API_KEY             # your OpenAI API key
 
+# Optional: device-offline pings (see "Device offline" below)
+vercel env add HEALTHCHECKS_PING_URL      # https://hc-ping.com/<uuid>
+
 # Deploy to production
 vercel --prod
 
@@ -297,10 +300,38 @@ pio run -e xiao_esp32s3
 
 ### Monitor Storage
 
-- Redis free tier: 10k commands/day
-- SniffMaster uses roughly 50-100 commands/day
-- Monitor Redis usage in Upstash dashboard
-- No action needed unless consistently exceeding limits
+Upstash's free tier is **500,000 commands per month** (about 16,700 per day if use is flat). The old "10,000 commands/day" cap is the pre-2025 limit, and SniffMaster does not use 50–100 commands/day.
+
+A pipeline (`SET` + `LPUSH` + `LTRIM` in one HTTP call) is one round-trip. Upstash still counts each command inside it. Figures below are Redis commands, not HTTP calls, for a tab left open all day while the device is posting.
+
+| Surface | When | Commands/day |
+|---|---|---|
+| New dashboard, Overview | Visible, readings changing | **~4,800** |
+| New dashboard, Overview | Visible, `receivedAt` frozen (polls back off up to 4×) | **~2,100** |
+| `/classic`, including sniff-stream | Visible, readings changing | **~22,500** |
+| `/classic` | Visible, `receivedAt` frozen (`/api/latest` slows to 60s) | **~15,300** |
+| `/classic` | Tab hidden (intervals cleared, EventSource closed) | **~0** |
+| `/guest` | Open, hidden or not | **~7,200** |
+
+The new dashboard does not hold the sniff-stream. Only `/classic` does. Each stream response reads Redis once, then every 10 seconds until the 25-second window expires, which is 4 reads over about 30 seconds. The browser reconnects after 2.5 seconds, so a visible classic tab spends about 10,600 commands/day on that stream alone. The rest of a live classic tab is `/api/latest` every 10 seconds (8,640), history every 80 seconds (1,080), and sniff history every 40 seconds (2,160). When `receivedAt` stops changing, `/api/latest` steps from 10 seconds to 30, then 45, then 60.
+
+`/guest` still polls every 60 seconds and does not check `document.hidden`. One guest view is `buildHomePayload` (5 commands) × 1,440 polls. The response is edge-cached for 30 seconds, so a second viewer in that window does not add a Redis read. A single guest tab polls slower than that cache, so each of its own polls still misses. Those five commands are latest, 24-hour history, the two climate lists, and the outdoor cache. With `GOOGLE_POLLEN_API_KEY` set, each home payload also reads the Google air cache: about 900 more commands/day on Overview and about 1,440 more on a guest tab.
+
+One always-open classic tab is over a flat daily slice of the free tier. The new dashboard is not. Hide classic when you are not looking at it. Check the Upstash console before adding more always-on screens.
+
+The device used to `GET /api/command` every 20 seconds (about 4,300 commands/day). That poll is gone. A pending command comes back on the 60-second `POST /api/update` (one `GET`, about 1,440 commands/day).
+
+### Device offline
+
+Vercel Hobby cron runs at most once a day, so it cannot tell you the sensor went quiet this afternoon. Do not add a cron for this.
+
+`/api/update` pings [Healthchecks.io](https://healthchecks.io) after each snapshot it stores, when `HEALTHCHECKS_PING_URL` is set (`https://hc-ping.com/<uuid>`). Healthchecks alerts through ntfy when the pings stop. The ping URL is a secret; set it in Vercel, not in the firmware and not in git.
+
+1. Create a Healthchecks check. Period: **1 minute** (the device posts every 60 seconds). Grace: **5 minutes**, so a short Wi-Fi blip does not page you.
+2. Integrations → ntfy. Point it at the same server and topic as `NTFY_TOPIC` (or a separate topic you subscribe to in the ntfy app). Attach that integration to the check.
+3. `vercel env add HEALTHCHECKS_PING_URL` with the check's ping URL, then redeploy.
+
+While posts succeed, Healthchecks stays up. When they stop for longer than the grace period, Healthchecks publishes to ntfy. A Cloudflare Worker and Durable Object alarm can replace this later; leave that move until these polling cuts are deployed.
 
 ---
 
