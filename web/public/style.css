@@ -319,3 +319,29 @@ label.choice.off { opacity: .72; }
   .rule { grid-template-columns: 1fr; }
   .rule .lim { justify-content: flex-start; }
 }
+
+/* Walking black cats — Pets page. Pure CSS silhouettes strolling a thin strip;
+   the count follows the live pet dander index (see cats.js). The cats are near-
+   black with a faint light rim so they read on the dark theme too. */
+.cats-caption { margin: 2px 0 8px; }
+.cats-strip { position: relative; height: 56px; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
+.cat { position: absolute; bottom: var(--lane, 0px); left: -90px; width: 0; height: 0; animation: cat-stroll var(--dur, 30s) linear infinite; animation-delay: var(--delay, 0s); }
+.cat--rev { animation-name: cat-stroll-rev; }
+.cat-body { position: absolute; left: 0; bottom: 4px; display: block; width: 56px; height: 24px; background: #0b0d10; border-radius: 12px; filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, .3)); animation: cat-bob .55s ease-in-out infinite alternate; }
+.cat--rev .cat-body { scale: -1 1; }
+.cat-body::before, .cat-body::after { content: ""; position: absolute; bottom: -4px; width: 6px; height: 8px; background: #0b0d10; border-radius: 2px; }
+.cat-body::before { left: 11px; }
+.cat-body::after { left: 37px; }
+.cat-head { position: absolute; right: -5px; top: -13px; width: 21px; height: 19px; background: #0b0d10; border-radius: 50%; }
+.cat-head::before, .cat-head::after { content: ""; position: absolute; top: -6px; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 8px solid #0b0d10; }
+.cat-head::before { left: 1px; transform: rotate(-10deg); }
+.cat-head::after { right: 1px; transform: rotate(10deg); }
+.cat-tail { position: absolute; left: -15px; top: -11px; width: 24px; height: 6px; background: #0b0d10; border-radius: 3px; transform-origin: right center; transform: rotate(-38deg); animation: cat-tail-wag 1.1s ease-in-out infinite alternate; }
+@keyframes cat-stroll { from { left: -90px; } to { left: 100%; } }
+@keyframes cat-stroll-rev { from { left: 100%; } to { left: -90px; } }
+@keyframes cat-bob { from { transform: translateY(0); } to { transform: translateY(-3px); } }
+@keyframes cat-tail-wag { from { transform: rotate(-48deg); } to { transform: rotate(-28deg); } }
+@media (prefers-reduced-motion: reduce) {
+  /* No walking: cats rest spread across the strip at their --spot. */
+  .cat { animation: none; left: calc(var(--spot, 20) * 1%); transform: translateX(-28px); }
+}
