@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  normalizeAddress, normalizeRules, decideSubscriberAlerts, alertContext, alertText, maskAddress, explainDeliveryFailure, RULES,
+  normalizeAddress, normalizeRules, decideSubscriberAlerts, alertContext, alertText, maskAddress, explainDeliveryFailure, RULES, channelStatus,
 } from "../lib/subscribers.js";
 import { fallbackInsights, insightFacts, insightCacheKey } from "../lib/insights.js";
 
@@ -10,6 +10,10 @@ test("a texting account with no credit is not described as a bad phone number", 
   assert.equal(out.status, 503);
   assert.match(out.message, /out of credit/);
   assert.doesNotMatch(out.message, /Double-check/);
+});
+
+test("Text is retired: channel status never offers it", () => {
+  assert.equal(channelStatus().sms, false);
 });
 
 test("addresses are validated and normalized", () => {
