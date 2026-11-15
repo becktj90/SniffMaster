@@ -35,6 +35,7 @@ import {
 } from "../lib/store.js";
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import { buildHomeMetrics, mergeClimateHistory } from "../lib/homeAir.js";
+import { toGuestView, guestTopic } from "../lib/guest.js";
 import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
@@ -779,15 +780,8 @@ async function officeStats(req, res) {
 // like the other dashboard GETs. Never returns any API key.
 const HOME_OUTDOOR_TTL_SEC = 15 * 60;
 
-async function homeStats(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Cache-Control", "no-store");
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
-
-  try {
+export async function buildHomePayload(triggersInput) {
+    const triggers = parseTriggers(triggersInput);
     // Full snapshots cover the last 24h. Mold (72h) and dust mites (7d) read
     // the compact 10-minute series, which survives after the full buffer rolls.
     const [latest, legacy, series] = await Promise.all([
@@ -795,7 +789,7 @@ async function homeStats(req, res) {
       getHistory(24 * 60),
       getHomeSeries(),
     ]);
-    if (!latest) return res.status(204).end();
+    if (!latest) return null;
     const history = mergeClimateHistory(series.coarse, legacy, series.fine);
 
     const lat = Number(latest.lat);
@@ -834,7 +828,7 @@ async function homeStats(req, res) {
     }
 
     const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
-    const triggers = parseTriggers(req.query?.triggers);
+    
     const smell = analyzeSmell(latest, legacy);
     const withPollen = { ...metrics, pollen };
     const outlook = allergyOutlook(withPollen, triggers, smell);
@@ -856,7 +850,7 @@ async function homeStats(req, res) {
       pm25: pick((h) => h.pm25),
     };
 
-    return res.status(200).json({
+    return {
       mode: "home",
       receivedAt: latest.receivedAt || null,
       city: latest.city || "",
@@ -867,10 +861,44 @@ async function homeStats(req, res) {
       outlook,
       ventilation,
       series: trend,
-    });
+    };
+}
+
+async function homeStats(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+
+  try {
+    const payload = await buildHomePayload(req.query?.triggers);
+    if (!payload) return res.status(204).end();
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("home-stats error:", err);
     return res.status(500).json({ error: "home-stats error" });
+  }
+}
+
+// ── guest ────────────────────────────────────────────────────────────────
+// GET /api/guest — public, read-only view for visitors. Same analysis as the
+// Home tab but trimmed to what a guest needs: no location, city, coordinates,
+// device details or occupancy. Also returns the push-alert topic to follow.
+async function guest(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  try {
+    const payload = await buildHomePayload(req.query?.triggers);
+    if (!payload) return res.status(204).end();
+    return res.status(200).json(toGuestView(payload, { topic: guestTopic() }));
+  } catch (err) {
+    console.error("guest error:", err);
+    return res.status(500).json({ error: "guest error" });
   }
 }
 
@@ -1405,6 +1433,7 @@ const ROUTES = {
   "occupancy-briefing": occupancyBriefing,
   "office-stats": officeStats,
   "home-stats": homeStats,
+  guest,
   "sniff-stream": sniffStream,
   "weather-briefing": weatherBriefing,
   settings,

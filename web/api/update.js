@@ -36,6 +36,9 @@ import {
   getEffectiveEnvironmentType,
   getEffectiveAlertCooldownMs,
 } from "../lib/thresholds.js";
+import { buildHomePayload } from "./extras.js";
+import { toGuestView, decideGuestAlerts, publishGuestAlerts, guestTopic } from "../lib/guest.js";
+import { getJsonCache, setJsonCache } from "../lib/store.js";
 import { sendSms, PUBLIC_BASE_URL, REPORT_CARD_PNG_URL } from "../lib/notify.js";
 import { buildAlertBroSummary, sanitizeSmsAscii } from "../lib/brogpt.js";
 import { buildSummary, buildBaseline, buildDeltas } from "./daily-summary.js";
@@ -178,6 +181,26 @@ async function maybeSendAlerts(stored) {
   }
 }
 
+const GUEST_CHECK_EVERY_MS = 5 * 60 * 1000;
+
+/**
+ * Guest push alerts (smell / poor air). Checked at most every 5 minutes so the
+ * 24h history read does not run on every post; best-effort, never throws.
+ */
+async function maybeSendGuestAlerts(stored) {
+  if (!guestTopic()) return;
+  const now = Date.now();
+  const gate = await getJsonCache("guest-alert-gate");
+  if (gate && now - gate.t < GUEST_CHECK_EVERY_MS) return;
+  await setJsonCache("guest-alert-gate", { t: now }, 600);
+  const payload = await buildHomePayload("");
+  if (!payload) return;
+  const state = (await getJsonCache("guest-alert-state")) || {};
+  const { messages, state: next } = decideGuestAlerts(toGuestView(payload), state, now);
+  if (messages.length) await publishGuestAlerts(messages);
+  if (JSON.stringify(next) !== JSON.stringify(state)) await setJsonCache("guest-alert-state", next, 24 * 3600);
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -213,6 +236,11 @@ export default async function handler(req, res) {
       await maybeSendAlerts(stored);
     } catch (alertErr) {
       console.error("maybeSendAlerts error:", alertErr);
+    }
+    try {
+      await maybeSendGuestAlerts(stored);
+    } catch (guestErr) {
+      console.error("maybeSendGuestAlerts error:", guestErr);
     }
     return res.status(200).json({ ok: true, receivedAt: stored.receivedAt });
   } catch (err) {

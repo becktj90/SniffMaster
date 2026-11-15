@@ -322,8 +322,9 @@ export async function sendViaClickSendMms(text, recipients, mediaUrl, subject = 
  * with the SMS chain, so its shorter timeout never extends total send time.
  */
 export async function sendViaNtfy(text, opts = {}) {
-  const url = env("NTFY_URL") || `https://ntfy.sh/${encodeURIComponent(env("NTFY_TOPIC"))}`;
-  const headers = { Title: "SniffMaster", "Content-Type": "text/plain" };
+  const url = opts.url || env("NTFY_URL") || `https://ntfy.sh/${encodeURIComponent(env("NTFY_TOPIC"))}`;
+  const headers = { Title: opts.title || "SniffMaster", "Content-Type": "text/plain" };
+  if (opts.priority) headers.Priority = String(opts.priority);
   // Visual report card: ntfy renders an image URL passed via Attach as an
   // inline thumbnail, and opens Click's URL when the notification is tapped.
   if (opts.imageUrl) headers.Attach = opts.imageUrl;

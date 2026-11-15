@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0f172a">
+<title>Air in this home</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14181f;--dim:#5b6573;--line:#e2e6ec;--good:#157f3b;--fair:#9a6a00;--poor:#c2410c;--bad:#b91c1c;--na:#5b6573;--accent:#0b66d0}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--card:#161b22;--ink:#e6edf3;--dim:#9aa6b2;--line:#2b333d;--good:#4ade80;--fair:#fbbf24;--poor:#fb923c;--bad:#f87171;--na:#9aa6b2;--accent:#58a6ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:16px 16px 40px}
+h1{font-size:1.1rem;margin:8px 0 2px}
+.sub{color:var(--dim);font-size:.9rem;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.kicker{font-size:.75rem;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin-bottom:4px}
+.big{font-size:1.5rem;font-weight:700;line-height:1.25;margin:2px 0 6px}
+.t-good{color:var(--good)}.t-fair{color:var(--fair)}.t-poor{color:var(--poor)}.t-bad{color:var(--bad)}.t-na{color:var(--na)}
+.row{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.score{font-size:2.4rem;font-weight:800}
+.dim{color:var(--dim);font-size:.9rem}
+.action{margin:10px 0 0;padding:10px 12px;border-left:4px solid currentColor;border-radius:6px;background:rgba(127,127,127,.1);color:var(--ink)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.chip{font:inherit;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:999px;padding:8px 14px;min-height:44px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+.item{padding:10px 0;border-top:1px solid var(--line)}
+.item:first-of-type{border-top:0}
+.btn{display:inline-block;margin:6px 8px 0 0;padding:12px 16px;min-height:44px;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;font-weight:700;border:0;font-size:1rem;cursor:pointer}
+.btn.alt{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:.85rem}
+.foot{color:var(--dim);font-size:.8rem;margin-top:18px}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Air in this home</h1>
+  <div class="sub" id="updated">Loading…</div>
+  <div id="root"><div class="card dim">Loading live air status…</div></div>
+  <div class="foot">Estimates from room sensors and outdoor feeds. Not a medical device. Allergen proteins from pets are not measured directly.</div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var LABELS = [["cat", "Cats"], ["dog", "Dogs"], ["pollen", "Pollen"], ["dustMite", "Dust mites"], ["mold", "Mold"], ["smoke", "Smoke"]];
+  var KEY = "sm-guest-triggers";
+  var inflight = false, queued = false;
+  function $(id) { return document.getElementById(id); }
+  function esc(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function mine() { try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) { return []; } }
+  function save(l) { try { localStorage.setItem(KEY, JSON.stringify(l)); } catch (e) {} }
+  function tone(level) { return { Low: "good", None: "good", Moderate: "fair", High: "poor", "Very high": "bad" }[level] || "na"; }
+  function scoreTone(v) { return v == null ? "na" : v >= 70 ? "good" : v >= 50 ? "fair" : v >= 30 ? "poor" : "bad"; }
+
+  function render(d) {
+    var sm = d.smell || {}, sc = d.score || {}, ol = d.outlook || {}, vt = d.ventilation || {}, cl = d.climate || {}, al = d.alerts, pol = d.pollen || {};
+    var on = mine(), h = [];
+    var st = sm.state === "bad" ? (sm.tone || "poor") : sm.state === "ok" ? (sm.tone || "good") : "na";
+
+    h.push('<section class="card"><div class="kicker">Does it smell?</div><div class="big t-' + st + '">' + esc(sm.headline || "No reading yet.") + "</div>" +
+      (sm.state === "bad" ? '<div class="dim">' + esc(sm.level || "") + (sm.sinceMinutes != null ? " · for " + sm.sinceMinutes + " min" : "") + (sm.trend ? " · " + esc(sm.trend) : "") + "</div>" : "") +
+      (sm.action ? '<div class="action t-' + st + '"><span style="color:var(--ink)">' + esc(sm.action) + "</span></div>" : "") + "</section>");
+
+    h.push('<section class="card"><div class="kicker">Overall air</div><div class="row"><span class="score t-' + scoreTone(sc.value) + '">' + (sc.value == null ? "—" : sc.value) +
+      '</span><span class="dim">/100 · ' + esc(sc.grade || "No data") + "</span></div>" +
+      '<div class="tags" style="margin-top:8px">' +
+      (cl.tempF != null ? '<span class="tag">' + Math.round(cl.tempF) + "°F</span>" : "") +
+      (cl.humidity != null ? '<span class="tag">' + Math.round(cl.humidity) + "% humidity</span>" : "") +
+      (cl.comfort ? '<span class="tag">' + esc(cl.comfort) + "</span>" : "") +
+      (d.gases && d.gases.co2Category ? '<span class="tag">Air: ' + esc(d.gases.co2Category) + "</span>" : "") + "</div></section>");
+
+    h.push('<section class="card"><div class="kicker">What are you sensitive to?</div><div class="chips" role="group" aria-label="Your sensitivities">' +
+      LABELS.map(function (t) { var p = on.indexOf(t[0]) !== -1; return '<button type="button" class="chip" data-t="' + t[0] + '" aria-pressed="' + p + '">' + t[1] + "</button>"; }).join("") + "</div>" +
+      '<div class="big t-' + tone(ol.level) + '" style="font-size:1.15rem">' + esc(ol.headline || "") + "</div>" +
+      (ol.items || []).map(function (i) {
+        return '<div class="item"><b class="t-' + tone(i.level) + '">' + esc(i.label) + ": " + esc(i.confidence === "none" ? "no data" : i.level) + '</b><div class="dim">' + esc(i.reason) + "</div>" +
+          (i.action ? '<div class="action t-' + tone(i.level) + '"><span style="color:var(--ink)">' + esc(i.action) + "</span></div>" : "") + "</div>";
+      }).join("") +
+      (d.pets ? '<div class="dim" style="margin-top:8px">Pet allergen in the home (estimate): <b>' + esc(d.pets.level) + "</b></div>" : "") +
+      (vt.text && vt.action !== "none" ? '<div class="dim" style="margin-top:8px"><b>Windows:</b> ' + esc(vt.text) + "</div>" : "") + "</section>");
+
+    if (pol.ok && (pol.items || []).length) {
+      h.push('<section class="card"><div class="kicker">Pollen outside today</div><div class="tags">' +
+        pol.items.map(function (x) { return '<span class="tag t-' + tone(x.category) + '">' + esc(x.name) + ": " + esc(x.category || "") + "</span>"; }).join("") + "</div></section>");
+    }
+
+    if (al && al.topic) {
+      var web = al.server + "/" + encodeURIComponent(al.topic);
+      h.push('<section class="card"><div class="kicker">Get alerts</div><div class="big" style="font-size:1.15rem">Get a push notification if the room smells bad or air quality drops.</div>' +
+        '<div class="dim">Uses the free ntfy app. We never ask for your phone number or email.</div>' +
+        '<a class="btn" href="ntfy://' + al.server.replace("https://", "") + "/" + encodeURIComponent(al.topic) + '">Open in ntfy app</a>' +
+        '<a class="btn alt" href="' + web + '" target="_blank" rel="noopener">Use in browser</a>' +
+        '<details style="margin-top:10px"><summary class="dim">No app yet?</summary><div class="dim">Install ntfy from the App Store or Google Play, tap “+”, and subscribe to topic <b>' + esc(al.topic) + "</b>.</div></details></section>");
+    }
+    $("root").innerHTML = h.join("");
+    $("updated").textContent = d.updatedAt ? "Live · updated " + new Date(d.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Waiting for first reading";
+  }
+
+  function load() {
+    if (inflight) { queued = true; return; }
+    inflight = true;
+    fetch("/api/guest?triggers=" + encodeURIComponent(mine().join(",")), { cache: "no-store" })
+      .then(function (r) { return r.status === 204 ? null : r.ok ? r.json() : Promise.reject(new Error(r.status)); })
+      .then(function (d) { if (d) render(d); else $("root").innerHTML = '<div class="card dim">Waiting for the first reading…</div>'; })
+      .catch(function () { $("updated").textContent = "Couldn’t refresh — showing the last reading"; })
+      .then(function () { inflight = false; if (queued) { queued = false; load(); } });
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest(".chip");
+    if (!b) return;
+    var k = b.getAttribute("data-t"), l = mine(), i = l.indexOf(k);
+    if (i === -1) l.push(k); else l.splice(i, 1);
+    save(l); load();
+  });
+  load();
+  setInterval(load, 60000);
+})();
+</script>
+</body>
+</html>
