@@ -57,10 +57,13 @@ function lerpColor(a, b, t) {
  * Color on the green → amber → red scale for a score 0–100.
  * `colors` maps tone names to hex ({ good, fair, poor, bad }).
  * Non-numeric scores read as the bottom of the scale.
+ * `opts.flip` reverses the scale (0 reads green, 100 reads red) for
+ * meters where a high number is bad — the Pet dander index.
  */
-export function colorAtScore(score, colors) {
+export function colorAtScore(score, colors, opts) {
   const s = clampScore(score);
-  const v = s === null ? 0 : s;
+  let v = s === null ? 0 : s;
+  if (opts && opts.flip) v = 100 - v;
   for (let i = 0; i < BANDS.length - 1; i++) {
     const a = BANDS[i];
     const b = BANDS[i + 1];
@@ -128,8 +131,10 @@ function esc(v) {
  * Full ring markup for a score 0–100 and grade word (e.g. 81, "Good").
  * `colors` maps tone names to hex ({ good, fair, poor, bad }).
  * No-data scores still render the ghost scale so the range reads.
+ * `opts.ticks` overrides the tick marks (default 40/60/80);
+ * `opts.flip` reverses the color scale (see colorAtScore).
  */
-export function scoreRingHtml(score, grade, colors) {
+export function scoreRingHtml(score, grade, colors, opts) {
   const s = clampScore(score);
   const pct = s === null ? 0 : s / 100;
   const C = 2 * Math.PI * R;
@@ -141,7 +146,7 @@ export function scoreRingHtml(score, grade, colors) {
 
   let segs = "";
   for (let i = 0; i < SEGMENTS; i++) {
-    const col = colorAtScore(((i + 0.5) / SEGMENTS) * 100, colors);
+    const col = colorAtScore(((i + 0.5) / SEGMENTS) * 100, colors, opts);
     const off = (-(i * segLen)).toFixed(1);
     const base =
       '<circle class="seg' + (i < filled ? "" : " ghost") + '" cx="100" cy="100" r="' + R +
@@ -150,7 +155,7 @@ export function scoreRingHtml(score, grade, colors) {
     segs += base;
   }
 
-  const ticks = TICKS.map(function (t) {
+  const ticks = ((opts && Array.isArray(opts.ticks)) ? opts.ticks : TICKS).map(function (t) {
     const p1 = gaugePoint(t, R - 10);
     const p2 = gaugePoint(t, R + 10);
     return '<line class="tick" x1="' + p1.x + '" y1="' + p1.y + '" x2="' + p2.x + '" y2="' + p2.y + '"/>';
@@ -160,7 +165,7 @@ export function scoreRingHtml(score, grade, colors) {
   if (s !== null) {
     const p = gaugePoint(s, R);
     dot =
-      '<circle class="dot" cx="' + p.x + '" cy="' + p.y + '" r="7" fill="' + colorAtScore(s, colors) +
+      '<circle class="dot" cx="' + p.x + '" cy="' + p.y + '" r="7" fill="' + colorAtScore(s, colors, opts) +
       '" style="stroke:var(--card)" stroke-width="2.5"/>';
   }
 

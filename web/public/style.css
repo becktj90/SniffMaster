@@ -324,11 +324,12 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .forecast .hi { font-size: 18px; font-family: var(--mono); }
 
 /* ── Pet meter ─────────────────────────────────────────────────── */
-.meter { position: relative; width: 100%; max-width: 360px; margin: 2px auto 0; }
-.meter svg { width: 100%; display: block; }
-.meter .needle { transition: transform 1s cubic-bezier(.2,.8,.2,1); transform-origin: 150px 150px; }
-.meter-value { text-align: center; margin-top: 4px; }
-.meter-value .num { font-size: 44px; font-weight: 600; line-height: 1; }
+.pet-ring { display: flex; justify-content: center; }
+.pet-ring .ring { width: 232px; height: 232px; }
+.pet-pills { text-align: center; margin-top: 8px; }
+.pet-cats { text-align: center; margin: 8px 0 0; }
+.pet-trend { margin-top: 12px; }
+.pet-trend .spark { display: block; width: 100%; height: 30px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { border: 1px solid var(--line-2); background: transparent; border-radius: 999px; padding: 7px 14px; min-height: 38px; cursor: pointer; font-weight: 500; font-size: 13.5px; color: var(--ink-2); }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }

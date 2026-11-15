@@ -410,14 +410,17 @@
   function noData(err) {
     return '<div class="card"><h2>' + (err ? "Can't reach the sensor right now" : "Waiting for the first reading") + '</h2><p class="muted">' + (err ? "The dashboard will retry on its own." : "As soon as the SniffMaster posts its first reading, it shows up here.") + "</p></div>";
   }
-  function scoreRing(score, grade) {
+  function scoreRing(score, grade, opts) {
     if (window.SniffGauge) {
       return window.SniffGauge.scoreRingHtml(score, grade, {
         good: css("--good"), fair: css("--fair"), poor: css("--poor"), bad: css("--bad")
-      });
+      }, opts);
     }
     // Fallback until /gauge.js loads: the old flat single-color ring.
-    var tone = toneFor(score), color = css("--" + (tone === "na" ? "ink-3" : tone));
+    // A flipped meter (high is bad, e.g. the Pet dander index) reads
+    // its tone off the mirrored score so the color stays honest.
+    var shown = opts && opts.flip && isNum(score) ? 100 - score : score;
+    var tone = toneFor(shown), color = css("--" + (tone === "na" ? "ink-3" : tone));
     var R = 84, C = 2 * Math.PI * R, arc = C * 0.75, pct = isNum(score) ? Math.max(0, Math.min(100, score)) / 100 : 0;
     return '<div class="ring"><svg viewBox="0 0 200 200" aria-hidden="true"><circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="12" stroke-linecap="round" stroke-dasharray="' + arc + " " + C + '"/>' +
       '<circle class="arc" cx="100" cy="100" r="' + R + '" fill="none" stroke="' + color + '" stroke-width="12" stroke-linecap="round" stroke-dasharray="' + arc * pct + " " + C + '"/></svg>' +
@@ -953,28 +956,57 @@
     var sens = await load("sensors").catch(function () { return null; });
     var pet = home.petAllergen || {};
     var idx = isNum(pet.index) ? Number(pet.index) : null;
-    var ang = -90 + (Math.max(0, Math.min(100, idx || 0)) / 100) * 180;
-    var bands = [["--good", 0, 25], ["--fair", 25, 50], ["--poor", 50, 75], ["--bad", 75, 100]];
-    var arc = function (a0, a1) {
-      var p = function (v) { var a = Math.PI * (1 - v / 100); return [150 + 120 * Math.cos(a), 150 - 120 * Math.sin(a)]; };
-      var s = p(a0), e = p(a1);
-      return "M" + s[0].toFixed(1) + " " + s[1].toFixed(1) + "A120 120 0 0 1 " + e[0].toFixed(1) + " " + e[1].toFixed(1);
-    };
-    var meter = '<div class="meter"><svg viewBox="0 0 300 170" aria-hidden="true">' +
-      bands.map(function (b) { return '<path d="' + arc(b[1] + 0.8, b[2] - 0.8) + '" stroke="' + css(b[0]) + '" stroke-width="20" fill="none" stroke-linecap="butt" opacity="' + (idx !== null && idx >= b[1] && idx < b[2] + (b[2] === 100 ? 1 : 0) ? 1 : 0.22) + '"/>'; }).join("") +
-      [[0, "0"], [50, "50"], [100, "100"]].map(function (tv) {
-        var a = Math.PI * (1 - tv[0] / 100);
-        var px = 150 + 138 * Math.cos(a), py = 150 - 138 * Math.sin(a);
-        return '<text x="' + px.toFixed(0) + '" y="' + (py + (tv[0] === 50 ? 2 : 4)).toFixed(0) + '" text-anchor="middle" font-size="11" fill="' + css("--ink-3") + '">' + tv[1] + "</text>";
-      }).join("") +
-      '<g class="needle" style="transform:rotate(' + ang + 'deg)"><line x1="150" y1="150" x2="150" y2="44" stroke="' + css("--ink") + '" stroke-width="3" stroke-linecap="round"/></g><circle cx="150" cy="150" r="8" fill="' + css("--ink") + '"/></svg>' +
-      '<div class="meter-value"><span class="num">' + fmt(idx) + '</span><div style="margin-top:6px">' + pill(pet.level || "Unknown", levelTone(pet.level)) + " " + pill((pet.confidence || "no") + " confidence", "na") + "</div></div></div>";
+    var pm = window.SniffPetMeter;
+    // Same gradient-ring treatment as the Overview home score, with the
+    // scale flipped (a high dander index is bad) and ticks on the pet
+    // bands (25/50/75) instead of 40/60/80.
+    var ring = '<div class="pet-ring">' + scoreRing(idx, pet.level || "Unknown", { ticks: [25, 50, 75], flip: true }) + '</div>';
+    var pills = '<div class="pet-pills">' + pill(pet.level || "Unknown", levelTone(pet.level)) + " " + pill((pet.confidence || "no") + " confidence", "na") + '</div>';
+    // The roaming band below renders this same count from the same
+    // index (load() syncs it on every home refresh) — the line just
+    // names it so the meter and the cats visibly agree.
+    var catsLine = (pm && window.SniffCats)
+      ? '<p class="pet-cats muted small">' + esc(pm.catsRoamingLabel(window.SniffCats.catCountForPetIndex(idx))) + '</p>'
+      : "";
+    var ol = home.outlook || {};
+    // Plain-English reading for the pet triggers, in the server's own
+    // words — the outlook card below lists every trigger; the meter
+    // itself answers just Cats and Dogs.
+    var readingHtml = "";
+    if (pm) {
+      var reading = pm.petTriggerReading(ol.items);
+      if (reading) {
+        readingHtml = reading.map(function (r) {
+          return '<p class="interp">' + esc(r.label + " · " + (r.level || "") + (r.severity && r.severity !== "moderate" ? " · " + r.severity : "")) + (r.text ? " — " + esc(r.text) : "") + "</p>";
+        }).join("");
+      }
+    }
+    // Trend + sparkline from the 6h odor history: the dander index is
+    // recomputed per bucket with the server's own formula (see
+    // pet-meter.js), so the trend is real data, not a second estimate.
+    // The page's sensors payload already carries odors at 1h/6h; at
+    // 24h/7d (odors: null) a best-effort 6h fetch fills in instead.
+    var trendHtml = "";
+    if (pm) {
+      var tsrc = sens && Array.isArray(sens.odors) ? sens : null;
+      if (!tsrc) {
+        try { tsrc = await getJSON("/api/sensors?range=6h"); } catch (e) { tsrc = null; }
+      }
+      if (tsrc && Array.isArray(tsrc.odors) && tsrc.series && Array.isArray(tsrc.series.t)) {
+        var pts = pm.petSeriesIndexes(tsrc.series.t, tsrc.odors, tsrc.series.co2, tsrc.series.pm25, tsrc.series.pm10);
+        var tr = pm.petTrend(pts);
+        var tline = pm.trendLine(tr);
+        var sparkHtml = pm.petSparklineHtml(pts, css("--series-1"));
+        if (tline || sparkHtml) {
+          trendHtml = '<div class="pet-trend">' + sparkHtml + (tline ? '<p class="muted small" style="margin:6px 0 0">' + esc(tline) + "</p>" : "") + "</div>";
+        }
+      }
+    }
     var basis = (pet.basis || []).map(function (b) {
       return '<div class="hbar"><span>' + esc(b.label) + '</span><span class="track"><i style="width:' + b.score + '%"></i></span><span class="v">' + fmt(b.score) + '</span></div><p class="muted small" style="margin:-4px 0 6px">' + esc(b.detail) + "</p>";
     }).join("");
     var trig = store("sm-triggers") || [];
     var chips = '<div class="chips" id="trig">' + TRIGGERS.map(function (t) { return '<button type="button" class="chip" data-trig="' + t[0] + '" aria-pressed="' + (trig.indexOf(t[0]) >= 0) + '">' + t[1] + "</button>"; }).join("") + "</div>";
-    var ol = home.outlook || {};
     var outlook = (ol.items || []).map(function (i) {
       return '<div class="tip ' + (levelTone(i.level) === "good" ? "good" : levelTone(i.level) === "fair" ? "fair" : "bad") + '"><b>' + esc(i.label) + " · " + esc(i.level) + (i.severity && i.severity !== "moderate" ? " · " + esc(i.severity) : "") + "</b><p>" + esc(i.reason || "") + (i.action ? " " + esc(i.action) : "") + "</p></div>";
     }).join("");
@@ -983,7 +1015,7 @@
     var pollen = home.pollen && home.pollen.ok ? [].concat(home.pollen.types || [], home.pollen.plants || []) : [];
     window.__sensorData = sens;
     return head("Pet meter", "A precise read on pet dander and the other things that set off allergies, and how much to trust it.") +
-      '<div class="grid g-hero"><div class="card"><div class="card-head"><h3>Pet dander index</h3><span class="sub">0–100 estimate</span></div>' + meter + '<p class="note">' + esc(pet.note || "") + "</p></div>" +
+      '<div class="grid g-hero"><div class="card"><div class="card-head"><h3>Pet dander index</h3><span class="sub">0–100 estimate</span></div>' + ring + pills + catsLine + '<p class="note">' + esc(pet.note || "") + "</p>" + readingHtml + trendHtml + "</div>" +
       '<div class="card"><h3 style="margin-bottom:12px">What goes into it</h3><div class="hbars">' + (basis || '<p class="muted">No pet-related signals yet.</p>') + "</div>" +
       '<p class="note">With a particulate sensor fitted, coarse dust in the 2.5–10 µm range (where dander lives) joins the index and confidence goes up to medium.</p></div></div>' +
       '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Pet / litter smell over time</h3><span class="sub">smell-model class score</span></div><div class="chart-box"><div class="chart-tools" id="pet-tools"></div><div class="chart" id="petchart"></div></div></div>' +

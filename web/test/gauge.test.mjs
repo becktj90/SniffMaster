@@ -92,3 +92,30 @@ test("scoreRingHtml at the ends fills everything or nothing", () => {
   assert.equal((empty.match(/class="seg ghost"/g) || []).length, 30);
   assert.match(empty, /class="dot"/);
 });
+
+test("colorAtScore with flip reverses the scale (high is bad)", () => {
+  assert.equal(colorAtScore(0, COLORS, { flip: true }), "#3ccf74");
+  assert.equal(colorAtScore(100, COLORS, { flip: true }), "#f06262");
+  assert.equal(colorAtScore(60, COLORS, { flip: true }), "#ec835a");
+  assert.equal(colorAtScore(20, COLORS, { flip: true }), "#3ccf74");
+  // Without flip the same scores read the other way.
+  assert.equal(colorAtScore(0, COLORS), "#f06262");
+  assert.equal(colorAtScore(100, COLORS), "#3ccf74");
+});
+
+test("scoreRingHtml takes custom ticks and a flipped scale", () => {
+  const html = scoreRingHtml(30, "Moderate", COLORS, { ticks: [25, 50, 75], flip: true });
+  // Three ticks instead of the default three at 40/60/80: check the
+  // 25 tick sits where gaugePoint(25, R−10) puts it, and the 40 tick is gone.
+  const p25 = gaugePoint(25, 74);
+  assert.ok(html.includes('x1="' + p25.x + '"'), "25 tick present");
+  const p40 = gaugePoint(40, 74);
+  assert.ok(!html.includes('x1="' + p40.x + '"'), "40 tick absent");
+  // Flipped: the dot at 30 reads the green end of the scale, and the
+  // first segment is green rather than red.
+  assert.ok(html.includes('fill="' + colorAtScore(30, COLORS, { flip: true }) + '"'));
+  assert.ok(html.includes('stroke="' + colorAtScore(50 / 30, COLORS, { flip: true }) + '"'));
+  // Default ticks still apply when no opts are passed.
+  const def = scoreRingHtml(30, "Moderate", COLORS);
+  assert.ok(def.includes('x1="' + p40.x + '"'), "default 40 tick present");
+});
