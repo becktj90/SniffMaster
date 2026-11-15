@@ -30,6 +30,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
+#include <esp_timer.h>
 #include "bsec2.h"
 #include "secrets.h"               // WIFI_CREDS, OPENAI_API_KEY, OPENAI_MODEL
 #include "web_dashboard_config.h"  // WEB_DASHBOARD_URL, WEB_DASHBOARD_KEY
@@ -2043,28 +2044,28 @@ static void processSample(unsigned long now) {
 // Button (loop task)
 // ══════════════════════════════════════════════════════════════
 
-struct BtnTrack {
-  uint8_t gpio;
-  bool    armed;       // has been seen released since boot
-  bool    stable;      // debounced "down"
-  bool    lastRaw;
-  unsigned long changeMs;
-  unsigned long downMs;
-  bool    longFired;
+// Right-hand user button on the expansion board is D1 (GPIO3). D0 is the
+// Grove port beside it. GPIO9 is the BOOT button on the XIAO module.
+// display() blocks the loop for ~160 ms, so a 10 ms timer samples the pins.
+static const gpio_num_t BTN_WATCH[] = {
+  GPIO_NUM_3, GPIO_NUM_2, GPIO_NUM_9, GPIO_NUM_4, GPIO_NUM_10
 };
-static BtnTrack btnTrack[] = {
-  { D1, false, false, false, 0, 0, false },
-  { D0, false, false, false, 0, 0, false },
-  { 9,  false, false, false, 0, 0, false },
-};
-// Set from a falling-edge interrupt. display() blocks for ~160 ms while the
-// OLED frame is sent, which is long enough to miss a whole tap if we only
-// poll in loop().
-static volatile bool btnFell[3] = {};
-static void IRAM_ATTR btnIsr0() { btnFell[0] = true; }
-static void IRAM_ATTR btnIsr1() { btnFell[1] = true; }
-static void IRAM_ATTR btnIsr2() { btnFell[2] = true; }
-static void (*const btnIsr[3])() = { btnIsr0, btnIsr1, btnIsr2 };
+static constexpr uint8_t BTN_N = sizeof(BTN_WATCH) / sizeof(BTN_WATCH[0]);
+static uint8_t btnLevel[BTN_N] = {};
+static uint8_t btnLowMs[BTN_N] = {};
+static volatile uint8_t btnFellMask = 0;
+static bool btnTimerOn = false;
+
+static void buttonSample(void*) {
+  for (uint8_t i = 0; i < BTN_N; i++) {
+    const gpio_num_t pin = BTN_WATCH[i];
+    gpio_set_direction(pin, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    const uint8_t level = gpio_get_level(pin) ? 1 : 0;
+    if (btnTimerOn && btnLevel[i] == 1 && level == 0) btnFellMask |= (1u << i);
+    btnLevel[i] = level;
+  }
+}
 
 static void onShortPress() {
   if (alarmStepsLeft) alarmStop();
@@ -2098,62 +2099,40 @@ static void onLongPress() {
 }
 
 static void armButtonPins() {
-  for (uint8_t i = 0; i < 3; i++) {
-    BtnTrack& b = btnTrack[i];
-    pinMode(b.gpio, INPUT_PULLUP);
-    gpio_pullup_en((gpio_num_t)b.gpio);
-    gpio_pulldown_dis((gpio_num_t)b.gpio);
-    attachInterrupt(digitalPinToInterrupt(b.gpio), btnIsr[i], FALLING);
+  buttonSample(nullptr);                 // record the idle levels first
+  const esp_timer_create_args_t args = {
+    .callback = buttonSample,
+    .name = "btn",
+  };
+  esp_timer_handle_t timer = nullptr;
+  if (esp_timer_create(&args, &timer) == ESP_OK) {
+    esp_timer_start_periodic(timer, 10000);   // 10 ms
+    btnTimerOn = true;
   }
+  Serial.printf("[BTN] idle gpio3=%u gpio2=%u gpio9=%u gpio4=%u gpio10=%u\n",
+                btnLevel[0], btnLevel[1], btnLevel[2], btnLevel[3], btnLevel[4]);
 }
 
 static void handleButton(unsigned long now) {
-  static unsigned long lastPullMs = 0;
-  // Wi-Fi bring-up can clear the pull-ups on these pins. Put them back
-  // without detaching the edge interrupt (gpio pull only, no pinMode).
-  if (lastPullMs && now - lastPullMs >= 2000UL) {
-    for (BtnTrack& b : btnTrack) gpio_pullup_en((gpio_num_t)b.gpio);
-    lastPullMs = now;
-  } else if (!lastPullMs) {
-    lastPullMs = now;
-  }
+  static unsigned long lastActionMs = 0;
+  noInterrupts();
+  const uint8_t fell = btnFellMask;
+  btnFellMask = 0;
+  interrupts();
 
-  for (uint8_t i = 0; i < 3; i++) {
-    BtnTrack& b = btnTrack[i];
-    const bool fell = btnFell[i];
-    if (fell) btnFell[i] = false;
-    const bool low = digitalRead(b.gpio) == LOW || fell;
-    if (!b.armed) {
-      if (digitalRead(b.gpio) == HIGH) b.armed = true;
-      continue;
+  for (uint8_t i = 0; i < BTN_N; i++) {
+    if (btnLevel[i] == 0) {
+      if (btnLowMs[i] < 255) btnLowMs[i]++;
+    } else {
+      btnLowMs[i] = 0;
     }
-    if (low != b.lastRaw) { b.lastRaw = low; b.changeMs = now; }
-    if (!fell && now - b.changeMs < BTN_DEBOUNCE_MS) continue;
-
-    if (low && !b.stable) {
-      b.stable = true;
-      b.downMs = now;
-      b.longFired = false;
-      // Tap completed entirely during an OLED transfer: the pin is already up.
-      if (fell && digitalRead(b.gpio) == HIGH) {
-        b.stable = false;
-        b.lastRaw = false;
-        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
-        onShortPress();
-      }
-    } else if (low && b.stable) {
-      if (!b.longFired && now - b.downMs >= BTN_LONG_MS) {
-        b.longFired = true;
-        Serial.printf("[BTN] hold gpio=%u\n", b.gpio);
-        onLongPress();
-      }
-    } else if (!low && b.stable) {
-      b.stable = false;
-      if (!b.longFired) {
-        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
-        onShortPress();
-      }
-    }
+    const bool pressed = (fell & (1u << i)) || (btnLowMs[i] == (BTN_LONG_MS / 10));
+    if (!pressed) continue;
+    if (now - lastActionMs < 200) continue;
+    lastActionMs = now;
+    Serial.printf("[BTN] gpio=%d lowMs=%u page=%u\n", (int)BTN_WATCH[i], btnLowMs[i], displayPage);
+    if (btnLowMs[i] >= (BTN_LONG_MS / 10)) onLongPress();
+    else onShortPress();
   }
 }
 
