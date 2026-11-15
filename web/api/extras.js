@@ -41,6 +41,7 @@ import { toOledView } from "../lib/oled.js";
 import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
+import { lookupEnvironment } from "../lib/googleEnv.js";
 import {
   getEffectiveThresholds,
   getEffectiveAlertCooldownMs,
@@ -274,7 +275,7 @@ async function apod(req, res) {
 // GET  — device polls for the newest owner-issued command
 // POST — owner queues a new command from the portal
 const COMMAND_TTL_MS = 10 * 60 * 1000;
-const ALLOWED_ACTIONS = new Set(["refresh", "breath_check", "presence_probe"]);
+const ALLOWED_ACTIONS = new Set(["refresh", "breath_check", "presence_probe", "gas_scan"]);
 
 function setCommandHeaders(res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -323,7 +324,9 @@ async function command(req, res) {
         ? "Manual sync requested from portal"
         : action === "breath_check"
           ? "Breath analysis requested from portal"
-          : "BLE presence probe requested from portal",
+          : action === "gas_scan"
+            ? "On-demand BME688 heater scan requested from portal"
+            : "BLE presence probe requested from portal",
     });
     return res.status(200).json({
       ok: true,
@@ -1609,10 +1612,44 @@ async function alerts(req, res) {
   }
 }
 
+// ── environment ──────────────────────────────────────────────────────────
+// GET/POST /api/environment — compact Google (or Open-Meteo) outdoor context.
+// Device auth only. The Google key stays on the server.
+async function environment(req, res) {
+  setCommandHeaders(res);
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET" && req.method !== "POST") {
+    return res.status(405).json({ error: "GET/POST only" });
+  }
+  if (!requireDeviceAuth(req, res)) return;
+
+  const body = req.method === "POST" && req.body && typeof req.body === "object" ? req.body : {};
+  const lat = Number(body.lat ?? req.query?.lat);
+  const lon = Number(body.lon ?? req.query?.lon);
+  const wifi = Array.isArray(body.wifi) ? body.wifi.slice(0, 8) : [];
+  const redis = isRedisConfigured();
+  try {
+    const result = await lookupEnvironment(
+      { lat, lon, wifi },
+      {
+        cacheGet: redis ? (key) => getJsonCache(key) : null,
+        cacheSet: redis ? (key, value, ttl) => setJsonCache(key, value, ttl) : null,
+        incr: redis ? (key, ttl) => incrCounter(key, ttl) : null,
+      }
+    );
+    return res.status(200).json(result && typeof result === "object" ? result : { ok: false });
+  } catch {
+    // Do not log the error: a fetch failure can include the request URL, and that URL holds the API key.
+    console.error("environment lookup failed");
+    return res.status(200).json({ ok: false });
+  }
+}
+
 // ── dispatcher ───────────────────────────────────────────────────────────
 const ROUTES = {
   apod,
   command,
+  environment,
   launches,
   "occupancy-briefing": occupancyBriefing,
   "office-stats": officeStats,

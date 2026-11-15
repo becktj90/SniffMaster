@@ -47,6 +47,10 @@ app.all("/api/command", (req, res, next) => {
   req.query = { ...req.query, fn: "command" };
   next();
 }, wrap(extrasHandler));
+app.all("/api/environment", (req, res, next) => {
+  req.query = { ...req.query, fn: "environment" };
+  next();
+}, wrap(extrasHandler));
 app.all("/api/launches", (req, res, next) => {
   req.query = { ...req.query, fn: "launches" };
   next();

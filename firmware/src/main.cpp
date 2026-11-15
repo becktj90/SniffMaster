@@ -14,8 +14,8 @@
   Pages auto-cycle every 5 s (see the C_* card list).
 
   Architecture:
-    loop()   — sensor, button, buzzer, OLED. Never touches the network.
-    netTask  — Wi-Fi, portal posts/commands, weather + outdoor AQI.
+    loop()   — sensor, button, buzzer, OLED, on-demand gas scan. Never touches the network.
+    netTask  — Wi-Fi, portal posts/commands, /api/environment.
                Runs at lower priority so slow HTTPS can't freeze the UI.
     Shared state crosses tasks only via short copies under gLock.
 ***********************************************************/
@@ -30,8 +30,11 @@
 #include <Preferences.h>
 #include <math.h>
 #include "bsec2.h"
+#include "bme68xLibrary.h"
 #include "secrets.h"               // WIFI_CREDS, OPENAI_API_KEY, OPENAI_MODEL
 #include "web_dashboard_config.h"  // WEB_DASHBOARD_URL, WEB_DASHBOARD_KEY
+#include "heater_profile.h"        // Bosch sequential profile, copied not invented
+#include "env_fusion.h"            // dew point, pressure trend, ventilation
 #define USE_ML_SCORING
 #include "smellnet_model_data.h"
 #include "smellnet_inference.h"
@@ -253,6 +256,14 @@ static uint8_t ss_iaqAcc = 0;
 static uint8_t ss_scores[ODOR_COUNT] = {0};
 static uint8_t ss_tier = 0;
 static int     ss_airScore = 0;
+static int     ss_roomScore = 0;
+static float   ss_dewF = NAN;
+static char    ss_vent[8] = "open";
+static char    ss_prevVent[8] = "";
+static char    ss_pressTrend[8] = "";
+static bool    ss_pressDisagree = false;
+static EnvPressureTrend gPressTrend;
+static unsigned long lastPressSampleMs = 0;
 static bool    ss_valid = false;
 static float   ss_prevVoc = 0;
 static uint8_t ss_prevTier = 0xFF;
@@ -317,6 +328,7 @@ static unsigned long alarmPhaseEndMs = 0;
 static Preferences   bsecPrefs;
 static unsigned long lastBsecSaveMs = 0;
 static bool          bsecAcc3Saved = false;
+static bool          bsecEverSaved = false;   // a good blob exists in NVS (this boot or earlier)
 static unsigned long bsecInitMillis = 0;
 static unsigned long lastBsecWaitLogMs = 0;
 static bool          bsecFirstPacketRetryDone = false;
@@ -351,6 +363,16 @@ struct Telemetry {
   int     fartCount;
   bool    fullBundle, gasValid, runIn, stab, bsecRestored;
   float   rawTempC, rawHum;       // NAN when not subscribed
+  float   dewF;                   // indoor Magnus dew point, Fahrenheit
+  int     roomScore;              // air score with static IAQ
+  char    vent[8];                // open | brief | shut
+  char    pressTrend[8];          // "" until 90 minutes, then rising|steady|falling
+  bool    pressDisagree;
+  bool    gasScanPost;
+  uint32_t gasScanGen;
+  char    gasScanProfile[28];
+  uint32_t gasScanOhms[HEATER_STEP_COUNT];
+  uint8_t gasScanCount;
 #if SM_HOME_SENSORS
   HomeAirReading home;
 #endif
@@ -373,6 +395,8 @@ static SniffEvent gSniff = {};
 static bool       gSniffPending = false;
 static uint32_t   gSniffGen = 0;        // bumped per queued event; guards clear-after-send
 static bool       gPushRequested = false;
+static volatile bool gScanBusy = false;          // loop owns the BME688; net skips TLS
+static volatile bool gGasScanRequest = false;    // net asks, loop runs the scan
 
 // net → main: connection info + outdoor data
 struct WeatherData {
@@ -389,6 +413,17 @@ struct OutdoorAQI {
   char  level[16];
   char  advisory[200];
   unsigned long fetchedMs;
+  unsigned long ttlMs;          // server ttlSec; 0 → OUTDOOR_TTL_MS
+  bool  pollenValid;
+  int   pollenTree, pollenGrass, pollenWeed;
+  char  pollenTop[17];
+  float outdoorDewF;            // forecast dew point °F; NAN if absent
+  float googlePress;            // forecast hPa
+  bool  googlePressValid;
+  bool  uaqiValid;
+  int   uaqi;
+  int   heatF, uv, precipPct;
+  char  source[12];             // google | open-meteo
 };
 // Server-computed Home mode metrics (GET /api/home-stats)
 struct HomeStats {
@@ -441,11 +476,45 @@ static void requestPortalPush() { LockGuard g; gPushRequested = true; }
 static NetStatus copyNetStatus() { LockGuard g; return gNet; }
 
 #define OUTDOOR_TTL_MS (30UL * 60UL * 1000UL)
+static unsigned long outdoorTtlMs(const OutdoorAQI& a) {
+  return a.ttlMs ? a.ttlMs : OUTDOOR_TTL_MS;
+}
+static bool outdoorFresh(const OutdoorAQI& a) {
+  return a.valid && (millis() - a.fetchedMs) <= outdoorTtlMs(a);
+}
 // Outdoor AQI for scoring/alerts; stale (> TTL) counts as missing
 static int sharedOutdoorAqi() {
   LockGuard g;
-  if (!gNet.aqi.valid || millis() - gNet.aqi.fetchedMs > OUTDOOR_TTL_MS) return 0;
+  if (!outdoorFresh(gNet.aqi)) return 0;
   return gNet.aqi.aqi;
+}
+
+struct OutdoorSnap {
+  bool  fresh;
+  int   usAqi;
+  float pm25;
+  int   tree, grass, weed;
+  float dewF;
+  float pressHpa;
+  bool  pressValid;
+};
+static OutdoorSnap copyOutdoorSnap() {
+  LockGuard g;
+  OutdoorSnap s = {};
+  s.dewF = NAN;
+  s.fresh = outdoorFresh(gNet.aqi);
+  if (!s.fresh) return s;
+  s.usAqi = gNet.aqi.aqi;
+  s.pm25 = gNet.aqi.pm25;
+  if (gNet.aqi.pollenValid) {
+    s.tree = gNet.aqi.pollenTree;
+    s.grass = gNet.aqi.pollenGrass;
+    s.weed = gNet.aqi.pollenWeed;
+  }
+  s.dewF = gNet.aqi.outdoorDewF;
+  s.pressHpa = gNet.aqi.googlePress;
+  s.pressValid = gNet.aqi.googlePressValid;
+  return s;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -500,9 +569,8 @@ static int computeAirScore(float iaq, float voc, float co2, float hum,
   for (int i = 0; i < ODOR_COUNT; i++) if (scores[i] > peak) peak = scores[i];
   float odorPts = constrain(peak * 0.15f, 0.0f, 15.0f);
 
-  // Outdoor US EPA AQI (0-500) only; 0 = missing/stale
-  float outdoorPts = (outdoorAqi > 200) ? 10 : (outdoorAqi > 150) ? 7 :
-                     (outdoorAqi > 100) ? 4 : (outdoorAqi > 50) ? 2 : 0;
+  // Outdoor US EPA AQI (0-500) only; 0 = missing/stale. Pollen is not a term.
+  float outdoorPts = (float)envOutdoorPoints(outdoorAqi);
 
   int total = (int)(iaqPts + vocPts + co2Pts + humPts + odorPts + outdoorPts + 0.5f);
   return constrain(total, 0, 100);
@@ -1195,7 +1263,9 @@ static void cardTemp(const NetStatus& n) {
 }
 
 static void cardHumidity() {
-  drawHeader("Humidity");
+  const char* badge = !strcmp(ss_vent, "shut") ? "Vent shut" :
+                      !strcmp(ss_vent, "brief") ? "Vent brief" : "Vent open";
+  drawHeader("Humidity", badge);
   char buf[12];
   snprintf(buf, sizeof(buf), "%.0f", ss_hum);
   drawBigValue(buf, "%RH", (ss_hum < 30) ? "dry" : (ss_hum <= 60) ? "ideal" : (ss_hum <= 70) ? "damp" : "MOLDY");
@@ -1204,7 +1274,7 @@ static void cardHumidity() {
 }
 
 static void cardPressure() {
-  drawHeader("Pressure");
+  drawHeader("Pressure", ss_pressTrend[0] ? ss_pressTrend : nullptr);
   char buf[12], st[12];
   const float hpa = pressToHpa(ss_pressure);
   snprintf(buf, sizeof(buf), "%.0f", hpa);
@@ -1286,23 +1356,50 @@ static void cardAllergens(const NetStatus& n) {
 
 static void cardOutdoor(const NetStatus& n) {
   char city[13];
-  strlcpy(city, n.city, sizeof(city));   // header fits ~12 chars beside the title
-  drawHeader("Outdoor", city[0] ? city : nullptr);
-  char buf[24];
+  strlcpy(city, n.city, sizeof(city));
+  const bool trend = ss_pressTrend[0] != '\0';
+  drawHeader("Outdoor", trend ? ss_pressTrend : (city[0] ? city : nullptr));
   if (!n.aqi.valid) {
     display.setCursor(0, 24);
     display.print(n.connected ? F("Fetching outdoor air") : F("WiFi offline"));
     return;
   }
-  snprintf(buf, sizeof(buf), "%d", n.aqi.aqi);
-  drawBigValue(buf, "AQI", n.aqi.level);
-  drawRangeBar(32, pctOf(n.aqi.aqi, 0, 200), "0", "200");
-  snprintf(buf, sizeof(buf), "PM2.5 %.0f  PM10 %.0f", n.aqi.pm25, n.aqi.pm10);
-  display.setCursor(0, 42); display.print(buf);
-  if (n.weather.valid) {
-    snprintf(buf, sizeof(buf), "%dF %s", n.weather.tempF, n.weather.condition);
-    display.setCursor(0, 52); display.print(buf);
+  const bool fresh = outdoorFresh(n.aqi);
+  char buf[24];
+  if (n.weather.valid)
+    snprintf(buf, sizeof(buf), "%dF feel %d", n.weather.tempF, n.weather.feelsLikeF);
+  else
+    strlcpy(buf, "--", sizeof(buf));
+  display.setCursor(0, 12);
+  display.print(buf);
+
+  display.setCursor(0, 21);
+  if (!fresh || !n.weather.valid) display.print(F("Env data stale"));
+  else display.print(n.weather.condition);
+
+  int wind = 0;
+  if (n.weather.valid) sscanf(n.weather.windSpeed, "%d", &wind);
+  snprintf(buf, sizeof(buf), "%.3s %d  AQI %d",
+           n.weather.windDir[0] ? n.weather.windDir : "--", wind, n.aqi.aqi);
+  display.setCursor(0, 30);
+  display.print(buf);
+
+  char cat[9];
+  strlcpy(cat, n.aqi.level, sizeof(cat));
+  if (isfinite(n.aqi.pm25)) snprintf(buf, sizeof(buf), "PM2.5 %.0f %.8s", n.aqi.pm25, cat);
+  else snprintf(buf, sizeof(buf), "PM2.5 -- %.8s", cat);
+  display.setCursor(0, 39);
+  display.print(buf);
+
+  if (fresh && n.aqi.pollenValid) {
+    snprintf(buf, sizeof(buf), "Pol T%d G%d W%d %.6s",
+             n.aqi.pollenTree, n.aqi.pollenGrass, n.aqi.pollenWeed, n.aqi.pollenTop);
+    if (strlen(buf) > 21) buf[21] = '\0';
+  } else {
+    strlcpy(buf, "Pollen --", sizeof(buf));
   }
+  display.setCursor(0, 48);
+  display.print(buf);
 }
 
 // Word-wrap plain ASCII text into 21-column lines starting at y (9 px pitch).
@@ -1597,7 +1694,8 @@ static void drawSplash() {
 // ══════════════════════════════════════════════════════════════
 
 static void checkAirAlerts(float iaq, float voc, float co2, float hum,
-                           const uint8_t scores[], uint8_t iaqAcc, int outdoorAqi) {
+                           const uint8_t scores[], uint8_t iaqAcc, int outdoorAqi,
+                           bool ventShutEdge, bool windowsShut) {
   if (!bsecCalibrationReady(iaqAcc)) return;   // warm-up transients false-trigger
   const unsigned long now = millis();
 
@@ -1639,10 +1737,11 @@ static void checkAirAlerts(float iaq, float voc, float co2, float hum,
   if (advisoryEverShown && now - lastAdvisoryMs < ADVISORY_COOLDOWN_MS) return;
   const char* title = nullptr;
   const char* msg = nullptr;
-  if (co2 > 1500)          { title = "HIGH CO2";     msg = "CO2 elevated.\nOpen a window."; }
-  else if (iaq > 150)      { title = "STALE AIR";    msg = "Air quality declining\nConsider opening\na window."; }
-  else if (voc > 5.0f)     { title = "ELEVATED VOC"; msg = "Volatile compounds\nrising. Ventilate."; }
-  else if (hum > 75)       { title = "HIGH HUMIDITY"; msg = "Humidity is high.\nDehumidify or vent."; }
+  if (ventShutEdge)        { title = "WINDOWS SHUT"; msg = "Outdoor air or pollen\nis high. Keep windows\nclosed."; }
+  else if (co2 > 1500)     { title = "HIGH CO2";     msg = windowsShut ? "CO2 elevated.\nKeep windows closed." : "CO2 elevated.\nOpen a window."; }
+  else if (iaq > 150)      { title = "STALE AIR";    msg = windowsShut ? "Indoor air is stale.\nKeep windows closed." : "Air quality declining\nConsider opening\na window."; }
+  else if (voc > 5.0f)     { title = "ELEVATED VOC"; msg = windowsShut ? "Volatile compounds\nrising. Filter the air." : "Volatile compounds\nrising. Ventilate."; }
+  else if (hum > 75)       { title = "HIGH HUMIDITY"; msg = windowsShut ? "Humidity is high.\nDehumidify the room." : "Humidity is high.\nDehumidify or vent."; }
   else if (outdoorAqi > 150) {
     title = "OUTDOOR AQI"; msg = "Outdoor air unhealthy\nKeep windows closed.";
   }
@@ -1689,6 +1788,7 @@ static void loadBsecState() {
       bsecPrefs.putBool(BSEC_GUARD_KEY, true);
       calState.bsecStateLoaded = envSensor.setState(st.blob);
       if (calState.bsecStateLoaded) {
+        bsecEverSaved = true;
         Serial.printf("[BSEC] Saved state loaded (%s) — warm resume\n", bsecCfgId);
       } else {
         bsecPrefs.remove(BSEC_STATE_KEY);
@@ -1750,6 +1850,7 @@ static void saveBsecState() {
   }
   bsecPrefs.end();
   lastBsecSaveMs = millis();
+  bsecEverSaved = true;
   Serial.printf("[BSEC] State saved (%s, acc=%u)\n", bsecCfgId, latestIAQAccuracy);
 }
 
@@ -1759,6 +1860,7 @@ static void eraseBsecState(const char* why) {
   bsecPrefs.remove(BSEC_GUARD_KEY);
   bsecPrefs.end();
   calState.bsecStateLoaded = false;
+  bsecEverSaved = false;
   Serial.printf("[BSEC] Saved state erased (%s)\n", why);
 }
 
@@ -1869,13 +1971,48 @@ static void processSample(unsigned long now) {
   deriveExpandedOdors(scores, voc, iaq, co2, gasR, dVoc, hum, iaqAcc);
   stabilizePrimaryOdor(scores, iaqAcc);
 
-  const int outdoorAqi = sharedOutdoorAqi();
+  const OutdoorSnap outdoor = copyOutdoorSnap();
+  const int outdoorAqi = outdoor.fresh ? outdoor.usAqi : 0;
   const int airScore = computeAirScore(iaq, voc, co2, hum, scores, outdoorAqi);
+  const int roomScore = computeAirScore(latestStaticIAQ, voc, co2, hum, scores, outdoorAqi);
+  const float dewF = envDewPointF(latestTemp, hum);
+  if (!lastPressSampleMs || now - lastPressSampleMs >= 15UL * 60UL * 1000UL) {
+    gPressTrend.push(hpa);
+    lastPressSampleMs = now;
+  }
+  strlcpy(ss_pressTrend, gPressTrend.label(), sizeof(ss_pressTrend));
+
+  EnvVentInput vin = {};
+  vin.outdoorFresh = outdoor.fresh;
+  vin.staticIaq = latestStaticIAQ;
+  vin.co2eq = co2;
+  vin.voc = voc;
+  vin.indoorRh = hum;
+  vin.indoorTempF = tempF;
+  vin.outdoorDewF = outdoor.dewF;
+  vin.usAqi = outdoor.usAqi;
+  vin.pm25 = outdoor.pm25;
+  vin.pollenTree = outdoor.tree;
+  vin.pollenGrass = outdoor.grass;
+  vin.pollenWeed = outdoor.weed;
+  const EnvVentDecision vent = envVentilation(vin);
+  const bool ventShutEdge = vent.reason == VENT_OUTDOOR &&
+                            strcmp(ss_prevVent, "shut") != 0;
+
+  bool disagree = false;
+  if (outdoor.fresh && outdoor.pressValid && fabsf(hpa - outdoor.pressHpa) > 8.0f) {
+    disagree = true;
+    if (!ss_pressDisagree)
+      Serial.printf("[PRESS] BME %.1f hPa vs forecast %.1f hPa\n", hpa, outdoor.pressHpa);
+  }
+  ss_pressDisagree = disagree;
 
   ss_voc = voc; ss_iaq = iaq; ss_co2 = co2; ss_tempF = tempF; ss_hum = hum;
   ss_pressure = pressure; ss_gasR = gasR; ss_dvoc = vocDelta;
   ss_stabStatus = latestStabStatus; ss_runInStatus = latestRunInStatus;
-  ss_iaqAcc = iaqAcc; ss_tier = tier; ss_airScore = airScore;
+  ss_iaqAcc = iaqAcc; ss_tier = tier; ss_airScore = airScore; ss_roomScore = roomScore;
+  ss_dewF = dewF;
+  strlcpy(ss_vent, vent.vent, sizeof(ss_vent));
   memcpy(ss_scores, scores, sizeof(ss_scores));
   ss_valid = true;
   if (!hadValid) {
@@ -1932,7 +2069,10 @@ static void processSample(unsigned long now) {
   ss_prevAirScore = airScore;
 
   histPush(now);
-  checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi);
+  const bool advisoryCooling = advisoryEverShown && now - lastAdvisoryMs < ADVISORY_COOLDOWN_MS;
+  checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi, ventShutEdge,
+                 strcmp(vent.vent, "shut") == 0);
+  if (calReady && !hazardActive && !advisoryCooling) strlcpy(ss_prevVent, vent.vent, sizeof(ss_prevVent));
 
   // ── Telemetry snapshot for the network task ────────────────
   {
@@ -1945,7 +2085,11 @@ static void processSample(unsigned long now) {
     t.compGas = latestCompGas; t.gasPct = latestGasPct; t.dVoc = vocDelta;
     t.iaqAcc = iaqAcc; t.calReady = calReady;
     strlcpy(t.calText, calibrationStatusText(iaqAcc, latestStabStatus, latestRunInStatus), sizeof(t.calText));
-    t.airScore = airScore; t.tier = tier;
+    t.airScore = airScore; t.roomScore = roomScore; t.tier = tier;
+    t.dewF = dewF;
+    strlcpy(t.vent, vent.vent, sizeof(t.vent));
+    strlcpy(t.pressTrend, ss_pressTrend, sizeof(t.pressTrend));
+    t.pressDisagree = disagree;
     memcpy(t.odors, scores, sizeof(t.odors));
     t.primaryIdx = scores[i1] >= ODOR_MIN_CONF ? i1 : ODOR_COUNT;
     t.primaryConf = scores[i1];
@@ -2103,8 +2247,7 @@ static bool          locationOk = false;
 static float         lat = 0, lon = 0;
 static int32_t       utcOffsetSec = 0;
 static unsigned long lastLocationTryMs = 0;
-static unsigned long weatherOkMs = 0, weatherTryMs = 0;
-static unsigned long aqiOkMs = 0, aqiTryMs = 0;
+static unsigned long envOkMs = 0, envTryMs = 0;
 static unsigned long homeOkMs = 0, homeTryMs = 0;
 static unsigned long wallOkMs = 0, wallTryMs = 0;
 static unsigned long snarkOkMs = 0, snarkTryMs = 0;
@@ -2257,64 +2400,6 @@ static bool fetchLocation() {
   return true;
 }
 
-// WMO weather code → short text (Open-Meteo `weather_code`)
-static const char* wmoText(int c) {
-  switch (c) {
-    case 0: return "Clear";
-    case 1: return "Mostly clear";
-    case 2: return "Partly cloudy";
-    case 3: return "Overcast";
-    case 45: case 48: return "Fog";
-    case 51: case 53: case 55: return "Drizzle";
-    case 56: case 57: return "Freezing drizzle";
-    case 61: return "Light rain";
-    case 63: return "Rain";
-    case 65: return "Heavy rain";
-    case 66: case 67: return "Freezing rain";
-    case 71: case 73: case 75: case 77: return "Snow";
-    case 80: case 81: case 82: return "Rain showers";
-    case 85: case 86: return "Snow showers";
-    case 95: return "Thunderstorm";
-    case 96: case 99: return "T-storm + hail";
-    default: return "Unknown";
-  }
-}
-
-static const char* compass(float deg) {
-  static const char* DIRS[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
-  int i = (int)lroundf(fmodf(deg + 360.0f, 360.0f) / 45.0f) % 8;
-  return DIRS[i];
-}
-
-// Current weather from Open-Meteo (free, no key, HTTPS JSON)
-static bool fetchWeather() {
-  if (!locationOk) return false;
-  char url[256];
-  snprintf(url, sizeof(url),
-           "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-           "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,"
-           "wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph",
-           lat, lon);
-  String body;
-  if (request(url, nullptr, &body, false, 8000) != 200) return false;
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) return false;
-  JsonObject c = doc["current"];
-  if (c.isNull()) return false;
-
-  WeatherData w = {};
-  w.tempF = lroundf(c["temperature_2m"] | 0.0f);
-  w.feelsLikeF = lroundf(c["apparent_temperature"] | 0.0f);
-  w.humidity = lroundf(c["relative_humidity_2m"] | 0.0f);
-  strlcpy(w.condition, wmoText(c["weather_code"] | -1), sizeof(w.condition));
-  strlcpy(w.windDir, compass(c["wind_direction_10m"] | 0.0f), sizeof(w.windDir));
-  snprintf(w.windSpeed, sizeof(w.windSpeed), "%ld mph", lroundf(c["wind_speed_10m"] | 0.0f));
-  w.valid = true;
-  LockGuard g;
-  gNet.weather = w;
-  return true;
-}
-
 static const char* epaCategory(int aqi) {
   return aqi <= 50 ? "Good" : aqi <= 100 ? "Moderate" : aqi <= 150 ? "Sensitive" :
          aqi <= 200 ? "Unhealthy" : aqi <= 300 ? "Very Bad" : "Hazardous";
@@ -2334,42 +2419,156 @@ static void buildAqiAdvisory(OutdoorAQI& a) {
   else if (a.aqi > 100)                 { cause = "Multiple pollutants";  advice = "Keep windows closed"; }
   else if (a.aqi <= 50)                 { cause = "All clear";            advice = "Great day for open windows"; }
   else                                  { cause = "Mild pollution";       advice = "Sensitive groups be cautious"; }
+  char pm25[8], pm10[8], co[8], no2[8], o3[8], so2[8];
+  auto conc = [](char* out, size_t n, float v) {
+    if (isfinite(v)) snprintf(out, n, "%.0f", v);
+    else strlcpy(out, "--", n);
+  };
+  conc(pm25, sizeof(pm25), a.pm25); conc(pm10, sizeof(pm10), a.pm10);
+  conc(co, sizeof(co), a.co);       conc(no2, sizeof(no2), a.no2);
+  conc(o3, sizeof(o3), a.o3);       conc(so2, sizeof(so2), a.so2);
   snprintf(a.advisory, sizeof(a.advisory),
-           "AQI: %d  %s\nPM2.5: %.0f  PM10: %.0f\nCO: %.0f  NO2: %.0f  O3: %.0f  SO2: %.0f\n%s\n%s",
-           a.aqi, a.level, a.pm25, a.pm10, a.co, a.no2, a.o3, a.so2, cause, advice);
+           "AQI: %d  %s\nPM2.5: %s  PM10: %s\nCO: %s  NO2: %s  O3: %s  SO2: %s\n%s\n%s",
+           a.aqi, a.level, pm25, pm10, co, no2, o3, so2, cause, advice);
 }
 
-// Outdoor air from Open-Meteo: US EPA AQI (0-500) + concentrations in µg/m³
-static bool fetchOutdoorAQI() {
-  if (!locationOk) return false;
-  char url[256];
-  snprintf(url, sizeof(url),
-           "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=%.4f&longitude=%.4f"
-           "&current=us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,ozone,sulphur_dioxide",
-           lat, lon);
+// Async BSSID scan for the server-side geolocation call. At most every 15 min.
+// A pass that only starts the scan returns false so the next retry can read it.
+static const unsigned long ENV_WIFI_SCAN_MS = 15UL * 60UL * 1000UL;
+static unsigned long lastEnvScanMs = 0;
+struct EnvAp { char mac[18]; int8_t rssi; uint8_t channel; };
+static EnvAp envAps[8];
+static uint8_t envApCount = 0;
+
+static void harvestEnvScan(int found) {
+  envApCount = 0;
+  const int n = found > 8 ? 8 : found;
+  for (int i = 0; i < n; i++) {
+    const uint8_t* b = WiFi.BSSID(i);
+    if (!b) continue;
+    snprintf(envAps[envApCount].mac, sizeof(envAps[envApCount].mac),
+             "%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5]);
+    envAps[envApCount].rssi = (int8_t)WiFi.RSSI(i);
+    envAps[envApCount].channel = (uint8_t)WiFi.channel(i);
+    envApCount++;
+  }
+  WiFi.scanDelete();
+}
+
+static bool envScanReady() {
+  const int st = WiFi.scanComplete();
+  if (st == WIFI_SCAN_RUNNING) return false;
+  if (st >= 0) {
+    harvestEnvScan(st);
+    lastEnvScanMs = millis();
+    return true;
+  }
+  if (st == WIFI_SCAN_FAILED) WiFi.scanDelete();
+  const unsigned long now = millis();
+  if (!lastEnvScanMs || now - lastEnvScanMs >= ENV_WIFI_SCAN_MS) {
+    WiFi.scanNetworks(true);
+    lastEnvScanMs = now;
+    return false;
+  }
+  return true;
+}
+
+// One server call replaces the old weather and outdoor-AQI fetches.
+// Google is called only by the server. This function never sees the API key.
+static bool fetchGoogleEnv() {
+  if (!envScanReady()) return false;
+
+  JsonDocument req;
+  if (locationOk) {
+    req["lat"] = roundf(lat * 10000.0f) / 10000.0f;
+    req["lon"] = roundf(lon * 10000.0f) / 10000.0f;
+  }
+  if (envApCount >= 2) {
+    JsonArray wifi = req["wifi"].to<JsonArray>();
+    for (uint8_t i = 0; i < envApCount; i++) {
+      JsonObject ap = wifi.add<JsonObject>();
+      ap["mac"] = envAps[i].mac;
+      ap["rssi"] = envAps[i].rssi;
+      ap["channel"] = envAps[i].channel;
+    }
+  }
+  String payload;
+  serializeJson(req, payload);
   String body;
-  if (request(url, nullptr, &body, false, 8000) != 200) return false;
+  const int code = request(dashboardUrl("/api/environment"), payload.c_str(), &body, true, 12000);
+  if (code != 200) {
+    Serial.printf("[NET] environment HTTP %d\n", code);
+    return false;
+  }
+  if (body.length() > 1100) {
+    Serial.printf("[NET] environment body %u bytes rejected\n", (unsigned)body.length());
+    return false;
+  }
   JsonDocument doc;
   if (deserializeJson(doc, body)) return false;
-  JsonObject c = doc["current"];
-  if (c.isNull() || c["us_aqi"].isNull()) return false;
+  if (!(doc["ok"] | false)) return false;
+  JsonObject wx = doc["wx"];
+  JsonObject aq = doc["aq"];
+  if (wx.isNull() || aq.isNull() || aq["usAqi"].isNull()) return false;
+
+  WeatherData w = {};
+  w.tempF = wx["tempF"] | 0;
+  w.feelsLikeF = wx["feelsF"] | w.tempF;
+  w.humidity = wx["rh"] | 0;
+  strlcpy(w.condition, wx["cond"] | "", sizeof(w.condition));
+  strlcpy(w.windDir, wx["windDir"] | "", sizeof(w.windDir));
+  snprintf(w.windSpeed, sizeof(w.windSpeed), "%d mph", (int)(wx["windMph"] | 0));
+  w.valid = true;
 
   OutdoorAQI a = {};
-  a.aqi  = c["us_aqi"] | 0;
-  a.pm25 = c["pm2_5"] | 0.0f;
-  a.pm10 = c["pm10"] | 0.0f;
-  a.co   = c["carbon_monoxide"] | 0.0f;
-  a.no2  = c["nitrogen_dioxide"] | 0.0f;
-  a.o3   = c["ozone"] | 0.0f;
-  a.so2  = c["sulphur_dioxide"] | 0.0f;
-  strlcpy(a.level, epaCategory(a.aqi), sizeof(a.level));
+  a.outdoorDewF = NAN;
+  a.uv = -1;
+  a.precipPct = -1;
+  a.aqi = aq["usAqi"] | 0;
+  a.pm25 = a.pm10 = a.co = a.no2 = a.o3 = a.so2 = NAN;
+  if (!aq["pm25"].isNull()) a.pm25 = aq["pm25"] | 0.0f;
+  if (!aq["pm10"].isNull()) a.pm10 = aq["pm10"] | 0.0f;
+  if (!aq["co"].isNull()) a.co = aq["co"] | 0.0f;
+  if (!aq["no2"].isNull()) a.no2 = aq["no2"] | 0.0f;
+  if (!aq["o3"].isNull()) a.o3 = aq["o3"] | 0.0f;
+  if (!aq["so2"].isNull()) a.so2 = aq["so2"] | 0.0f;
+  strlcpy(a.level, aq["cat"] | epaCategory(a.aqi), sizeof(a.level));
+  if (!aq["uaqi"].isNull()) { a.uaqiValid = true; a.uaqi = aq["uaqi"] | 0; }
   buildAqiAdvisory(a);
   a.valid = true;
   a.fetchedMs = millis();
+  a.ttlMs = (unsigned long)(doc["ttlSec"] | 1800) * 1000UL;
+  strlcpy(a.source, doc["source"] | "", sizeof(a.source));
+  if (!wx["dewF"].isNull()) a.outdoorDewF = wx["dewF"] | 0.0f;
+  if (!wx["pressHpa"].isNull()) { a.googlePress = wx["pressHpa"] | 0.0f; a.googlePressValid = true; }
+  a.heatF = wx["heatF"] | 0;
+  if (!wx["uv"].isNull()) a.uv = wx["uv"] | 0;
+  if (!wx["precipPct"].isNull()) a.precipPct = wx["precipPct"] | 0;
+  JsonObject pol = doc["pollen"];
+  if (!pol.isNull()) {
+    a.pollenValid = true;
+    a.pollenTree = pol["tree"] | 0;
+    a.pollenGrass = pol["grass"] | 0;
+    a.pollenWeed = pol["weed"] | 0;
+    strlcpy(a.pollenTop, pol["top"] | "", sizeof(a.pollenTop));
+  }
 
-  Serial.printf("[NET] Outdoor US AQI=%d PM2.5=%.1f %s\n", a.aqi, a.pm25, a.level);
+  const char* locSource = doc["loc"]["source"] | "";
+  const bool wifiFix = strcmp(locSource, "wifi") == 0;
+  if (wifiFix) {
+    lat = doc["loc"]["lat"] | lat;
+    lon = doc["loc"]["lon"] | lon;
+    locationOk = true;
+  }
+  Serial.printf("[NET] Env %s AQI=%d PM2.5=%.1f pollen=%s\n",
+                a.source, a.aqi, a.pm25, a.pollenValid ? "yes" : "no");
   LockGuard g;
+  gNet.weather = w;
   gNet.aqi = a;
+  if (wifiFix) {
+    const char* label = doc["loc"]["label"] | "";
+    if (label[0]) strlcpy(gNet.city, label, sizeof(gNet.city));
+  }
   return true;
 }
 
@@ -2624,6 +2823,16 @@ static bool sendSnapshot(const Telemetry& t) {
   doc["vtrLabel"]   = vtrLabelForLevel(t.vtrLevel);
   doc["vtrAdvice"]  = vtrAdviceForLevel(t.vtrLevel);
   doc["airScore"]   = t.airScore;
+  doc["roomScore"]  = t.roomScore;
+  if (isfinite(t.dewF)) doc["dewF"] = roundf(t.dewF * 10.0f) / 10.0f;
+  if (t.vent[0]) doc["vent"] = t.vent;
+  if (t.pressTrend[0]) doc["pressTrend"] = t.pressTrend;
+  if (t.pressDisagree) doc["pressDisagree"] = true;
+  if (t.gasScanPost && t.gasScanCount) {
+    doc["gasScanProfile"] = t.gasScanProfile;
+    JsonArray scan = doc["gasScan"].to<JsonArray>();
+    for (uint8_t i = 0; i < t.gasScanCount && i < HEATER_STEP_COUNT; i++) scan.add(t.gasScanOhms[i]);
+  }
   doc["tier"]       = t.tier;
   doc["fartCount"]  = t.fartCount;
   doc["iaqTrend"]   = t.iaqTrend;
@@ -2666,12 +2875,20 @@ static bool sendSnapshot(const Telemetry& t) {
     doc["outdoorAqi"]   = ns.aqi.aqi;
     doc["outdoorLevel"] = ns.aqi.level;
     doc["aqiAdvisory"]  = ns.aqi.advisory;
-    doc["outdoorPm25"]  = roundf(ns.aqi.pm25 * 10) / 10.0f;
-    doc["outdoorPm10"]  = roundf(ns.aqi.pm10 * 10) / 10.0f;
-    doc["outdoorCo"]    = lroundf(ns.aqi.co);
-    doc["outdoorNo2"]   = roundf(ns.aqi.no2 * 10) / 10.0f;
-    doc["outdoorO3"]    = roundf(ns.aqi.o3 * 10) / 10.0f;
-    doc["outdoorSo2"]   = roundf(ns.aqi.so2 * 10) / 10.0f;
+    if (isfinite(ns.aqi.pm25)) doc["outdoorPm25"] = roundf(ns.aqi.pm25 * 10) / 10.0f;
+    if (isfinite(ns.aqi.pm10)) doc["outdoorPm10"] = roundf(ns.aqi.pm10 * 10) / 10.0f;
+    if (isfinite(ns.aqi.co))   doc["outdoorCo"]   = lroundf(ns.aqi.co);
+    if (isfinite(ns.aqi.no2))  doc["outdoorNo2"]  = roundf(ns.aqi.no2 * 10) / 10.0f;
+    if (isfinite(ns.aqi.o3))   doc["outdoorO3"]   = roundf(ns.aqi.o3 * 10) / 10.0f;
+    if (isfinite(ns.aqi.so2))  doc["outdoorSo2"]  = roundf(ns.aqi.so2 * 10) / 10.0f;
+    if (ns.aqi.uaqiValid) doc["outdoorUaqi"] = ns.aqi.uaqi;
+    if (ns.aqi.pollenValid) {
+      doc["pollenTree"] = ns.aqi.pollenTree;
+      doc["pollenGrass"] = ns.aqi.pollenGrass;
+      doc["pollenWeed"] = ns.aqi.pollenWeed;
+      if (ns.aqi.pollenTop[0]) doc["pollenTop"] = ns.aqi.pollenTop;
+    }
+    if (ns.aqi.source[0]) doc["envSource"] = ns.aqi.source;
   }
 
   String payload;
@@ -2679,6 +2896,10 @@ static bool sendSnapshot(const Telemetry& t) {
   String resp;
   int code = request(dashboardUrl("/api/update"), payload.c_str(), &resp);
   if (code == 200) {
+    if (t.gasScanPost) {
+      LockGuard g;
+      if (gTelem.gasScanGen == t.gasScanGen) gTelem.gasScanPost = false;
+    }
     Serial.println(F("[WEB] Dashboard updated"));
     return true;
   }
@@ -2704,6 +2925,13 @@ static void pollCommand() {
     Serial.println(F("[WEB] Remote command: refresh"));
     pushPending = true;
     lastPostAttemptMs = 0;
+  } else if (strcmp(action, "gas_scan") == 0) {
+    if (gScanBusy || gGasScanRequest) {
+      Serial.println(F("[GAS] scan busy — command dropped"));
+    } else {
+      gGasScanRequest = true;
+      Serial.println(F("[WEB] Remote command: gas_scan"));
+    }
   } else {
     Serial.printf("[WEB] Remote command '%s' not supported in this build\n", action);
   }
@@ -2733,7 +2961,7 @@ static void task(void*) {
     const bool connected = maintainWiFi();
     publishStatus(connected);
 
-    if (connected) {
+    if (connected && !gScanBusy) {
       // Pull requests from the main task
       Telemetry t;
       SniffEvent sniff;
@@ -2777,14 +3005,10 @@ static void task(void*) {
       } else if (!locationOk && (!lastLocationTryMs || now - lastLocationTryMs >= OPTIONAL_RETRY_MS)) {
         lastLocationTryMs = now;
         fetchLocation();
-      } else if ((!weatherOkMs || now - weatherOkMs >= WEATHER_REFRESH_MS) &&
-                 (!weatherTryMs || now - weatherTryMs >= OPTIONAL_RETRY_MS)) {
-        weatherTryMs = now;
-        if (fetchWeather()) weatherOkMs = millis();
-      } else if (locationOk && (!aqiOkMs || now - aqiOkMs >= WEATHER_REFRESH_MS) &&
-                 (!aqiTryMs || now - aqiTryMs >= OPTIONAL_RETRY_MS)) {
-        aqiTryMs = now;
-        if (fetchOutdoorAQI()) aqiOkMs = millis();
+      } else if ((!envOkMs || now - envOkMs >= WEATHER_REFRESH_MS) &&
+                 (!envTryMs || now - envTryMs >= OPTIONAL_RETRY_MS)) {
+        envTryMs = now;
+        if (fetchGoogleEnv()) envOkMs = millis();
       } else if (lastPostOkMs && (!homeOkMs || now - homeOkMs >= HOME_STATS_MS) &&
                  (!homeTryMs || now - homeTryMs >= OPTIONAL_RETRY_MS)) {
         homeTryMs = now;
@@ -2810,6 +3034,153 @@ static void task(void*) {
 }
 
 }  // namespace net
+
+// ══════════════════════════════════════════════════════════════
+// On-demand heater scan (loop task — it owns I2C)
+// ══════════════════════════════════════════════════════════════
+
+static void rebootSensorFail() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println(F("BME688 INIT FAIL"));
+  display.println(F("Check sensor wiring"));
+  display.println();
+  display.println(F("Rebooting in 10s..."));
+  display.display();
+  delay(10000);
+  ESP.restart();
+}
+
+static bool restoreBsecBlob() {
+  if (!bsecPrefs.begin(BSEC_NVS_NS, true)) return false;
+  bool ok = false;
+  if (bsecPrefs.getBytesLength(BSEC_STATE_KEY) == sizeof(PersistedBsecState)) {
+    static PersistedBsecState st;
+    bsecPrefs.getBytes(BSEC_STATE_KEY, &st, sizeof(st));
+    if (st.magic == BSEC_STATE_MAGIC && st.version == BSEC_STATE_VER &&
+        st.blobLen == BSEC_MAX_STATE_BLOB_SIZE && strncmp(st.cfgId, bsecCfgId, sizeof(st.cfgId)) == 0) {
+      ok = envSensor.setState(st.blob);
+    }
+  }
+  bsecPrefs.end();
+  calState.bsecStateLoaded = ok;
+  if (ok) bsecEverSaved = true;
+  return ok;
+}
+
+static bool restartBsec(const char* why) {
+  Serial.printf("[BSEC] Restarting after %s\n", why);
+  if (!envSensor.begin(bmeI2cAddr, Wire, safeBmeDelayUs)) return false;
+  if (!envSensor.setConfig(bsecIaqLpConfig))
+    Serial.printf("[BSEC] Config reload failed: %d\n", (int)envSensor.status);
+  if (!restoreBsecBlob()) Serial.println(F("[BSEC] No blob restored after scan"));
+  if (!subscribeBsecOutputs("scan")) return false;
+  envSensor.attachCallback(onSensorData);
+  bsecInitMillis = millis();
+  return true;
+}
+
+static void emitLabelData(const uint32_t* ohms, uint8_t count) {
+  Serial.printf("SMELLNET_DATA,%.2f,%.0f,%.0f,%.1f,%.1f,%.1f,%.0f,%.2f,%s",
+                ss_voc, ss_iaq, ss_co2, ss_tempF, ss_hum, pressToHpa(ss_pressure),
+                ss_gasR, ss_dvoc, HEATER_PROFILE_ID);
+  for (uint8_t i = 0; i < count; i++) Serial.printf(",%lu", (unsigned long)ohms[i]);
+  Serial.println();
+}
+
+static void showGasScan(uint8_t step, uint8_t total) {
+  display.clearDisplay();
+  drawHeader("Gas scan");
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%u/%u", step, total);
+  display.setTextSize(2);
+  display.setCursor(0, 28);
+  display.print(buf);
+  display.setTextSize(1);
+  display.display();
+}
+
+static void runGasScan() {
+  if (gScanBusy) {
+    Serial.println(F("[GAS] scan already running — dropped"));
+    return;
+  }
+  if (latestIAQAccuracy == 0 && !bsecEverSaved) {
+    Serial.println(F("[GAS] refused: accuracy 0 and no saved BSEC state"));
+    return;
+  }
+  if (latestIAQAccuracy > 0) {
+    const bool hadBlob = bsecEverSaved;
+    saveBsecState();
+    if (!bsecEverSaved && !hadBlob) {
+      Serial.println(F("[GAS] refused: could not save BSEC state"));
+      return;
+    }
+  }
+  gScanBusy = true;
+  showGasScan(0, HEATER_STEP_COUNT);
+
+  Bme68x bme;
+  bme.begin(bmeI2cAddr, Wire);
+  uint16_t temp[HEATER_STEP_COUNT];
+  uint16_t dur[HEATER_STEP_COUNT];
+  for (uint8_t i = 0; i < HEATER_STEP_COUNT; i++) {
+    temp[i] = HEATER_TEMP_C[i];
+    dur[i] = HEATER_DUR_MS[i];
+  }
+  bool programmed = bme.checkStatus() != BME68X_ERROR;
+  if (programmed) {
+    bme.setTPH();
+    bme.setSeqSleep(BME68X_ODR_250_MS);
+    bme.setHeaterProf(temp, dur, HEATER_STEP_COUNT);
+    bme.setOpMode(BME68X_SEQUENTIAL_MODE);
+    programmed = bme.checkStatus() != BME68X_ERROR;
+  }
+
+  uint32_t ohms[HEATER_STEP_COUNT] = {};
+  uint8_t valid[HEATER_STEP_COUNT] = {};
+  uint8_t seen[HEATER_STEP_COUNT] = {};
+  uint8_t nSeen = 0;
+  const unsigned long deadline = millis() + 15000UL;
+  while (programmed && nSeen < HEATER_STEP_COUNT && (long)(deadline - millis()) > 0) {
+    handleButton(millis());
+    alarmTick(millis());
+    if (!bme.fetchData()) { delay(20); continue; }
+    bme68xData data;
+    uint8_t left;
+    do {
+      left = bme.getData(data);
+      if (data.gas_index >= HEATER_STEP_COUNT) continue;
+      const uint8_t step = data.gas_index;
+      if (!seen[step]) { seen[step] = 1; nSeen++; showGasScan(nSeen, HEATER_STEP_COUNT); }
+      const bool ok = (data.status & BME68X_GASM_VALID_MSK) && (data.status & BME68X_HEAT_STAB_MSK);
+      if (ok) {
+        ohms[step] = (uint32_t)lroundf(data.gas_resistance);
+        valid[step] = 1;
+      }
+    } while (left);
+  }
+  if (programmed) bme.setOpMode(BME68X_SLEEP_MODE);
+
+  for (uint8_t i = 0; i < HEATER_STEP_COUNT; i++) {
+    Serial.printf("GASSCAN,%s,%u,%u,%u,%lu,%u\n",
+                  HEATER_PROFILE_ID, i, HEATER_TEMP_C[i], HEATER_DUR_MS[i],
+                  (unsigned long)(valid[i] ? ohms[i] : 0), valid[i]);
+  }
+  {
+    LockGuard g;
+    strlcpy(gTelem.gasScanProfile, HEATER_PROFILE_ID, sizeof(gTelem.gasScanProfile));
+    memcpy(gTelem.gasScanOhms, ohms, sizeof(ohms));
+    gTelem.gasScanCount = HEATER_STEP_COUNT;
+    gTelem.gasScanGen++;
+    gTelem.gasScanPost = true;
+  }
+  emitLabelData(ohms, HEATER_STEP_COUNT);
+
+  if (!restartBsec("gas scan")) rebootSensorFail();
+  gScanBusy = false;
+  forceRedraw = true;
+}
 
 // ══════════════════════════════════════════════════════════════
 // setup() / loop()
@@ -2846,17 +3217,7 @@ void setup() {
     Serial.println(F("[BSEC] init failed at 0x76 — trying 0x77"));
     delay(200);
     bmeI2cAddr = BME68X_I2C_ADDR_HIGH;
-    if (!envSensor.begin(BME68X_I2C_ADDR_HIGH, Wire, safeBmeDelayUs)) {
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println(F("BME688 INIT FAIL"));
-      display.println(F("Check sensor wiring"));
-      display.println();
-      display.println(F("Rebooting in 10s..."));
-      display.display();
-      delay(10000);
-      ESP.restart();
-    }
+    if (!envSensor.begin(BME68X_I2C_ADDR_HIGH, Wire, safeBmeDelayUs)) rebootSensorFail();
   }
 
   Serial.printf("[BSEC] BME688 at 0x%02X\n", bmeI2cAddr);
@@ -3020,6 +3381,15 @@ static void serviceHomeSensors(unsigned long now) {
 void loop() {
   const unsigned long now = millis();
   handleButton(now);
+  if (gGasScanRequest && !gScanBusy) {
+    gGasScanRequest = false;
+    runGasScan();
+  }
+  if (gScanBusy) {
+    alarmTick(millis());
+    delay(5);
+    return;
+  }
 #if SM_HOME_SENSORS
   serviceHomeSensors(now);
 #endif
