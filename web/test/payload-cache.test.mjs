@@ -15,7 +15,8 @@ test("buildHomePayload caches 60s per trigger set", async () => {
   });
   const first = await buildHomePayload("");
   assert.ok(first && first.mode === "home");
-  assert.ok([...up.kv.keys()].includes("sniffmaster:cache:home-payload:none"));
+  // Key carries the trigger set plus the severity suffix ("std" = all moderate).
+  assert.ok([...up.kv.keys()].includes("sniffmaster:cache:home-payload:none|std"));
   // Wipe the source data: a rebuild would return null, a cache hit returns the same payload.
   for (const k of ["sniffmaster:latest", "sniffmaster:history", "sniffmaster:home_fine", "sniffmaster:home_coarse"]) {
     up.kv.delete(k);
@@ -24,5 +25,7 @@ test("buildHomePayload caches 60s per trigger set", async () => {
   assert.deepEqual(second, first);
   // A different trigger set is a different cache key — no stale cross-talk.
   assert.equal(await buildHomePayload("cat"), null);
+  // Same triggers but a different severity is a different cache key too.
+  assert.equal(await buildHomePayload("", "cat:severe"), null);
   up.close();
 });

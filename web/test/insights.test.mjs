@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
+import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers, parseSeverities, canonicalSeverities, applySeverity } from "../lib/homeInsights.js";
 import { buildHomeMetrics } from "../lib/homeAir.js";
 import { fallbackInsights, insightFacts } from "../lib/insights.js";
 
@@ -129,6 +129,102 @@ test("a cold boot still says the sensor is calibrating", () => {
 
 test("parseTriggers whitelists", () => {
   assert.deepEqual(parseTriggers("cat,pollen,evil,cat"), ["cat", "pollen"]);
+});
+
+test("parseTriggers accepts the new allergy triggers", () => {
+  assert.deepEqual(parseTriggers("dust,voc,dryAir,treePollen,grassPollen,weedPollen"), ["dust", "voc", "dryAir", "treePollen", "grassPollen", "weedPollen"]);
+});
+
+test("parseSeverities whitelists keys and levels", () => {
+  assert.deepEqual(parseSeverities("cat:severe,pollen:mild,evil:severe,cat:banana"), { cat: "severe", pollen: "mild" });
+  assert.deepEqual(parseSeverities({ dog: "severe", smoke: "off" }), { dog: "severe" });
+  assert.deepEqual(parseSeverities(""), {});
+  assert.equal(canonicalSeverities("pollen:mild,cat:severe"), "cat:severe,pollen:mild");
+  assert.equal(canonicalSeverities("cat:moderate"), "");
+});
+
+test("applySeverity shifts one level, clamped 0–4", () => {
+  assert.equal(applySeverity(2, "severe"), 3);
+  assert.equal(applySeverity(4, "severe"), 4);
+  assert.equal(applySeverity(2, "mild"), 1);
+  assert.equal(applySeverity(0, "mild"), 0);
+  assert.equal(applySeverity(3, "moderate"), 3);
+  assert.equal(applySeverity(3, undefined), 3);
+});
+
+test("severity sharpens and softens the outlook, and gates the action", () => {
+  const h = day({});
+  const odors = Array(20).fill(0); odors[16] = 80;
+  const latest = latestOf(h, { odors, iaq: 60, co2: 700 });
+  const m = { ...buildHomeMetrics(latest, h, { now }), pollen };
+  const base = allergyOutlook(m, ["cat"]).items[0];
+  const sev = allergyOutlook(m, ["cat"], null, { cat: "severe" }).items[0];
+  assert.equal(sev.baseRank, base.rank);
+  assert.equal(sev.rank, Math.min(4, base.rank + 1));
+  assert.equal(sev.severity, "severe");
+  const mild = allergyOutlook(m, ["cat"], null, { cat: "mild" }).items[0];
+  assert.equal(mild.rank, Math.max(0, base.rank - 1));
+  // Dust at PM10 60 µg/m³ is rank 2: mild drops it to 1 and hides the
+  // action, severe lifts it to 3 and keeps it.
+  const dusty = buildHomeMetrics(latestOf(h, { pm10: 60 }), h, { now });
+  const dMild = allergyOutlook(dusty, ["dust"], null, { dust: "mild" }).items[0];
+  assert.equal(dMild.rank, 1);
+  assert.equal(dMild.action, null);
+  const dSev = allergyOutlook(dusty, ["dust"], null, { dust: "severe" }).items[0];
+  assert.equal(dSev.rank, 3);
+  assert.match(dSev.action, /HEPA/);
+});
+
+test("new triggers: dust, fragrances and dry air score from real readings", () => {
+  const h = day({});
+  const latest = latestOf(h, { pm10: 120, iaq: 160, voc: 1.2, humidity: 20, tempF: 72 });
+  const m = buildHomeMetrics(latest, h, { now });
+  const out = allergyOutlook(m, ["dust", "voc", "dryAir"]);
+  const byKey = Object.fromEntries(out.items.map((i) => [i.key, i]));
+  assert.equal(byKey.dust.rank, 3); // PM10 120 µg/m³
+  assert.match(byKey.dust.reason, /Indoor coarse dust/);
+  assert.equal(byKey.voc.rank, 4); // IAQ 160 ≥ 150
+  assert.match(byKey.voc.reason, /VOC 1.20 ppm/);
+  assert.equal(byKey.dryAir.rank, 3); // RH 20% → dryness pct ~67
+  assert.match(byKey.dryAir.reason, /20% RH/);
+  assert.equal(out.rank, 4);
+});
+
+test("new triggers: no sensor, no outlook item level", () => {
+  const h = day({});
+  const m = buildHomeMetrics(latestOf(h), h, { now });
+  const out = allergyOutlook(m, ["dust", "voc"]);
+  const byKey = Object.fromEntries(out.items.map((i) => [i.key, i]));
+  assert.equal(byKey.dust.rank, 0);
+  assert.equal(byKey.voc.rank, 0);
+  assert.equal(byKey.voc.action, null);
+});
+
+test("new triggers: pollen split follows the family, not the worst overall", () => {
+  const google = {
+    ok: true,
+    types: [
+      { code: "GRASS", name: "Grass", value: 5, category: "Very high" },
+      { code: "TREE", name: "Tree", value: 1, category: "Very low" },
+      { code: "WEED", name: "Weed", value: 2, category: "Low" },
+    ],
+    plants: [],
+  };
+  const m = { pollen: google };
+  const out = allergyOutlook(m, ["treePollen", "grassPollen", "weedPollen"]);
+  const byKey = Object.fromEntries(out.items.map((i) => [i.key, i]));
+  assert.equal(byKey.grassPollen.rank, 4);
+  assert.match(byKey.grassPollen.reason, /Grass is very high/);
+  assert.equal(byKey.treePollen.rank, 0);
+  assert.equal(byKey.weedPollen.rank, 1);
+  // The overall "pollen" trigger still takes the worst of everything.
+  assert.equal(allergyOutlook(m, ["pollen"]).rank, 4);
+  // Open-Meteo plants map by name: birch is a tree, ragweed a weed.
+  const meteo = { ok: true, types: [], plants: [{ code: "BIRCH", name: "Birch", value: null, category: "High", grains: 120 }, { code: "RAGWEED", name: "Ragweed", value: null, category: "Low", grains: 5 }] };
+  const out2 = allergyOutlook({ pollen: meteo }, ["treePollen", "weedPollen"]);
+  const byKey2 = Object.fromEntries(out2.items.map((i) => [i.key, i]));
+  assert.equal(byKey2.treePollen.rank, 3);
+  assert.equal(byKey2.weedPollen.rank, 1);
 });
 
 const pollen = { ok: true, types: [{ name: "Grass", value: 4, category: "High" }], plants: [] };

@@ -70,7 +70,10 @@
   // ── data cache with visibility-aware polling ───────────────────────
   var cache = {};
   var sources = {
-    home: { url: function () { var t = store("sm-triggers") || []; return "/api/home-stats?triggers=" + encodeURIComponent(t.join(",")); }, every: 120000 },
+    // Per-trigger severity (sm-trigger-severity) rides along so the server
+    // can sharpen/soften the outlook per trigger; only non-moderate levels
+    // are sent, the rest default to moderate server-side.
+    home: { url: function () { var t = store("sm-triggers") || []; var sev = store("sm-trigger-severity") || {}; var s = t.filter(function (k) { return sev[k] && sev[k] !== "moderate"; }).map(function (k) { return k + ":" + sev[k]; }).join(","); return "/api/home-stats?triggers=" + encodeURIComponent(t.join(",")) + (s ? "&severity=" + encodeURIComponent(s) : ""); }, every: 120000 },
     insights: { url: function () { return "/api/insights"; }, every: 600000 },
     weather: { url: function () { return "/api/weather-briefing"; }, every: 1800000 },
     sniffs: { url: function () { return "/api/sniff-history?count=12"; }, every: 300000 },
@@ -664,7 +667,7 @@
   }
 
   // ── Pets ───────────────────────────────────────────────────────────
-  var TRIGGERS = [["cat", "Cats"], ["dog", "Dogs"], ["pollen", "Pollen"], ["dustMite", "Dust mites"], ["mold", "Mold"], ["smoke", "Smoke"]];
+  var TRIGGERS = [["cat", "Cats"], ["dog", "Dogs"], ["pollen", "Pollen"], ["treePollen", "Tree pollen"], ["grassPollen", "Grass pollen"], ["weedPollen", "Weed pollen"], ["dustMite", "Dust mites"], ["mold", "Mold"], ["dust", "Dust"], ["voc", "Fragrances & chemicals"], ["dryAir", "Dry air"], ["smoke", "Smoke"]];
   async function pagePets() {
     var home = await load("home");
     if (!home) return noData();
@@ -694,7 +697,7 @@
     var chips = '<div class="chips" id="trig">' + TRIGGERS.map(function (t) { return '<button type="button" class="chip" data-trig="' + t[0] + '" aria-pressed="' + (trig.indexOf(t[0]) >= 0) + '">' + t[1] + "</button>"; }).join("") + "</div>";
     var ol = home.outlook || {};
     var outlook = (ol.items || []).map(function (i) {
-      return '<div class="tip ' + (levelTone(i.level) === "good" ? "good" : levelTone(i.level) === "fair" ? "fair" : "bad") + '"><b>' + esc(i.label) + " · " + esc(i.level) + "</b><p>" + esc(i.reason || "") + (i.action ? " " + esc(i.action) : "") + "</p></div>";
+      return '<div class="tip ' + (levelTone(i.level) === "good" ? "good" : levelTone(i.level) === "fair" ? "fair" : "bad") + '"><b>' + esc(i.label) + " · " + esc(i.level) + (i.severity && i.severity !== "moderate" ? " · " + esc(i.severity) : "") + "</b><p>" + esc(i.reason || "") + (i.action ? " " + esc(i.action) : "") + "</p></div>";
     }).join("");
     var bio = home.biological || {};
     var cov = function (r) { return r && r.windowComplete === false ? '<p class="note">Based on ' + fmt(r.coverageHours, 1) + " of " + r.windowHours + " hours so far.</p>" : ""; };
@@ -958,19 +961,36 @@
   // ── Settings ───────────────────────────────────────────────────────
   // One place for the per-device preferences that used to live only on
   // their own pages. Everything reads/writes the same localStorage keys
-  // (sm-range, sm-triggers, sm-alert-rules), so a change here shows up on
-  // the Sensors, Pets, and Alerts pages too. Alert rules themselves are
-  // managed on the Alerts page — the subscription lives server-side, so a
-  // toggle here would be a lie; this page shows what is saved and links
-  // over to change it.
+  // (sm-range, sm-triggers, sm-trigger-severity, sm-alert-rules), so a
+  // change here shows up on the Sensors, Pets, and Alerts pages too.
+  // Alert rules themselves are managed on the Alerts page — the
+  // subscription lives server-side, so a toggle here would be a lie; this
+  // page shows what is saved and links over to change it. The Health
+  // profile card is different: it writes real server settings through
+  // POST /api/settings (environment type + alert limits), so it applies
+  // to alerts for everyone watching this dashboard.
   async function pageSettings() {
     var ver = null;
     try { ver = await getJSON("/api/version"); } catch (e) { ver = null; }
     var info = await load("alerts").catch(function () { return null; });
+    var server = null;
+    try { server = await getJSON("/api/settings"); } catch (e) { server = null; }
     var trig = store("sm-triggers") || [];
+    var sev = store("sm-trigger-severity") || {};
     var saved = store("sm-alert-rules") || {};
     var seg = '<div class="seg" role="group" aria-label="Time range">' + ["1h", "6h", "24h", "7d"].map(function (r) { return '<button type="button" data-range="' + r + '" aria-pressed="' + (r === sensorRange) + '">' + r + "</button>"; }).join("") + "</div>";
     var chips = '<div class="chips" id="trig">' + TRIGGERS.map(function (t) { return '<button type="button" class="chip" data-trig="' + t[0] + '" aria-pressed="' + (trig.indexOf(t[0]) >= 0) + '">' + t[1] + "</button>"; }).join("") + "</div>";
+    // Severity per picked trigger: mild softens the outlook by one level,
+    // severe sharpens it by one. Only shown for triggers that are on.
+    var sevRows = trig.length
+      ? TRIGGERS.filter(function (t) { return trig.indexOf(t[0]) >= 0; }).map(function (t) {
+        var cur = sev[t[0]] || "moderate";
+        return '<div class="sev-row"><span>' + esc(t[1]) + '</span><div class="seg" role="group" aria-label="How strongly ' + esc(t[1]) + ' affects you">' +
+          ["mild", "moderate", "severe"].map(function (lv) {
+            return '<button type="button" data-sev-trig="' + t[0] + '" data-sev="' + lv + '" aria-pressed="' + (lv === cur) + '">' + lv[0].toUpperCase() + lv.slice(1) + "</button>";
+          }).join("") + "</div></div>";
+      }).join("")
+      : '<p class="muted" style="margin:8px 0 0">Pick a trigger above to set how strongly it affects you.</p>';
     var presetOn = ["pet", "mold", "pollen", "smell", "humidityHi"];
     var rulesHtml;
     if (!info || !info.rules) {
@@ -985,11 +1005,41 @@
         return "<dt>" + esc(r.label) + "</dt><dd>" + pill(on ? "On" : "Off", on ? "good" : "na") + "</dd>";
       }).join("") + "</dl>";
     }
+    // Health profile: environment + alert sensitivity + the limits
+    // themselves, all server-side via /api/settings.
+    var S = window.SniffSensitivity;
+    var profileHtml;
+    if (!server || !S) {
+      profileHtml = '<p class="muted" style="margin:0">Couldn\'t load the server settings right now.</p>';
+    } else {
+      var preset = S.presetFor(server);
+      var env = S.ENVIRONMENTS.filter(function (e) { return e.key === server.environmentType; })[0] || S.ENVIRONMENTS[0];
+      var envSeg = '<div class="seg" role="group" aria-label="Environment">' + S.ENVIRONMENTS.map(function (e) {
+        return '<button type="button" data-env="' + e.key + '" aria-pressed="' + (e.key === server.environmentType) + '">' + e.label + "</button>";
+      }).join("") + "</div>";
+      var presetSeg = '<div class="seg" role="group" aria-label="Alert sensitivity">' + Object.keys(S.SENSITIVITY_PRESETS).map(function (k) {
+        return '<button type="button" data-sensitivity="' + k + '" aria-pressed="' + (k === preset) + '">' + S.SENSITIVITY_PRESETS[k].label + "</button>";
+      }).join("") + "</div>";
+      var presetBlurb = preset === "custom"
+        ? "Custom mix — one or more limits were hand-tuned away from the presets."
+        : S.SENSITIVITY_PRESETS[preset].blurb;
+      var fields = S.SENSITIVITY_FIELDS.map(function (f) {
+        return '<label class="thresh"><span>' + f.label + '</span><input type="number" data-setting="' + f.key + '" value="' + server[f.key] + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '" inputmode="decimal"><span class="unit">' + f.unit + "</span></label>";
+      }).join("");
+      profileHtml = '<p class="muted" style="margin:0 0 12px">Alert limits live on the server, so they apply to alerts for everyone watching this dashboard.</p>' +
+        '<h4 style="margin:0 0 8px">Environment</h4>' + envSeg + '<p class="note">' + esc(env.blurb) + "</p>" +
+        '<h4 style="margin:14px 0 8px">Alert sensitivity ' + (preset === "custom" ? pill("Custom", "na") : "") + "</h4>" + presetSeg +
+        '<p class="note">' + esc(presetBlurb) + "</p>" +
+        '<div class="thresh-grid">' + fields + "</div>" +
+        '<p class="note" id="settings-save-note">Limits are clamped to safe ranges on the server, so a wrong number can never silence monitoring.</p>';
+    }
     return head("Settings", "Preferences stored on this device — they stay here and apply everywhere on the dashboard.") +
       '<div class="grid g-2">' +
       '<div class="card"><h3 style="margin-bottom:8px">Sensor history</h3><p class="muted" style="margin:0 0 12px">Which window the Sensors charts show.</p>' + seg +
       '<p class="note">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</p></div>' +
-      '<div class="card"><h3 style="margin-bottom:8px">Your allergy triggers</h3><p class="muted" style="margin:0 0 12px">Pick what you react to. It stays on this device.</p>' + chips + "</div></div>" +
+      '<div class="card"><h3 style="margin-bottom:8px">Your allergy triggers</h3><p class="muted" style="margin:0 0 12px">Pick what you react to. It stays on this device.</p>' + chips +
+      '<p class="muted" style="margin:14px 0 4px;font-weight:600">How strongly each one affects you</p><p class="muted" style="margin:0 0 4px">Mild softens the outlook by one level, severe sharpens it by one.</p>' + sevRows + "</div></div>" +
+      '<div class="card mt"><div class="card-head"><h3>Health profile</h3><span class="sub">server settings</span></div>' + profileHtml + "</div>" +
       '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Alerts</h3><span class="sub">what you signed up for</span></div>' + rulesHtml +
       '<p style="margin:12px 0 0"><a class="btn" href="#/alerts">Manage alerts</a></p></div>' +
       '<div class="card"><h3 style="margin-bottom:8px">About this dashboard</h3><dl class="kv">' +
@@ -999,6 +1049,52 @@
   }
   function bindSettings() {
     bindPets(); // allergy trigger chips share the Pets page behavior
+    // Per-trigger severity: stored on this device, sent with the home URL.
+    view.querySelectorAll("[data-sev]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var sev = store("sm-trigger-severity") || {};
+        sev[b.dataset.sevTrig] = b.dataset.sev;
+        store("sm-trigger-severity", sev);
+        load("home", true).then(rerender);
+      });
+    });
+    var S = window.SniffSensitivity;
+    if (!S) return;
+    // Environment type: server-side, shapes which readings alerts weigh.
+    view.querySelectorAll("[data-env]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        saveServerSettings({ environmentType: b.dataset.env });
+      });
+    });
+    // Sensitivity preset: writes all six limits at once.
+    view.querySelectorAll("[data-sensitivity]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        saveServerSettings(S.SENSITIVITY_PRESETS[b.dataset.sensitivity].values);
+      });
+    });
+    // Individual limits: post on change; the preset becomes Custom.
+    view.querySelectorAll("[data-setting]").forEach(function (input) {
+      input.addEventListener("change", function () {
+        var patch = {};
+        patch[input.dataset.setting] = Number(input.value);
+        saveServerSettings(patch);
+      });
+    });
+    // POST a settings patch, then re-render so pressed states and the
+    // preset label follow the live values. The note reports failures.
+    async function saveServerSettings(patch) {
+      var note = document.getElementById("settings-save-note");
+      if (note) note.textContent = "Saving…";
+      try {
+        var res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+        var j = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(j.error || "Couldn't save.");
+        if (note) note.textContent = "Saved.";
+        rerender();
+      } catch (e) {
+        if (note) note.textContent = "Couldn't save: " + e.message;
+      }
+    }
   }
 
   // ── Sensor Health ──────────────────────────────────────────────────
