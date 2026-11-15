@@ -5,7 +5,7 @@
     - BME688 on Grove I2C (addr 0x76)
     - Built-in SSD1306 128x64 OLED (addr 0x3C)
     - Passive buzzer on D3 (hazard alarm ONLY)
-    - USER button on D0 (D1 and the BOOT button also work)
+    - USER button on D1 / GPIO3 (D0 and the BOOT button also work)
 
   Button:
     tap   = next page (or dismiss an alert / mute a hazard alarm)
@@ -32,6 +32,7 @@
 #include <esp_idf_version.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
+#include <esp_timer.h>
 #include <math.h>
 #include "bsec2.h"
 #include "bme68xLibrary.h"
@@ -2265,27 +2266,35 @@ static void processSample(unsigned long now) {
 // ══════════════════════════════════════════════════════════════
 
 struct BtnTrack {
-  uint8_t gpio;
-  bool    armed;       // has been seen released since boot
-  bool    stable;      // debounced "down"
+  gpio_num_t gpio;
+  volatile uint8_t level;   // 1 = released, sampled by the timer
+  volatile bool    fell;    // latched press, survives an OLED transfer
+  bool    armed;            // has been seen released since boot
+  bool    stable;           // debounced "down"
   bool    lastRaw;
   unsigned long changeMs;
   unsigned long downMs;
   bool    longFired;
 };
 static BtnTrack btnTrack[] = {
-  { D1, false, false, false, 0, 0, false },
-  { D0, false, false, false, 0, 0, false },
-  { 9,  false, false, false, 0, 0, false },
+  { GPIO_NUM_3, 1, false, false, false, false, 0, 0, false },  // D1, user button
+  { GPIO_NUM_2, 1, false, false, false, false, 0, 0, false },  // D0
+  { GPIO_NUM_9, 1, false, false, false, false, 0, 0, false },  // BOOT
 };
-// Set from a falling-edge interrupt. display() blocks for ~160 ms while the
-// OLED frame is sent, which is long enough to miss a whole tap if we only
-// poll in loop().
-static volatile bool btnFell[3] = {};
-static void IRAM_ATTR btnIsr0() { btnFell[0] = true; }
-static void IRAM_ATTR btnIsr1() { btnFell[1] = true; }
-static void IRAM_ATTR btnIsr2() { btnFell[2] = true; }
-static void (*const btnIsr[3])() = { btnIsr0, btnIsr1, btnIsr2 };
+// display() blocks the loop for ~95–160 ms, and Wi-Fi can clear a GPIO
+// interrupt. A 10 ms timer keeps sampling and re-arms the pull-ups, and the
+// latched edge is still there when the loop next runs.
+static bool btnTimerOn = false;
+
+static void buttonSample(void*) {
+  for (BtnTrack& b : btnTrack) {
+    gpio_set_direction(b.gpio, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(b.gpio, GPIO_PULLUP_ONLY);
+    const uint8_t level = gpio_get_level(b.gpio) ? 1 : 0;
+    if (btnTimerOn && b.level == 1 && level == 0) b.fell = true;
+    b.level = level;
+  }
+}
 
 static void onShortPress() {
   if (alarmStepsLeft) alarmStop();
@@ -2319,33 +2328,37 @@ static void onLongPress() {
 }
 
 static void armButtonPins() {
-  for (uint8_t i = 0; i < 3; i++) {
-    BtnTrack& b = btnTrack[i];
-    pinMode(b.gpio, INPUT_PULLUP);
-    gpio_pullup_en((gpio_num_t)b.gpio);
-    gpio_pulldown_dis((gpio_num_t)b.gpio);
-    attachInterrupt(digitalPinToInterrupt(b.gpio), btnIsr[i], FALLING);
+  buttonSample(nullptr);   // record idle levels before edges count
+  const esp_timer_create_args_t args = {
+    .callback = buttonSample,
+    .arg = nullptr,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name = "btn",
+    .skip_unhandled_events = true,
+  };
+  esp_timer_handle_t timer = nullptr;
+  if (esp_timer_create(&args, &timer) == ESP_OK &&
+      esp_timer_start_periodic(timer, 10000) == ESP_OK) {
+    btnTimerOn = true;
   }
+  Serial.printf("[BTN] timer=%d idle d1=%u d0=%u boot=%u\n",
+                btnTimerOn ? 1 : 0, btnTrack[0].level, btnTrack[1].level, btnTrack[2].level);
 }
 
 static void handleButton(unsigned long now) {
-  static unsigned long lastPullMs = 0;
-  // Wi-Fi bring-up can clear the pull-ups on these pins. Put them back
-  // without detaching the edge interrupt (gpio pull only, no pinMode).
-  if (lastPullMs && now - lastPullMs >= 2000UL) {
-    for (BtnTrack& b : btnTrack) gpio_pullup_en((gpio_num_t)b.gpio);
-    lastPullMs = now;
-  } else if (!lastPullMs) {
-    lastPullMs = now;
-  }
+  for (BtnTrack& b : btnTrack) {
+    bool fell = false;
+    uint8_t level;
+    noInterrupts();
+    fell = b.fell;
+    b.fell = false;
+    level = b.level;
+    interrupts();
+    if (!btnTimerOn) level = gpio_get_level(b.gpio) ? 1 : 0;
 
-  for (uint8_t i = 0; i < 3; i++) {
-    BtnTrack& b = btnTrack[i];
-    const bool fell = btnFell[i];
-    if (fell) btnFell[i] = false;
-    const bool low = digitalRead(b.gpio) == LOW || fell;
+    const bool low = level == 0 || fell;
     if (!b.armed) {
-      if (digitalRead(b.gpio) == HIGH) b.armed = true;
+      if (level == 1) b.armed = true;
       continue;
     }
     if (low != b.lastRaw) { b.lastRaw = low; b.changeMs = now; }
@@ -2356,22 +2369,22 @@ static void handleButton(unsigned long now) {
       b.downMs = now;
       b.longFired = false;
       // Tap completed entirely during an OLED transfer: the pin is already up.
-      if (fell && digitalRead(b.gpio) == HIGH) {
+      if (fell && level == 1) {
         b.stable = false;
         b.lastRaw = false;
-        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        Serial.printf("[BTN] tap gpio=%d\n", (int)b.gpio);
         onShortPress();
       }
     } else if (low && b.stable) {
       if (!b.longFired && now - b.downMs >= BTN_LONG_MS) {
         b.longFired = true;
-        Serial.printf("[BTN] hold gpio=%u\n", b.gpio);
+        Serial.printf("[BTN] hold gpio=%d\n", (int)b.gpio);
         onLongPress();
       }
     } else if (!low && b.stable) {
       b.stable = false;
       if (!b.longFired) {
-        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        Serial.printf("[BTN] tap gpio=%d\n", (int)b.gpio);
         onShortPress();
       }
     }
@@ -3372,9 +3385,10 @@ void setup() {
   armButtonPins();
 
   Serial.begin(115200);
-#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
-  Serial.setTxTimeoutMs(0);   // never stall the UI when no USB host is reading
-#endif
+  // Always. Gating this on the USB-CDC build flags left Arduino builds
+  // blocking in Serial.printf when nothing was reading the port, which froze
+  // the loop and dropped every button press.
+  Serial.setTxTimeoutMs(0);
 
   I2C_BEGIN();
   Wire.setClock(100000);
@@ -3570,6 +3584,7 @@ static void serviceHomeSensors(unsigned long now) {
 
 void loop() {
   const unsigned long now = millis();
+  Serial.setTxTimeoutMs(0);
   lastUiLoopStage = UI_STAGE_BUTTON;
   handleButton(now);
   if (gGasScanRequest && !gScanBusy) {
