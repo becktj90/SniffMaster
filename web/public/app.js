@@ -760,7 +760,7 @@
     }).join(" ");
     var mapCard = '<div class="card map-card"><div class="card-head"><h3>Around the house</h3><span class="sub">' + (g.heatmap ? "Streets plus Google air colors" : "Local map") + "</span></div>" +
       (home.location ? '<div id="local-map" class="local-map" role="region" aria-label="Map of the area around the sensor"></div>' : '<p class="muted">The map shows up once the sensor reports its location.</p>') +
-      '<p class="note">The pin is your sensor. ' + (g.heatmap ? "Green on the map is cleaner outdoor air and red is dirtier, from Google. " : "") + "Street map © OpenStreetMap.</p></div>";
+      '<p class="note">The pin is your sensor. ' + (g.heatmap ? "Green on the map is cleaner outdoor air and red is dirtier, from Google. " : "") + "Use the layers button at the top right of the map to switch between street and satellite maps and to toggle the air, pollen, and sensor layers.</p></div>";
     var googleCard = g.ok ? '<div class="card"><h3 style="margin-bottom:8px">Outdoor air, from Google</h3>' +
       '<div class="grid g-3">' +
       (us ? '<div class="stat"><p class="kicker">US AQI</p><div class="value num">' + fmt(us.aqi) + "</div><div class=\"line\">" + esc(us.category || "") + "</div></div>" : "") +
@@ -800,22 +800,75 @@
     if (!window.L) { el.innerHTML = '<p class="muted" style="padding:16px">The map could not load. The air numbers below are still here.</p>'; return; }
     if (localMap) { try { localMap.remove(); } catch (e) { /* container already gone */ } localMap = null; }
     var lat = home.location.lat, lon = home.location.lon;
+    // Layer choice lives in localStorage ("sm-map-layers") because this
+    // map is rebuilt on every Outside re-render (the route polls home +
+    // weather) — without it a poll tick would reset the user's layers.
+    // The map-layers module loads async; until it arrives the map behaves
+    // exactly as before, and the sniff-map-layers-ready listener below
+    // re-renders once it lands so the layers control appears.
+    var ML = window.SniffMapLayers;
+    var sel = ML ? ML.normalizeMapLayers(store("sm-map-layers")) : { base: "streets", overlays: { air: true, pollen: false, sensor: true } };
     var map = L.map(el, { scrollWheelZoom: false }).setView([lat, lon], 12);
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18,
-      attribution: "&copy; OpenStreetMap",
-    }).addTo(map);
-    if (home.googleAir && home.googleAir.heatmap) {
-      L.tileLayer("/api/air-tile?z={z}&x={x}&y={y}", {
-        opacity: 0.62, minZoom: 6, maxZoom: 12, attribution: "Air colors: Google",
-      }).addTo(map);
+    var baseMaps = {};
+    var baseLayers = {};
+    var baseDefs = ML ? ML.BASE_LAYER_DEFS : [{ key: "streets", label: "Streets", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", maxZoom: 18, attribution: "© OpenStreetMap contributors" }];
+    baseDefs.forEach(function (def) {
+      var layer = L.tileLayer(def.url, { maxZoom: def.maxZoom, attribution: def.attribution });
+      baseMaps[def.label] = layer;
+      baseLayers[def.key] = layer;
+    });
+    (baseLayers[sel.base] || baseLayers.streets).addTo(map);
+    var overlays = {};
+    var overlayLayers = {};
+    var avail = ML ? ML.availableOverlays(home) : { air: Boolean(home.googleAir && home.googleAir.heatmap), pollen: false, sensor: true };
+    if (avail.air) {
+      var airDef = ML ? ML.AIR_OVERLAY_DEF : { key: "air", label: "Air quality", url: "/api/air-tile?z={z}&x={x}&y={y}", opacity: 0.62, minZoom: 6, maxZoom: 12, attribution: "Air colors: Google" };
+      var air = L.tileLayer(airDef.url, { opacity: airDef.opacity, minZoom: airDef.minZoom, maxZoom: airDef.maxZoom, attribution: airDef.attribution });
+      overlays[airDef.label] = air;
+      overlayLayers.air = air;
+      if (sel.overlays.air) air.addTo(map);
+    }
+    if (avail.pollen && ML) {
+      var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var style = ML.pollenCircleStyle(home.pollen, dark);
+      if (style) {
+        var circle = L.circle([lat, lon], style);
+        circle.bindPopup("<b>Pollen near home</b><br>" + esc(topPollen(home.pollen)) + (home.pollen.source ? "<br><span class=\"muted small\">" + esc(home.pollen.source) + "</span>" : ""));
+        overlays[ML.POLLEN_OVERLAY_LABEL] = circle;
+        overlayLayers.pollen = circle;
+        if (sel.overlays.pollen) circle.addTo(map);
+      }
     }
     var g = home.googleAir || {};
     var us = (g.indexes || []).filter(function (i) { return i.code === "usa_epa"; })[0];
     var pol = home.pollen && home.pollen.ok ? topPollen(home.pollen) : "";
     var popup = "<b>Your sensor</b><br>" + (us ? "Outdoor AQI " + esc(String(us.aqi)) + " · " + esc(us.category || "") + "<br>" : "") + (pol ? "Pollen: " + esc(pol) : "");
-    L.circleMarker([lat, lon], { radius: 11, color: "#ffffff", weight: 3, fillColor: "#2a6fdb", fillOpacity: 1 })
-      .addTo(map).bindPopup(popup);
+    var pin = L.circleMarker([lat, lon], { radius: 11, color: "#ffffff", weight: 3, fillColor: "#2a6fdb", fillOpacity: 1 })
+      .bindPopup(popup);
+    overlays[ML ? ML.SENSOR_OVERLAY_LABEL : "Your sensor"] = pin;
+    overlayLayers.sensor = pin;
+    if (sel.overlays.sensor) pin.addTo(map);
+    if (ML) {
+      L.control.layers(baseMaps, overlays).addTo(map);
+      // Persist the choice; the ready flag keeps the adds above (during
+      // setup) from writing the selection back mid-build.
+      var layersReady = false;
+      var saveSel = function () {
+        if (!layersReady) return;
+        store("sm-map-layers", ML.normalizeMapLayers({
+          base: map.hasLayer(baseLayers.satellite) ? "satellite" : "streets",
+          overlays: {
+            air: overlayLayers.air ? map.hasLayer(overlayLayers.air) : true,
+            pollen: overlayLayers.pollen ? map.hasLayer(overlayLayers.pollen) : false,
+            sensor: overlayLayers.sensor ? map.hasLayer(overlayLayers.sensor) : true,
+          },
+        }));
+      };
+      map.on("baselayerchange", saveSel);
+      map.on("overlayadd", saveSel);
+      map.on("overlayremove", saveSel);
+      layersReady = true;
+    }
     localMap = map;
     setTimeout(function () { map.invalidateSize(); }, 60);
   }
@@ -1264,6 +1317,10 @@
   // re-render if the user is already on the Sensor Health page.
   window.addEventListener("sniff-health-ready", function () { if (currentRoute === "sensor-health") rerender(); });
   window.addEventListener("sniff-coach-ready", function () { if (currentRoute === "sensor-health") rerender(); });
+  // The map-layers helpers load async after this classic script;
+  // re-render if the user is already on the Outside page so the layers
+  // control appears.
+  window.addEventListener("sniff-map-layers-ready", function () { if (currentRoute === "outside") rerender(); });
   var resizeT;
   window.addEventListener("resize", function () {
     clearTimeout(resizeT);
