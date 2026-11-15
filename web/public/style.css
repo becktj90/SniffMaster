@@ -149,6 +149,32 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px var(--page-x) 28px; outl
      4 rows to 3, and each chart stays wide enough to read. */
   .g-2.wide3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+
+/* ── Wide desktop ──────────────────────────────────────────────── */
+/* The 1240px cap left ~340px of empty margin on each side of a 1920px
+   screen. Step the content out at wide viewports; text-heavy bits keep
+   their own readable line lengths (brief summary stays 70ch, footer
+   text stays 90ch), so nothing stretches into unreadably wide lines. */
+/* Overview bottom row: below the wide breakpoint it is 2 columns, so
+   the air-sample card (third item) spans both instead of leaving a
+   half-empty cell beside it. */
+.overview-bottom > .card:last-child { grid-column: 1 / -1; }
+@media (min-width: 1440px) {
+  main { max-width: 1400px; }
+  .foot { max-width: 1400px; }
+  /* Overview hero: the score column gets a little room, and the brief's
+     tips go 3-across so the wide brief card fills instead of stretching. */
+  .g-hero.overview-hero { grid-template-columns: minmax(0, 380px) minmax(0, 1fr); }
+  .brief .tips { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* Overview bottom row: Outside + risks + air sample share one row of
+     three, instead of two cards plus a lone full-width sample card. */
+  .overview-bottom { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .overview-bottom > .card:last-child { grid-column: auto; }
+}
+@media (min-width: 1720px) {
+  main { max-width: 1560px; }
+  .foot { max-width: 1560px; }
+}
 .stack { display: grid; gap: var(--gap); margin-top: var(--gap); }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--pad); box-shadow: var(--shadow); min-width: 0; }

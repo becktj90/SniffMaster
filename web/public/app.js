@@ -380,13 +380,13 @@
         '<small>Lower is cleaner. The OLED prints the other number, 100 minus this one, only when it cannot reach the dashboard. Dominant odor uses the same 20% cutoff as the OLED footer.</small></div>';
     }
 
-    return '<div class="grid g-hero">' +
+    return '<div class="grid g-hero overview-hero">' +
       '<div class="card score-card"><p class="kicker">Home health score</p>' + scoreRing(home.score && home.score.value, home.score && home.score.grade) +
       noteHtml + driverHtml +
       '<div class="where">Higher is healthier · this is the OLED Home Score · updated ' + esc(ago(home.receivedAt)) + "</div>" + deviceRows + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
       '<div class="grid g-4 mt">' + tiles.join("") + "</div>" +
-      '<div class="grid g-2 mt">' + outside + risks + "</div>" + sampleCard;
+      '<div class="grid g-2 top mt overview-bottom">' + outside + risks + sampleCard + "</div>";
   }
   function airSampleCard(sample) {
     sample = sample || {};
@@ -402,7 +402,7 @@
     var when = isNum(sample.completedAt) && whenSec > 1000000000 ? clock(whenSec > 1000000000000 ? whenSec : whenSec * 1000) : "";
     var delta = isNum(sample.deltaVoc) ? '<p class="muted" style="margin:0 0 8px">VOC change ' + fmt(sample.deltaVoc, 2) + " ppm" + (isNum(sample.baselineVoc) ? " from a " + fmt(sample.baselineVoc, 2) + " ppm baseline" : "") + "</p>" : "";
     var bar = live ? '<div class="hbar"><span>' + esc(stateLabel[sample.state] || "Progress") + '</span><div class="track"><i style="width:' + prog + '%"></i></div><span class="v">' + prog + "%</span></div>" : "";
-    return '<div class="card mt"><div class="card-head"><h3>Air sample</h3>' + pill(live ? (stateLabel[sample.state] || "Running") : sample.result ? (phrase[sample.result] || "Complete") : "Ready", tone) + "</div>" +
+    return '<div class="card"><div class="card-head"><h3>Air sample</h3>' + pill(live ? (stateLabel[sample.state] || "Running") : sample.result ? (phrase[sample.result] || "Complete") : "Ready", tone) + "</div>" +
       '<p style="margin:0 0 8px;font-weight:600">' + esc(headline) + "</p>" + delta + bar +
       (when && !live ? '<p class="muted small" style="margin:8px 0 0">Latest result ' + esc(when) + "</p>" : "") +
       '<p class="note">VOC response only. Not a health or alcohol test.</p></div>';
