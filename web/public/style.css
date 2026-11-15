@@ -31,6 +31,12 @@
   --bad-bg: rgba(240, 98, 98, 0.13);
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 10px 30px rgba(0, 0, 0, 0.25);
   --radius: 18px;
+  /* Spacing scale: one set of tokens for every gap and pad on the page.
+     --gap is the space between cards and sections; --pad is card padding;
+     --page-x is the page side padding. */
+  --gap: 14px;
+  --pad: 16px;
+  --page-x: 20px;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
@@ -117,12 +123,19 @@ button, input, select { font: inherit; color: inherit; }
 @media (min-width: 861px) { body { padding-bottom: 72px; } }
 
 /* ── Layout ────────────────────────────────────────────────────── */
-main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 40px; outline: none; }
-@media (max-width: 600px) { main { padding: 16px 16px 32px; } }
-.page-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 4px 0 18px; }
-.page-head h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.025em; margin: 0; }
+main { max-width: 1240px; margin: 0 auto; padding: 20px var(--page-x) 28px; outline: none; }
+@media (max-width: 600px) { main { padding: 14px 16px 24px; } }
+.page-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 2px 0 var(--gap); }
+.page-head h1 { font-size: 24px; line-height: 1.15; letter-spacing: -0.025em; margin: 0; }
 .page-head p { margin: 4px 0 0; color: var(--ink-2); max-width: 62ch; }
-.grid { display: grid; gap: 16px; }
+.grid { display: grid; gap: var(--gap); }
+/* Mixed-height rows: cards hug their content instead of stretching tall
+   with empty space inside (Alerts form vs How it works, Google air vs
+   Pollen, calibration vs the small add-on card). Tops stay aligned. */
+.grid.top { align-items: start; }
+/* Section spacing utility: one token, used instead of inline margins. */
+.mt { margin-top: var(--gap); }
+.mb { margin-bottom: var(--gap); }
 .g-hero { grid-template-columns: minmax(0, 340px) minmax(0, 1fr); }
 .g-side { grid-template-columns: minmax(0, 1fr) minmax(0, 340px); }
 .g-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -131,12 +144,17 @@ main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 40px; outline: none
 @media (max-width: 1020px) { .g-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .g-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .g-hero, .g-side, .g-2, .g-3 { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 420px) { .g-4 { grid-template-columns: minmax(0, 1fr); } }
-.stack { display: grid; gap: 16px; margin-top: 16px; }
+@media (min-width: 1280px) {
+  /* Sensors channel cards go 3-across on wide desktops: 8 cards drop from
+     4 rows to 3, and each chart stays wide enough to read. */
+  .g-2.wide3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.stack { display: grid; gap: var(--gap); margin-top: var(--gap); }
 
-.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); min-width: 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--pad); box-shadow: var(--shadow); min-width: 0; }
 .card h2, .card h3 { margin: 0; font-size: 15px; letter-spacing: -0.005em; }
-.card .kicker { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
-.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.card .kicker { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .card-head .sub { color: var(--ink-3); font-size: 12.5px; }
 .muted { color: var(--ink-3); }
 .small { font-size: 12.5px; }
@@ -153,7 +171,7 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .tone.na { color: var(--ink-3); background: var(--card-2); }
 
 /* ── Hero score ────────────────────────────────────────────────── */
-.score-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 22px 18px; }
+.score-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 18px var(--pad); }
 .ring { position: relative; width: 200px; height: 200px; }
 .ring svg { width: 100%; height: 100%; transform: rotate(135deg); }
 .ring .track { stroke: var(--card-2); }
@@ -169,12 +187,12 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .driver b { color: var(--ink); }
 .ring-label { position: absolute; inset: 0; display: grid; place-content: center; }
 .ring-label .num { font-size: 58px; font-weight: 600; line-height: 1; }
-.ring-label .grade { font-size: 13px; color: var(--ink-2); margin-top: 6px; font-weight: 600; letter-spacing: .02em; }
+.ring-label .grade { font-size: 13px; color: var(--ink-2); margin-top: 4px; font-weight: 600; letter-spacing: .02em; }
 .score-card .where { color: var(--ink-3); font-size: 12.5px; }
-.device-readout { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); text-align: left; color: var(--ink-2); font-size: 12.5px; }
+.device-readout { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); text-align: left; color: var(--ink-2); font-size: 12.5px; }
 .device-readout b { color: var(--ink); font-size: 16px; }
 .device-readout small { grid-column: 1 / -1; color: var(--ink-3); }
-.components { width: 100%; display: grid; gap: 7px; margin-top: 10px; text-align: left; }
+.components { width: 100%; display: grid; gap: 6px; margin-top: 8px; text-align: left; }
 .comp { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 12.5px; color: var(--ink-2); }
 .comp .bar { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--card-2); overflow: hidden; }
 .comp .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--bar, var(--series-1)), color-mix(in srgb, var(--bar, var(--series-1)) 58%, white)); }
@@ -182,10 +200,10 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .brief { position: relative; overflow: hidden; }
 .brief::after { content: ""; position: absolute; inset: -40% -20% auto auto; width: 320px; height: 320px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--series-1) 16%, transparent), transparent 70%); pointer-events: none; }
 .brief h2 { font-size: 23px; line-height: 1.25; letter-spacing: -0.02em; margin: 0 0 8px; font-weight: 700; }
-.brief .summary { color: var(--ink-2); font-size: 15.5px; margin: 0 0 16px; max-width: 70ch; }
+.brief .summary { color: var(--ink-2); font-size: 15.5px; margin: 0 0 var(--gap); max-width: 70ch; }
 .tips { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 600px) { .tips { grid-template-columns: minmax(0, 1fr); } }
-.tip { background: var(--card-2); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+.tip { background: var(--card-2); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; }
 .tip b { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 3px; }
 .tip b::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
 .tip.good b::before { background: var(--good); } .tip.fair b::before { background: var(--fair); } .tip.bad b::before { background: var(--bad); }
@@ -198,30 +216,30 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .stat .value small { font-size: 14px; color: var(--ink-3); font-weight: 500; margin-left: 3px; font-family: var(--sans); }
 /* Mid-size value for text readings (smell level, bouquet) — same voice as .value, smaller. */
 .stat .value-md { font-size: 22px; font-family: var(--sans); font-weight: 700; }
-.stat .line { color: var(--ink-2); font-size: 13.5px; margin-top: 6px; }
-.stat .spark { display: block; width: 100%; margin-top: 10px; height: 34px; }
+.stat .line { color: var(--ink-2); font-size: 13.5px; margin-top: 4px; }
+.stat .spark { display: block; width: 100%; margin-top: 8px; height: 30px; }
 .brief { display: flex; flex-direction: column; }
 .brief .tips { margin-top: auto; }
 
 /* ── Charts ────────────────────────────────────────────────────── */
-.chart { position: relative; width: 100%; height: 190px; touch-action: pan-y; }
-.chart.tall { height: 240px; }
+.chart { position: relative; width: 100%; height: 170px; touch-action: pan-y; }
+.chart.tall { height: 220px; }
 .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .chart .grid-line { stroke: var(--viz-grid); stroke-width: 1; }
 .chart .axis-text { fill: var(--ink-3); font-size: 10.5px; font-family: var(--sans); }
 .chart .crosshair { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart .dot { stroke: var(--card); stroke-width: 2; }
 .chart-empty { display: grid; place-items: center; height: 100%; color: var(--ink-3); font-size: 13px; border: 1px dashed var(--line); border-radius: 12px; }
-.metric-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.metric-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
 .metric-head .now { text-align: right; }
 .metric-head .now .num { font-size: 24px; font-weight: 600; line-height: 1.1; }
 .metric-head .now small { color: var(--ink-3); font-size: 12px; }
-.mma { display: flex; gap: 14px; font-size: 12px; color: var(--ink-3); margin-top: 8px; flex-wrap: wrap; }
+.mma { display: flex; gap: 14px; font-size: 12px; color: var(--ink-3); margin-top: 6px; flex-wrap: wrap; }
 .mma b { color: var(--ink-2); font-weight: 600; font-family: var(--mono); }
 .legend { display: flex; gap: 12px; font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
-.legend.bands { gap: 8px 14px; margin: 2px 0 8px; font-size: 13px; }
+.legend.bands { gap: 8px 14px; margin: 2px 0 6px; font-size: 13px; }
 .legend i.swatch { width: 12px; height: 12px; border-radius: 3px; }
 .swatch.good { background: var(--good); } .swatch.fair { background: var(--fair); }
 .swatch.poor { background: var(--poor); } .swatch.bad { background: var(--bad); }
@@ -267,17 +285,17 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .forecast .hi { font-size: 18px; font-family: var(--mono); }
 
 /* ── Pet meter ─────────────────────────────────────────────────── */
-.meter { position: relative; width: 100%; max-width: 360px; margin: 6px auto 0; }
+.meter { position: relative; width: 100%; max-width: 360px; margin: 2px auto 0; }
 .meter svg { width: 100%; display: block; }
 .meter .needle { transition: transform 1s cubic-bezier(.2,.8,.2,1); transform-origin: 150px 150px; }
-.meter-value { text-align: center; margin-top: 6px; }
+.meter-value { text-align: center; margin-top: 4px; }
 .meter-value .num { font-size: 44px; font-weight: 600; line-height: 1; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { border: 1px solid var(--line-2); background: transparent; border-radius: 999px; padding: 7px 14px; min-height: 38px; cursor: pointer; font-weight: 500; font-size: 13.5px; color: var(--ink-2); }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
 /* ── Forms ─────────────────────────────────────────────────────── */
-.form { display: grid; gap: 16px; }
+.form { display: grid; gap: var(--gap); }
 .field label { display: block; font-weight: 600; font-size: 13.5px; margin-bottom: 6px; }
 .field input[type="email"], .field input[type="tel"], .field input[type="text"] {
   width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--bg-2); font-size: 16px;
@@ -307,7 +325,7 @@ a.btn:hover { text-decoration: none; }
 .choices { display: grid; gap: 10px; }
 label.choice {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  margin: 0; padding: 14px 16px; min-height: 72px; border-radius: 16px;
+  margin: 0; padding: 12px 14px; min-height: 64px; border-radius: 16px;
   background: var(--card-2); border: 1px solid var(--line); cursor: pointer; font-weight: 500;
 }
 label.choice > span { display: block; min-width: 0; }
@@ -327,7 +345,7 @@ label.choice.off { opacity: .72; }
 .more { margin-top: 14px; }
 .more summary { cursor: pointer; font-weight: 650; font-size: 16px; min-height: 48px; display: list-item; margin-left: 1.1em; }
 .polls { margin-top: 8px; }
-.poll { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+.poll { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 10px 0; border-top: 1px solid var(--line); }
 .poll b { font-size: 15px; }
 .poll p { margin: 3px 0 0; color: var(--ink-2); font-size: 14.5px; line-height: 1.4; max-width: 52ch; }
 .poll .num { font-weight: 600; white-space: nowrap; padding-top: 1px; }
@@ -347,7 +365,7 @@ label.choice.off { opacity: .72; }
 @keyframes sk { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
-.foot { max-width: 1180px; margin: 0 auto; padding: 8px 20px 32px; color: var(--ink-3); font-size: 12.5px; }
+.foot { max-width: 1240px; margin: 0 auto; padding: 2px var(--page-x) 20px; color: var(--ink-3); font-size: 12.5px; }
 .foot p { margin: 6px 0; max-width: 90ch; }
 @media (max-width: 520px) {
   .rule { grid-template-columns: 1fr; }

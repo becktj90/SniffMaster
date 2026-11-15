@@ -382,8 +382,8 @@
       noteHtml + driverHtml +
       '<div class="where">Higher is healthier · this is the OLED Home Score · updated ' + esc(ago(home.receivedAt)) + "</div>" + deviceRows + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
-      '<div class="grid g-4" style="margin-top:16px">' + tiles.join("") + "</div>" +
-      '<div class="grid g-2" style="margin-top:16px">' + outside + risks + "</div>" + sampleCard;
+      '<div class="grid g-4 mt">' + tiles.join("") + "</div>" +
+      '<div class="grid g-2 mt">' + outside + risks + "</div>" + sampleCard;
   }
   function airSampleCard(sample) {
     sample = sample || {};
@@ -399,7 +399,7 @@
     var when = isNum(sample.completedAt) && whenSec > 1000000000 ? clock(whenSec > 1000000000000 ? whenSec : whenSec * 1000) : "";
     var delta = isNum(sample.deltaVoc) ? '<p class="muted" style="margin:0 0 8px">VOC change ' + fmt(sample.deltaVoc, 2) + " ppm" + (isNum(sample.baselineVoc) ? " from a " + fmt(sample.baselineVoc, 2) + " ppm baseline" : "") + "</p>" : "";
     var bar = live ? '<div class="hbar"><span>' + esc(stateLabel[sample.state] || "Progress") + '</span><div class="track"><i style="width:' + prog + '%"></i></div><span class="v">' + prog + "%</span></div>" : "";
-    return '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Air sample</h3>' + pill(live ? (stateLabel[sample.state] || "Running") : sample.result ? (phrase[sample.result] || "Complete") : "Ready", tone) + "</div>" +
+    return '<div class="card mt"><div class="card-head"><h3>Air sample</h3>' + pill(live ? (stateLabel[sample.state] || "Running") : sample.result ? (phrase[sample.result] || "Complete") : "Ready", tone) + "</div>" +
       '<p style="margin:0 0 8px;font-weight:600">' + esc(headline) + "</p>" + delta + bar +
       (when && !live ? '<p class="muted small" style="margin:8px 0 0">Latest result ' + esc(when) + "</p>" : "") +
       '<p class="note">VOC response only. Not a health or alcohol test.</p></div>';
@@ -515,8 +515,8 @@
     }
     window.__sensorData = d;
     return head("Sensors", "Every channel from the BME688 and BSEC2, at full precision.", seg) +
-      (sensorRange === "7d" ? '<div class="callout" style="margin-bottom:16px">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</div>' : "") +
-      '<div class="grid g-2">' + cards + "</div>" + '<div class="grid g-2" style="margin-top:16px">' + cal + addon + "</div>";
+      (sensorRange === "7d" ? '<div class="callout mb">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</div>' : "") +
+      '<div class="grid g-2 wide3">' + cards + "</div>" + '<div class="grid g-2 top mt">' + cal + addon + "</div>";
   }
   function drawSensorCharts() {
     var d = window.__sensorData;
@@ -627,12 +627,12 @@
     return head("Smell", "Every smell class the sensor knows, what that air usually means worldwide, and what we can derive from the whole room.") +
       '<div class="grid g-2">' + '<div class="stack" style="margin:0">' + main + storyCard + how + "</div>" +
       '<div class="card"><div class="card-head"><h3>Smell model scores</h3><span class="sub">0–100 per class · live</span></div>' + '<div class="legend bands"><span><i class="swatch good"></i>Mild 20–39</span><span><i class="swatch fair"></i>Noticeable 40–64</span><span><i class="swatch poor"></i>Strong 65+</span></div>' + (bars || '<p class="muted">No classifier output yet.</p>') + '<p class="note">Scores under 20 are background noise. The model holds back until the sensor is calibrated.</p></div></div>' +
-      '<div style="margin-top:16px">' + metrics + "</div>" +
-      '<div class="grid g-2" style="margin-top:16px">' + bouquetCard + familyCard + "</div>" +
-      '<div style="margin-top:16px">' + atlasCard + "</div>" +
-      (derivedCard ? '<div style="margin-top:16px">' + derivedCard + "</div>" : "") +
-      '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div id="heat"></div><p class="note">Darker means a stronger smell (score 8–100). A row appears once a class rises above background.</p></div>' +
-      '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">Recent sulfur events</h3>' + events + "</div>";
+      '<div class="mt">' + metrics + "</div>" +
+      '<div class="grid g-2 mt">' + bouquetCard + familyCard + "</div>" +
+      '<div class="mt">' + atlasCard + "</div>" +
+      (derivedCard ? '<div class="mt">' + derivedCard + "</div>" : "") +
+      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div id="heat"></div><p class="note">Darker means a stronger smell (score 8–100). A row appears once a class rises above background.</p></div>' +
+      '<div class="card"><h3 style="margin-bottom:8px">Recent sulfur events</h3>' + events + "</div></div>";
   }
   function drawHeat() {
     var el = $("#heat");
@@ -698,13 +698,13 @@
     var pollen = home.pollen && home.pollen.ok ? [].concat(home.pollen.types || [], home.pollen.plants || []) : [];
     window.__sensorData = sens;
     return head("Pet meter", "A precise read on pet dander and the other things that set off allergies, and how much to trust it.") +
-      '<div class="grid g-2"><div class="card"><div class="card-head"><h3>Pet dander index</h3><span class="sub">0–100 estimate</span></div>' + meter + '<p class="note">' + esc(pet.note || "") + "</p></div>" +
+      '<div class="grid g-hero"><div class="card"><div class="card-head"><h3>Pet dander index</h3><span class="sub">0–100 estimate</span></div>' + meter + '<p class="note">' + esc(pet.note || "") + "</p></div>" +
       '<div class="card"><h3 style="margin-bottom:12px">What goes into it</h3><div class="hbars">' + (basis || '<p class="muted">No pet-related signals yet.</p>') + "</div>" +
       '<p class="note">With a particulate sensor fitted, coarse dust in the 2.5–10 µm range (where dander lives) joins the index and confidence goes up to medium.</p></div></div>' +
-      '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Pet / litter smell over time</h3><span class="sub">smell-model class score</span></div><div class="chart" id="petchart"></div></div>' +
-      '<div class="card" style="margin-top:16px"><h3>Your personal outlook</h3><p class="muted" style="margin:4px 0 12px">Pick what you react to. It stays on this device.</p>' + chips +
-      '<p style="margin:14px 0 10px;font-weight:600">' + esc(ol.headline || "") + "</p>" + (outlook ? '<div class="tips">' + outlook + "</div>" : "") + "</div>" +
-      '<div class="grid g-3" style="margin-top:16px">' +
+      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Pet / litter smell over time</h3><span class="sub">smell-model class score</span></div><div class="chart" id="petchart"></div></div>' +
+      '<div class="card"><h3>Your personal outlook</h3><p class="muted" style="margin:4px 0 12px">Pick what you react to. It stays on this device.</p>' + chips +
+      '<p style="margin:14px 0 10px;font-weight:600">' + esc(ol.headline || "") + "</p>" + (outlook ? '<div class="tips">' + outlook + "</div>" : "") + "</div></div>" +
+      '<div class="grid g-3 mt">' +
       '<div class="card stat"><p class="kicker">Mold risk</p><div class="value num">' + fmt(bio.mold && bio.mold.pct) + '<small>%</small></div><div class="line">' + pill((bio.mold && bio.mold.category) || "—", levelTone(bio.mold && bio.mold.category)) + " " + fmt(bio.mold && bio.mold.hoursRh70, 1) + " h above 70% RH in 3 days</div>" + cov(bio.mold) + "</div>" +
       '<div class="card stat"><p class="kicker">Dust-mite risk</p><div class="value num">' + fmt(bio.dustMite && bio.dustMite.pct) + '<small>%</small></div><div class="line">' + pill((bio.dustMite && bio.dustMite.category) || "—", levelTone(bio.dustMite && bio.dustMite.category)) + " " + fmt(bio.dustMite && bio.dustMite.hoursRh65, 1) + " h above 65% RH this week</div>" + cov(bio.dustMite) + "</div>" +
       '<div class="card"><p class="kicker">Outdoor pollen</p>' + (pollen.length ? '<div class="hbars">' + pollen.map(function (p) { return '<div class="hbar"><span>' + esc(p.name) + '</span><span class="track"><i style="width:' + Math.min(100, (Number(p.value) || 0) * 20) + '%"></i></span><span class="v">' + esc(p.category || "") + "</span></div>"; }).join("") + "</div>" : '<p class="muted" style="margin:0">' + esc((home.pollen && home.pollen.reason) || "No pollen data for this location.") + "</p>") + "</div></div>";
@@ -775,14 +775,14 @@
     var solarCard = solar.ok ? '<div class="card"><div class="card-head"><h3>Roof solar potential</h3><span class="sub">one-time context</span></div><div class="grid g-3"><div class="stat"><p class="kicker">Panels</p><div class="value num">' + fmt(solar.maxPanels) + '</div></div><div class="stat"><p class="kicker">Roof area</p><div class="value num">' + fmt(solar.maxAreaM2) + '<small>m²</small></div></div><div class="stat"><p class="kicker">Sun hours</p><div class="value num">' + fmt(solar.maxSunHoursYear) + '</div></div></div>' + (isNum(solar.estimatedYearlyKwh) ? '<p class="note">Google estimate: up to ' + fmt(solar.estimatedYearlyKwh) + ' kWh/year before local design, shade, tariffs, and rules. Not a quote.</p>' : '') + '</div>' : '<div class="card"><h3>Roof solar potential</h3><p class="muted">' + esc(solar.reason || "No solar insight yet.") + "</p></div>";
     return head("Outside" + (home.city ? " · " + home.city : ""), "A map of the neighborhood, plus outdoor air, pollen, and weather.") +
       mapCard +
-      '<div class="grid g-2" style="margin-top:16px">' + googleCard + pollenCard + "</div>" +
-      '<div style="margin-top:16px">' + solarCard + "</div>" +
-      '<div class="grid g-3">' +
+      '<div class="grid g-2 top mt">' + googleCard + pollenCard + "</div>" +
+      '<div class="mt">' + solarCard + "</div>" +
+      '<div class="grid g-3 mt">' +
       '<div class="card stat"><p class="kicker">Now</p><div class="value num">' + fmt(cur && cur.tempF) + '<small>°F</small></div><div class="line">' + esc(cur ? cur.condition + " · feels " + fmt(cur.feelsLikeF) + "°F" : "—") + '</div><div class="line muted small">' + esc(cur ? "Wind " + (cur.windSpeed || "calm") + " " + (cur.windDir || "") + " · " + fmt(cur.pressHpa) + " hPa" : "") + "</div></div>" +
       '<div class="card stat"><p class="kicker">Outdoor AQI</p><div class="value num">' + fmt(o.usAqi) + '</div><div class="line">' + pill((wx && wx.outdoorLevel) || "—", levelTone(wx && wx.outdoorLevel)) + "</div></div>" +
       '<div class="card stat"><p class="kicker">Windows</p><div class="line" style="font-size:15px;color:var(--ink);margin-top:0">' + esc(advice || "No advice yet.") + "</div></div></div>" +
-      (wx && wx.forecast && wx.forecast.length ? '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">Next three days</h3><div class="forecast">' + wx.forecast.map(function (d) { return "<div><b>" + esc(d.label) + '</b><span class="hi">' + fmt(d.highF) + '°</span> <span class="muted">' + fmt(d.lowF) + "°</span><br>" + esc(d.condition) + '<br><span class="small muted">Rain ' + fmt(d.precipChance) + "% · wind " + fmt(d.windMph) + " mph</span></div>"; }).join("") + "</div>" + (wx.briefing ? '<p class="note">' + esc(wx.briefing) + "</p>" : "") + "</div>" : "") +
-      '<div class="grid g-2" style="margin-top:16px"><div class="card"><h3 style="margin-bottom:10px">Outdoor pollutants</h3><dl class="kv">' + pollRows + "</dl></div>" +
+      (wx && wx.forecast && wx.forecast.length ? '<div class="card mt"><h3 style="margin-bottom:10px">Next three days</h3><div class="forecast">' + wx.forecast.map(function (d) { return "<div><b>" + esc(d.label) + '</b><span class="hi">' + fmt(d.highF) + '°</span> <span class="muted">' + fmt(d.lowF) + "°</span><br>" + esc(d.condition) + '<br><span class="small muted">Rain ' + fmt(d.precipChance) + "% · wind " + fmt(d.windMph) + " mph</span></div>"; }).join("") + "</div>" + (wx.briefing ? '<p class="note">' + esc(wx.briefing) + "</p>" : "") + "</div>" : "") +
+      '<div class="grid g-2 mt"><div class="card"><h3 style="margin-bottom:10px">Outdoor pollutants</h3><dl class="kv">' + pollRows + "</dl></div>" +
       '<div class="card"><h3 style="margin-bottom:10px">Inside vs outside</h3><table style="width:100%;border-collapse:collapse;font-size:13.5px"><thead><tr class="muted small"><th style="text-align:left;font-weight:600;padding-bottom:6px">Reading</th><th style="text-align:left;font-weight:600">Inside</th><th style="text-align:left;font-weight:600">Outside</th></tr></thead><tbody>' + cmpRows + "</tbody></table>" +
       '<p class="note">When the outside air holds less moisture than inside, opening up dries the home out. When it holds more, keep the windows shut on humid days.</p></div></div>';
   }
@@ -886,7 +886,7 @@
         '<div><button class="btn block" type="submit"' + (none ? " disabled" : "") + ">Send my code</button></div></form>";
     }
     return head("Alerts", "Pick what you want to hear about. An email or phone notification arrives when it happens, and each message has a link to stop.") +
-      '<div class="grid g-side"><div class="card">' + body + "</div>" +
+      '<div class="grid g-side top"><div class="card">' + body + "</div>" +
       '<div class="card"><h3>How it works</h3><ol class="muted" style="padding-left:18px;margin:10px 0 0;display:grid;gap:8px"><li>Pick email or a phone notification, and the readings you care about.</li><li>Confirm with the code we send, so nobody can sign you up by mistake.</li><li>SniffMaster checks every couple of minutes and only messages you when something changes.</li></ol>' +
       '<p class="note">' + info.subscriberCount + " " + (info.subscriberCount === 1 ? "person is" : "people are") + " signed up." + (none ? " Alerts aren't configured on this dashboard yet." : "") + "</p></div></div>";
   }
@@ -987,12 +987,12 @@
       '<div class="card"><h3 style="margin-bottom:8px">Sensor history</h3><p class="muted" style="margin:0 0 12px">Which window the Sensors charts show.</p>' + seg +
       '<p class="note">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</p></div>' +
       '<div class="card"><h3 style="margin-bottom:8px">Your allergy triggers</h3><p class="muted" style="margin:0 0 12px">Pick what you react to. It stays on this device.</p>' + chips + "</div></div>" +
-      '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Alerts</h3><span class="sub">what you signed up for</span></div>' + rulesHtml +
+      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Alerts</h3><span class="sub">what you signed up for</span></div>' + rulesHtml +
       '<p style="margin:12px 0 0"><a class="btn" href="#/alerts">Manage alerts</a></p></div>' +
-      '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:8px">About this dashboard</h3><dl class="kv">' +
+      '<div class="card"><h3 style="margin-bottom:8px">About this dashboard</h3><dl class="kv">' +
       "<dt>Version</dt><dd>" + esc(ver ? ver.label : "Unavailable right now") + "</dd>" +
       (ver && ver.environment ? "<dt>Environment</dt><dd>" + esc(ver.environment) + "</dd>" : "") +
-      "</dl></div>";
+      "</dl></div></div>";
   }
   function bindSettings() {
     bindPets(); // allergy trigger chips share the Pets page behavior
