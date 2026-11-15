@@ -16,7 +16,12 @@ globalThis.fetch = async (url, opts) => {
     return new Response(JSON.stringify({ data: { balance: creditFail ? "0" : "5.00" } }), { status: 200 });
   }
   if (u.includes("ntfy.sh")) {
-    pushed.push({ url: u, body: String(opts?.body || ""), title: opts?.headers?.Title || "" });
+    pushed.push({
+      url: u,
+      body: String(opts?.body || ""),
+      title: opts?.headers?.Title || "",
+      actions: opts?.headers?.Actions || "",
+    });
     return new Response("{}", { status: 200 });
   }
   if (u.includes("/sms/send")) {
@@ -90,6 +95,44 @@ test("a rejected sender number is retried without that From", async () => {
   assert.equal(code.length, 6);
   assert.equal(sent[sent.length - 1].from, undefined);
   assert.ok(sent.length > before);
+});
+
+test("overlapping sign-ups stop at three codes for one number", async () => {
+  const phone = "3215550170";
+  const results = await Promise.allSettled(
+    Array.from({ length: 5 }, (_, i) => S.startSubscription({ channel: "sms", address: phone, rules: { co2: 1000 }, ip: `burst-${i}` }))
+  );
+  const ok = results.filter((r) => r.status === "fulfilled");
+  const denied = results.filter((r) => r.status === "rejected");
+  assert.equal(ok.length, 3);
+  assert.equal(denied.length, 2);
+  assert.ok(denied.every((r) => r.reason.status === 429));
+});
+
+test("a long phone alert keeps the stop link and a separate stop action", async () => {
+  const started = await S.startSubscription({
+    channel: "push",
+    rules: { pet: 10, mold: 20, pollen: 1, smell: true, humidityHi: 40, co2: 600, voc: 0.5, iaq: 50 },
+    ip: "long-push",
+  });
+  const code = pushed.filter((p) => p.url.includes(started.push.topic)).at(-1).body.match(/\d{6}/)[0];
+  await S.confirmSubscription({ id: started.id, code });
+  await S.runSubscriberAlerts(
+    { co2: 2400, humidity: 90, voc: 12, iaq: 320 },
+    {
+      petAllergen: { index: 99 },
+      biological: { mold: { pct: 99 } },
+      pollen: { ok: true, types: [{ name: "Ragweed", value: 5, category: "Very high" }] },
+      smell: { smellsBad: true, headline: "The room smells off. ".repeat(40) },
+    }
+  );
+  const sub = (await S.loadSubscribers()).find((s) => s.id === started.id);
+  const alert = pushed.filter((p) => p.url.includes(started.push.topic)).at(-1);
+  assert.ok(alert.body.length <= 400);
+  assert.ok(alert.body.endsWith(sub.token));
+  assert.match(alert.body, /Stop: https:\/\/\S+/);
+  assert.ok(alert.actions.includes(sub.token));
+  assert.match(alert.actions, /^view, Stop alerts, https:\/\//);
 });
 
 test("a phone notification delivers the code and later alerts", async () => {

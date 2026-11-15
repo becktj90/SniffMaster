@@ -367,6 +367,7 @@ export async function sendViaNtfy(text, opts = {}) {
   // inline thumbnail, and opens Click's URL when the notification is tapped.
   if (opts.imageUrl) headers.Attach = opts.imageUrl;
   if (opts.clickUrl) headers.Click = opts.clickUrl;
+  if (opts.actions) headers.Actions = opts.actions;
   try {
     const resp = await fetch(url, {
       method: "POST",

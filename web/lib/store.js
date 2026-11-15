@@ -603,14 +603,6 @@ export async function setJsonCache(key, value, ttlSec) {
  * Atomically increment a counter and (on first increment) give it a TTL so it
  * resets itself. Returns the new value. Used to hard-cap paid API calls.
  */
-/** Current value of a counter from incrCounter, or 0 when it has never been bumped. */
-export async function getCounter(key) {
-  const redis = getRedis();
-  const raw = await redis.get(`sniffmaster:counter:${key}`);
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : 0;
-}
-
 export async function incrCounter(key, ttlSec) {
   const redis = getRedis();
   const k = `sniffmaster:counter:${key}`;
@@ -626,6 +618,18 @@ export async function incrCounter(key, ttlSec) {
   }
   if (typeof ttl !== "number" || ttl < 0) {
     await redis.expire(k, Math.max(1, Math.floor(ttlSec)));
+  }
+  return n;
+}
+
+/** Release one reservation from incrCounter. A result at or below zero deletes the key. */
+export async function decrCounter(key) {
+  const redis = getRedis();
+  const k = `sniffmaster:counter:${key}`;
+  const n = Number(await redis.decr(k));
+  if (!Number.isFinite(n) || n <= 0) {
+    await redis.del(k).catch(() => {});
+    return 0;
   }
   return n;
 }

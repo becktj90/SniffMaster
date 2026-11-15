@@ -22,7 +22,7 @@
  */
 
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { getJsonCache, setJsonCache, getCounter, incrCounter, withLock } from "./store.js";
+import { getJsonCache, setJsonCache, incrCounter, decrCounter, withLock } from "./store.js";
 import { sendViaClickSend, sendViaNtfy, clickSendBalance, PUBLIC_BASE_URL } from "./notify.js";
 
 export const MAX_SUBSCRIBERS = 100;
@@ -329,17 +329,18 @@ async function deliver(sub, subject, text, withUnsub = true) {
   const unsubUrl = withUnsub && sub.token ? `${PUBLIC_BASE_URL}/api/alerts?unsub=${encodeURIComponent(sub.token)}` : null;
   if (sub.channel === "email") return sendEmail(sub.address, subject, text, unsubUrl);
   if (sub.channel === "push") {
-    const body = ascii(unsubUrl ? `${text} Stop: ${unsubUrl}` : text).slice(0, 400);
+    const body = fitMessage(text, unsubUrl, 400);
     const r = await sendViaNtfy(body || "SniffMaster alert", {
       url: pushLinks(sub.address).web,
       title: ascii(subject).slice(0, 80) || "SniffMaster",
       clickUrl: unsubUrl ? PUBLIC_BASE_URL : `${PUBLIC_BASE_URL}/#/alerts`,
+      actions: unsubUrl ? `view, Stop alerts, ${unsubUrl}` : "",
       priority: 4,
     });
     if (!r.sent) throw new Error(r.failures?.[0]?.error || "push not sent");
     return;
   }
-  const body = ascii(`SniffMaster: ${text}${unsubUrl ? ` Stop: ${unsubUrl}` : ""}`).slice(0, 600);
+  const body = fitMessage(`SniffMaster: ${text}`, unsubUrl, 600);
   const r = await sendViaClickSend(body, [sub.address]);
   if (!r.sent) throw new Error(r.failures?.[0]?.error || r.failures?.[0]?.status || "sms not sent");
 }
@@ -348,6 +349,15 @@ const ascii = (t) =>
   String(t || "")
     .replace(/₂/g, "2").replace(/°/g, " deg").replace(/[–—]/g, "-").replace(/•/g, "*")
     .replace(/[^\x20-\x7e]/g, "");
+
+/** Keep the whole stop link when a message is shortened to `max` characters. */
+export function fitMessage(text, unsubUrl, max) {
+  const clean = ascii(text);
+  if (!unsubUrl) return clean.slice(0, max);
+  const stop = ` Stop: ${ascii(unsubUrl)}`;
+  if (stop.length >= max) return ascii(unsubUrl).slice(0, max);
+  return `${clean.slice(0, max - stop.length).trimEnd()}${stop}`;
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -382,9 +392,10 @@ export async function startSubscription({ channel, address, rules, ip }) {
   const ipKey = createHash("sha256").update(String(ip || "?")).digest("hex").slice(0, 16);
   if ((await incrCounter(`alerts-ip:${ipKey}`, 3600)) > 12) throw new AlertError(429, "Too many sign-ups from here. Try again in an hour.");
   const addrKey = `alerts-addr:${createHash("sha256").update(addr).digest("hex").slice(0, 16)}`;
-  // Count only codes that actually went out. A provider failure must not
-  // turn into "we just sent a code" on the next try.
-  if ((await getCounter(addrKey)) >= 3) throw new AlertError(429, "We just sent a code there. Give it a few minutes.");
+  // Reserve the slot atomically. A failed delivery gives it back, so a
+  // provider error does not turn into "we just sent a code."
+  const reserved = await incrCounter(addrKey, 3600);
+  if (reserved > 3) throw new AlertError(429, "We just sent a code there. Give it a few minutes.");
 
   const subs = await loadSubscribers();
   if (subs.filter((s) => s.verified).length >= MAX_SUBSCRIBERS) throw new AlertError(409, "This dashboard has reached its alert limit.");
@@ -399,12 +410,12 @@ export async function startSubscription({ channel, address, rules, ip }) {
     await deliver({ channel, address: addr }, "Your SniffMaster code", msg, false);
   } catch (err) {
     console.error("alerts: code delivery failed:", err?.message || err);
+    await decrCounter(addrKey).catch(() => {});
     await setJsonCache(pendingKey, { dead: true }, 1).catch(() => {});
     if (/INSUFFICIENT_CREDIT/i.test(String(err?.message || err))) await rememberEmptyBalance();
     const explained = explainDeliveryFailure(channel, err);
     throw new AlertError(explained.status, explained.message);
   }
-  await incrCounter(addrKey, 3600);
   return {
     id,
     masked: maskAddress(channel, addr),

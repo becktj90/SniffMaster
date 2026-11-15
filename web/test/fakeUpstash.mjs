@@ -29,6 +29,7 @@ export function startFakeUpstash() {
         else if (O === "LINDEX") { const l = kv.get(k) || []; const i = Number(a[0]); result = l[i] ?? null; }
         else if (O === "LTRIM") { const l = kv.get(k) || []; kv.set(k, l.slice(Number(a[0]), Number(a[1]) + 1)); result = "OK"; }
         else if (O === "INCR") { const n = Number(kv.get(k) || 0) + 1; kv.set(k, String(n)); result = n; }
+        else if (O === "DECR") { const n = Number(kv.get(k) || 0) - 1; kv.set(k, String(n)); result = n; }
         else if (O === "TTL") {
           if (!kv.has(k)) result = -2;
           else if (!expires.has(k)) result = -1;

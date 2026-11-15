@@ -1,9 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  normalizeAddress, normalizeRules, decideSubscriberAlerts, alertContext, alertText, maskAddress, explainDeliveryFailure, RULES,
+  normalizeAddress, normalizeRules, decideSubscriberAlerts, alertContext, alertText, maskAddress, explainDeliveryFailure, fitMessage, RULES,
 } from "../lib/subscribers.js";
 import { fallbackInsights, insightFacts, insightCacheKey } from "../lib/insights.js";
+
+test("a shortened alert keeps the entire stop link", () => {
+  const url = "https://sniff.example/api/alerts?unsub=" + "a".repeat(24);
+  const body = fitMessage("word ".repeat(200), url, 400);
+  assert.ok(body.length <= 400);
+  assert.ok(body.endsWith(url));
+  assert.match(body, /^word/);
+});
 
 test("a texting account with no credit is not described as a bad phone number", () => {
   const out = explainDeliveryFailure("sms", new Error('HTTP 200 {"status":"INSUFFICIENT_CREDIT"}'));
