@@ -1386,7 +1386,8 @@ static void cardOutdoor(const NetStatus& n) {
 
   char cat[9];
   strlcpy(cat, n.aqi.level, sizeof(cat));
-  snprintf(buf, sizeof(buf), "PM2.5 %.0f %.8s", n.aqi.pm25, cat);
+  if (isfinite(n.aqi.pm25)) snprintf(buf, sizeof(buf), "PM2.5 %.0f %.8s", n.aqi.pm25, cat);
+  else snprintf(buf, sizeof(buf), "PM2.5 -- %.8s", cat);
   display.setCursor(0, 39);
   display.print(buf);
 
@@ -1694,7 +1695,7 @@ static void drawSplash() {
 
 static void checkAirAlerts(float iaq, float voc, float co2, float hum,
                            const uint8_t scores[], uint8_t iaqAcc, int outdoorAqi,
-                           bool ventShutEdge) {
+                           bool ventShutEdge, bool windowsShut) {
   if (!bsecCalibrationReady(iaqAcc)) return;   // warm-up transients false-trigger
   const unsigned long now = millis();
 
@@ -1737,10 +1738,10 @@ static void checkAirAlerts(float iaq, float voc, float co2, float hum,
   const char* title = nullptr;
   const char* msg = nullptr;
   if (ventShutEdge)        { title = "WINDOWS SHUT"; msg = "Outdoor air or pollen\nis high. Keep windows\nclosed."; }
-  else if (co2 > 1500)     { title = "HIGH CO2";     msg = "CO2 elevated.\nOpen a window."; }
-  else if (iaq > 150)      { title = "STALE AIR";    msg = "Air quality declining\nConsider opening\na window."; }
-  else if (voc > 5.0f)     { title = "ELEVATED VOC"; msg = "Volatile compounds\nrising. Ventilate."; }
-  else if (hum > 75)       { title = "HIGH HUMIDITY"; msg = "Humidity is high.\nDehumidify or vent."; }
+  else if (co2 > 1500)     { title = "HIGH CO2";     msg = windowsShut ? "CO2 elevated.\nKeep windows closed." : "CO2 elevated.\nOpen a window."; }
+  else if (iaq > 150)      { title = "STALE AIR";    msg = windowsShut ? "Indoor air is stale.\nKeep windows closed." : "Air quality declining\nConsider opening\na window."; }
+  else if (voc > 5.0f)     { title = "ELEVATED VOC"; msg = windowsShut ? "Volatile compounds\nrising. Filter the air." : "Volatile compounds\nrising. Ventilate."; }
+  else if (hum > 75)       { title = "HIGH HUMIDITY"; msg = windowsShut ? "Humidity is high.\nDehumidify the room." : "Humidity is high.\nDehumidify or vent."; }
   else if (outdoorAqi > 150) {
     title = "OUTDOOR AQI"; msg = "Outdoor air unhealthy\nKeep windows closed.";
   }
@@ -2069,7 +2070,8 @@ static void processSample(unsigned long now) {
 
   histPush(now);
   const bool advisoryCooling = advisoryEverShown && now - lastAdvisoryMs < ADVISORY_COOLDOWN_MS;
-  checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi, ventShutEdge);
+  checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi, ventShutEdge,
+                 strcmp(vent.vent, "shut") == 0);
   if (calReady && !hazardActive && !advisoryCooling) strlcpy(ss_prevVent, vent.vent, sizeof(ss_prevVent));
 
   // ── Telemetry snapshot for the network task ────────────────
@@ -2417,9 +2419,17 @@ static void buildAqiAdvisory(OutdoorAQI& a) {
   else if (a.aqi > 100)                 { cause = "Multiple pollutants";  advice = "Keep windows closed"; }
   else if (a.aqi <= 50)                 { cause = "All clear";            advice = "Great day for open windows"; }
   else                                  { cause = "Mild pollution";       advice = "Sensitive groups be cautious"; }
+  char pm25[8], pm10[8], co[8], no2[8], o3[8], so2[8];
+  auto conc = [](char* out, size_t n, float v) {
+    if (isfinite(v)) snprintf(out, n, "%.0f", v);
+    else strlcpy(out, "--", n);
+  };
+  conc(pm25, sizeof(pm25), a.pm25); conc(pm10, sizeof(pm10), a.pm10);
+  conc(co, sizeof(co), a.co);       conc(no2, sizeof(no2), a.no2);
+  conc(o3, sizeof(o3), a.o3);       conc(so2, sizeof(so2), a.so2);
   snprintf(a.advisory, sizeof(a.advisory),
-           "AQI: %d  %s\nPM2.5: %.0f  PM10: %.0f\nCO: %.0f  NO2: %.0f  O3: %.0f  SO2: %.0f\n%s\n%s",
-           a.aqi, a.level, a.pm25, a.pm10, a.co, a.no2, a.o3, a.so2, cause, advice);
+           "AQI: %d  %s\nPM2.5: %s  PM10: %s\nCO: %s  NO2: %s  O3: %s  SO2: %s\n%s\n%s",
+           a.aqi, a.level, pm25, pm10, co, no2, o3, so2, cause, advice);
 }
 
 // Async BSSID scan for the server-side geolocation call. At most every 15 min.
@@ -2515,12 +2525,13 @@ static bool fetchGoogleEnv() {
   a.uv = -1;
   a.precipPct = -1;
   a.aqi = aq["usAqi"] | 0;
-  a.pm25 = aq["pm25"] | 0.0f;
-  a.pm10 = aq["pm10"] | 0.0f;
-  a.co = aq["co"] | 0.0f;
-  a.no2 = aq["no2"] | 0.0f;
-  a.o3 = aq["o3"] | 0.0f;
-  a.so2 = aq["so2"] | 0.0f;
+  a.pm25 = a.pm10 = a.co = a.no2 = a.o3 = a.so2 = NAN;
+  if (!aq["pm25"].isNull()) a.pm25 = aq["pm25"] | 0.0f;
+  if (!aq["pm10"].isNull()) a.pm10 = aq["pm10"] | 0.0f;
+  if (!aq["co"].isNull()) a.co = aq["co"] | 0.0f;
+  if (!aq["no2"].isNull()) a.no2 = aq["no2"] | 0.0f;
+  if (!aq["o3"].isNull()) a.o3 = aq["o3"] | 0.0f;
+  if (!aq["so2"].isNull()) a.so2 = aq["so2"] | 0.0f;
   strlcpy(a.level, aq["cat"] | epaCategory(a.aqi), sizeof(a.level));
   if (!aq["uaqi"].isNull()) { a.uaqiValid = true; a.uaqi = aq["uaqi"] | 0; }
   buildAqiAdvisory(a);
@@ -2864,12 +2875,12 @@ static bool sendSnapshot(const Telemetry& t) {
     doc["outdoorAqi"]   = ns.aqi.aqi;
     doc["outdoorLevel"] = ns.aqi.level;
     doc["aqiAdvisory"]  = ns.aqi.advisory;
-    doc["outdoorPm25"]  = roundf(ns.aqi.pm25 * 10) / 10.0f;
-    doc["outdoorPm10"]  = roundf(ns.aqi.pm10 * 10) / 10.0f;
-    doc["outdoorCo"]    = lroundf(ns.aqi.co);
-    doc["outdoorNo2"]   = roundf(ns.aqi.no2 * 10) / 10.0f;
-    doc["outdoorO3"]    = roundf(ns.aqi.o3 * 10) / 10.0f;
-    doc["outdoorSo2"]   = roundf(ns.aqi.so2 * 10) / 10.0f;
+    if (isfinite(ns.aqi.pm25)) doc["outdoorPm25"] = roundf(ns.aqi.pm25 * 10) / 10.0f;
+    if (isfinite(ns.aqi.pm10)) doc["outdoorPm10"] = roundf(ns.aqi.pm10 * 10) / 10.0f;
+    if (isfinite(ns.aqi.co))   doc["outdoorCo"]   = lroundf(ns.aqi.co);
+    if (isfinite(ns.aqi.no2))  doc["outdoorNo2"]  = roundf(ns.aqi.no2 * 10) / 10.0f;
+    if (isfinite(ns.aqi.o3))   doc["outdoorO3"]   = roundf(ns.aqi.o3 * 10) / 10.0f;
+    if (isfinite(ns.aqi.so2))  doc["outdoorSo2"]  = roundf(ns.aqi.so2 * 10) / 10.0f;
     if (ns.aqi.uaqiValid) doc["outdoorUaqi"] = ns.aqi.uaqi;
     if (ns.aqi.pollenValid) {
       doc["pollenTree"] = ns.aqi.pollenTree;

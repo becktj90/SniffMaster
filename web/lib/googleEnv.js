@@ -72,6 +72,8 @@ function round4(n) {
 }
 
 function finite(n) {
+  // Number(null) and Number("") are 0. A missing measurement must stay missing.
+  if (n === null || n === undefined || n === "") return null;
   const v = Number(n);
   return Number.isFinite(v) ? v : null;
 }
@@ -137,7 +139,9 @@ function clip(text, max) {
 }
 
 function wmoText(code) {
+  if (code === null || code === undefined || code === "") return "";
   const c = Number(code);
+  if (!Number.isFinite(c)) return "";
   if (c === 0) return "Clear";
   if (c === 1) return "Mostly clear";
   if (c === 2) return "Partly cloudy";
@@ -396,6 +400,20 @@ async function openMeteoBundle(loc, fetchImpl) {
   };
 }
 
+function withRemainingTtl(hit, now) {
+  const copy = { ...hit };
+  const cachedAt = Number(copy.cachedAt);
+  const full = Number(copy.ttlSec);
+  delete copy.cachedAt;
+  if (!Number.isFinite(cachedAt) || !Number.isFinite(full)) {
+    copy.ttlSec = Math.min(full || ENV_TTL_SEC, 60);
+    return copy;
+  }
+  const ageSec = Math.max(0, Math.floor((now - cachedAt) / 1000));
+  copy.ttlSec = Math.max(1, full - ageSec);
+  return copy;
+}
+
 function pack(loc, source, wx, aq, pollen, label) {
   const body = {
     ok: true,
@@ -444,6 +462,7 @@ async function pollenFor(loc, env, deps) {
 export async function lookupEnvironment(input = {}, deps = {}) {
   const env = deps.env || process.env;
   const fetchImpl = deps.fetchImpl || fetch;
+  const now = deps.now ?? Date.now();
   const key = String(env.GOOGLE_MAPS_API_KEY || "").trim();
   const loc = await resolveLocation(input, key, fetchImpl);
   const cacheKey = `env:v1:${loc.source}:${geohash(loc.lat, loc.lon)}`;
@@ -451,7 +470,7 @@ export async function lookupEnvironment(input = {}, deps = {}) {
   if (deps.cacheGet) {
     try {
       const hit = await deps.cacheGet(cacheKey);
-      if (hit && hit.ok) return hit;
+      if (hit && hit.ok) return withRemainingTtl(hit, now);
     } catch {
       /* cache is best-effort */
     }
@@ -488,7 +507,7 @@ export async function lookupEnvironment(input = {}, deps = {}) {
   }
   const body = pack(loc, source, wx, aq, pollen, label);
   if (deps.cacheSet && body.ok) {
-    try { await deps.cacheSet(cacheKey, body, ENV_TTL_SEC); } catch { /* ignore */ }
+    try { await deps.cacheSet(cacheKey, { ...body, cachedAt: now }, ENV_TTL_SEC); } catch { /* ignore */ }
   }
   return body;
 }

@@ -210,6 +210,69 @@ test("a failed Google weather call drops pollen and uses Open-Meteo", async () =
   assert.equal(JSON.stringify(result).includes(KEY), false);
 });
 
+test("null measurements are not reported as clean air", async () => {
+  const result = await lookupEnvironment(
+    { lat: 28.5, lon: -80.6 },
+    {
+      env: {},
+      fetchImpl: async (url) => {
+        if (String(url).includes("air-quality-api")) return jsonRes({ current: { us_aqi: null, pm2_5: null } });
+        return jsonRes({ current: { temperature_2m: 78, weather_code: null } });
+      },
+    }
+  );
+  assert.deepEqual(result, { ok: false });
+});
+
+test("a real US AQI of zero stays a good reading", async () => {
+  const result = await lookupEnvironment(
+    { lat: 28.5, lon: -80.6 },
+    {
+      env: {},
+      fetchImpl: async (url) => {
+        if (String(url).includes("air-quality-api")) return jsonRes({ current: { us_aqi: 0, pm2_5: 0 } });
+        return jsonRes({ current: { temperature_2m: 70, weather_code: 0 } });
+      },
+    }
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.aq.usAqi, 0);
+  assert.equal(result.aq.pm25, 0);
+  assert.equal(result.aq.cat, "Good");
+});
+
+test("a cache hit returns the remaining freshness lifetime", async () => {
+  const cache = new Map();
+  const start = Date.parse("2026-11-15T12:00:00Z");
+  let fetches = 0;
+  const deps = {
+    env: {},
+    now: start,
+    cacheGet: async (key) => cache.get(key) || null,
+    cacheSet: async (key, value) => { cache.set(key, value); },
+    fetchImpl: async (url) => {
+      fetches++;
+      if (String(url).includes("air-quality-api")) return jsonRes({ current: { us_aqi: 42, pm2_5: 8 } });
+      return jsonRes({ current: { temperature_2m: 75, weather_code: 1 } });
+    },
+  };
+  const first = await lookupEnvironment({ lat: 28.5, lon: -80.6 }, deps);
+  assert.equal(first.ttlSec, 1800);
+  assert.equal(first.cachedAt, undefined);
+  const stored = [...cache.values()][0];
+  assert.equal(stored.ttlSec, 1800);
+  assert.equal(stored.cachedAt, start);
+  const second = await lookupEnvironment(
+    { lat: 28.5, lon: -80.6 },
+    { ...deps, now: start + 29 * 60 * 1000 }
+  );
+  assert.equal(second.ttlSec, 60);
+  assert.equal(second.cachedAt, undefined);
+  assert.equal(second.aq.usAqi, 42);
+  assert.equal(fetches, 2);
+  assert.equal(stored.ttlSec, 1800);
+});
+
 test("total failure is a 200-shaped ok false", async () => {
   const result = await lookupEnvironment(
     { lat: 28.5, lon: -80.6 },
