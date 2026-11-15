@@ -454,3 +454,5 @@ label.choice.off { opacity: .72; }
 .cal-steps .step.now.good i { background: var(--good); border-color: transparent; box-shadow: 0 0 0 4px var(--good-bg); }
 .cal-steps .step.now.fair i { background: var(--fair); border-color: transparent; box-shadow: 0 0 0 4px var(--fair-bg); }
 .cal-steps .step.now.poor i { background: var(--poor); border-color: transparent; box-shadow: 0 0 0 4px var(--poor-bg); }
+.coach-points { margin: 8px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-2); }
+.coach-points li { margin: 4px 0; }
