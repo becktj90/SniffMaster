@@ -721,13 +721,13 @@
   }
 
   // ── Alerts ─────────────────────────────────────────────────────────
-  var alertState = { step: "form", channel: "email", id: null, masked: "", error: "", ok: "" };
+  var alertState = { step: "form", channel: "email", id: null, masked: "", address: "", push: null, error: "", ok: "" };
   async function pageAlerts() {
     var info = await load("alerts").catch(function () { return null; });
     if (!info) return head("Alerts") + '<div class="card"><p class="muted">Alerts are unavailable right now.</p></div>';
     var ch = info.channels || {};
-    if (!ch[alertState.channel]) alertState.channel = ch.email ? "email" : "sms";
-    var none = !ch.email && !ch.sms;
+    if (!ch[alertState.channel]) alertState.channel = ch.sms ? "sms" : ch.push ? "push" : ch.email ? "email" : "push";
+    var none = !ch.email && !ch.sms && !ch.push;
     var saved = store("sm-alert-rules") || {};
     var presetOn = ["pet", "mold", "pollen", "smell", "humidityHi"];
     var ruleList = Object.keys(info.rules).map(function (k) { return [k, info.rules[k]]; }).sort(function (a, b) {
@@ -749,39 +749,76 @@
     var rules = '<div class="choices">' + easy + "</div>" +
       (more ? '<details class="more"><summary>More alerts</summary><div class="choices">' + more + "</div></details>" : "") +
       '<details class="more"><summary>Change the exact numbers</summary><p class="muted small">Leave these alone if you just want a message when something is higher than usual.</p><div class="rules">' + numbers + "</div></details>";
-    var msg = (alertState.error ? '<div class="msg err">' + esc(alertState.error) + "</div>" : "") + (alertState.ok ? '<div class="msg ok">' + esc(alertState.ok) + "</div>" : "");
+    var msg = (alertState.error ? '<div class="msg err" role="alert">' + esc(alertState.error) + "</div>" : "") + (alertState.ok ? '<div class="msg ok" role="status">' + esc(alertState.ok) + "</div>" : "");
+    var notes = [];
+    if (!ch.email) notes.push("Email isn't set up on this dashboard.");
+    if (!ch.sms && info.smsReason === "credit") notes.push("Text messages are paused because the texting account is out of credit.");
+    else if (!ch.sms) notes.push("Text messages aren't set up on this dashboard.");
+    var channelBtn = function (id, label, title) {
+      var enabled = !!ch[id];
+      return '<button type="button" data-ch="' + id + '" aria-pressed="' + (alertState.channel === id) + '"' +
+        (enabled ? "" : " disabled") + (title && !enabled ? ' title="' + esc(title) + '"' : "") + ">" + label + "</button>";
+    };
     var body;
     if (alertState.step === "code") {
-      body = '<form class="form" id="codeform"><p style="margin:0">We sent a 6-digit code to <b>' + esc(alertState.masked) + '</b>. Enter it to turn alerts on.</p>' + msg +
-        '<div class="field"><label for="code">Code</label><input id="code" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required></div>' +
-        '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">Confirm</button><button class="btn ghost" type="button" id="restart">Use a different address</button></div></form>';
+      var push = alertState.push;
+      var lead = push
+        ? '<p style="margin:0">We sent a 6-digit code as a phone notification. Open it, then type the code here.</p>' +
+          '<a class="btn block" href="' + esc(push.web) + '" target="_blank" rel="noopener noreferrer">Open the notification</a>' +
+          '<p class="muted small" style="margin:0"><a href="' + esc(push.app) + '">Add it in the ntfy app</a> so later alerts reach this phone after you close this page.</p>'
+        : '<p style="margin:0">We sent a 6-digit code to <b>' + esc(alertState.masked) + "</b>. Enter it to turn alerts on.</p>";
+      body = '<form class="form" id="codeform">' + lead + msg +
+        '<div class="field"><label for="code">Code</label><input id="code" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required' + (alertState.error ? ' aria-invalid="true"' : "") + "></div>" +
+        '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">Confirm</button><button class="btn ghost" type="button" id="restart">' + (push ? "Start over" : "Use a different address") + "</button></div></form>";
     } else if (alertState.step === "done") {
-      body = '<div class="form">' + msg + '<p class="muted" style="margin:0">Every alert includes a one-tap unsubscribe link.</p><div><button class="btn ghost" type="button" id="restart">Sign up another address</button></div></div>';
+      var keep = alertState.push
+        ? '<p class="muted" style="margin:0">Leave that notification subscribed. Every alert has a link to stop.</p><a class="btn" href="' + esc(alertState.push.web) + '" target="_blank" rel="noopener noreferrer">Open the notification</a>'
+        : '<p class="muted" style="margin:0">Every alert includes a one-tap unsubscribe link.</p>';
+      body = '<div class="form">' + msg + keep + '<div><button class="btn ghost" type="button" id="restart">Sign up another address</button></div></div>';
     } else {
+      var addr = esc(alertState.address || "");
+      var bad = alertState.error ? ' aria-invalid="true"' : "";
+      var addressField = alertState.channel === "push"
+        ? '<p class="muted" style="margin:0">A notification on this phone. You\'ll open it to read a code, and later alerts arrive the same way.</p>'
+        : '<div class="field"><label for="addr">' + (alertState.channel === "sms" ? "Mobile number" : "Email address") + "</label>" +
+          (alertState.channel === "sms"
+            ? '<input id="addr" type="tel" autocomplete="tel" inputmode="tel" placeholder="(321) 555-0100" value="' + addr + '"' + bad + " required>"
+            : '<input id="addr" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" value="' + addr + '"' + bad + " required>") +
+          "</div>";
       body = '<form class="form" id="subform">' + msg +
-        '<div class="seg" role="group" aria-label="Alert channel">' +
-        '<button type="button" data-ch="email" aria-pressed="' + (alertState.channel === "email") + '"' + (ch.email ? "" : " disabled") + ">Email" + (ch.email ? "" : " (not set up)") + "</button>" +
-        '<button type="button" data-ch="sms" aria-pressed="' + (alertState.channel === "sms") + '"' + (ch.sms ? "" : " disabled") + ">Text message" + (ch.sms ? "" : " (not set up)") + "</button></div>" +
-        '<div class="field"><label for="addr">' + (alertState.channel === "sms" ? "Mobile number" : "Email address") + "</label>" +
-        (alertState.channel === "sms" ? '<input id="addr" type="tel" autocomplete="tel" placeholder="(555) 123-4567" required>' : '<input id="addr" type="email" autocomplete="email" placeholder="you@example.com" required>') + "</div>" +
+        '<div class="seg" role="group" aria-label="How should we reach you?">' +
+        channelBtn("email", "Email", "Email isn't set up") +
+        channelBtn("sms", "Text", info.smsReason === "credit" ? "Texting is out of credit" : "Text isn't set up") +
+        channelBtn("push", "App", "") + "</div>" +
+        (notes.length ? '<p class="note" style="margin:0">' + esc(notes.join(" ")) + "</p>" : "") +
+        addressField +
         '<fieldset class="field"><legend>Tell me when…</legend>' + rules + "</fieldset>" +
         '<p class="muted small" style="margin:0">You\'ll get one message when a reading crosses your limit, a reminder at most every 3 hours if it stays there, and nothing more until it clears.' + (alertState.channel === "sms" ? " Message and data rates may apply." : "") + "</p>" +
         '<div><button class="btn block" type="submit"' + (none ? " disabled" : "") + ">Send my code</button></div></form>";
     }
-    return head("Alerts", "Pick what you want to hear about. A text or email arrives when it happens, and each message has a link to stop.") +
+    return head("Alerts", "Pick what you want to hear about. A text, email, or phone notification arrives when it happens, and each message has a link to stop.") +
       '<div class="grid g-side"><div class="card">' + body + "</div>" +
-      '<div class="card"><h3>How it works</h3><ol class="muted" style="padding-left:18px;margin:10px 0 0;display:grid;gap:8px"><li>Pick email or text and the readings you care about.</li><li>Confirm with the code we send, so nobody can sign you up by mistake.</li><li>SniffMaster checks every couple of minutes and only messages you when something changes.</li></ol>' +
-      '<p class="note">' + info.subscriberCount + " " + (info.subscriberCount === 1 ? "person is" : "people are") + " signed up." + (none ? " Email and text delivery aren't configured on this dashboard yet." : "") + "</p></div></div>";
+      '<div class="card"><h3>How it works</h3><ol class="muted" style="padding-left:18px;margin:10px 0 0;display:grid;gap:8px"><li>Pick email, text, or a phone notification, and the readings you care about.</li><li>Confirm with the code we send, so nobody can sign you up by mistake.</li><li>SniffMaster checks every couple of minutes and only messages you when something changes.</li></ol>' +
+      '<p class="note">' + info.subscriberCount + " " + (info.subscriberCount === 1 ? "person is" : "people are") + " signed up." + (none ? " Alerts aren't configured on this dashboard yet." : "") + "</p></div></div>";
   }
   function bindAlerts() {
     view.querySelectorAll("[data-ch]").forEach(function (b) {
-      b.addEventListener("click", function () { alertState.channel = b.dataset.ch; alertState.error = ""; rerender(); });
+      b.addEventListener("click", function () {
+        if (b.disabled) return;
+        var addr = $("#addr");
+        if (addr) alertState.address = addr.value;
+        alertState.channel = b.dataset.ch;
+        alertState.error = "";
+        rerender();
+      });
     });
     view.querySelectorAll("[data-rule]").forEach(function (cb) {
       cb.addEventListener("change", function () { cb.closest(".choice") && cb.closest(".choice").classList.toggle("off", !cb.checked); });
     });
+    var addrInput = $("#addr");
+    if (addrInput && alertState.error) addrInput.focus();
     var restart = $("#restart");
-    if (restart) restart.addEventListener("click", function () { alertState = { step: "form", channel: alertState.channel, error: "", ok: "" }; rerender(); });
+    if (restart) restart.addEventListener("click", function () { alertState = { step: "form", channel: alertState.channel, address: "", push: null, error: "", ok: "" }; rerender(); });
     var sub = $("#subform");
     if (sub) sub.addEventListener("submit", async function (ev) {
       ev.preventDefault();
@@ -792,10 +829,12 @@
         if (cb.checked) rules[k] = lim ? Number(lim.value) : true;
       });
       store("sm-alert-rules", saved);
-      if (!Object.keys(rules).length) { alertState.error = "Pick at least one thing to be alerted about."; return rerender(); }
-      var btn = sub.querySelector(".btn"); btn.disabled = true; btn.textContent = "Sending…";
-      var r = await post({ action: "subscribe", channel: alertState.channel, address: $("#addr").value, rules: rules });
-      if (r.error) { alertState.error = r.error; } else { alertState = { step: "code", channel: alertState.channel, id: r.id, masked: r.masked, error: "", ok: "" }; }
+      var typed = $("#addr") ? $("#addr").value : alertState.address;
+      if (!Object.keys(rules).length) { alertState.error = "Pick at least one thing to be alerted about."; alertState.ok = ""; alertState.address = typed || ""; return rerender(); }
+      var btn = sub.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = "Sending…";
+      var r = await post({ action: "subscribe", channel: alertState.channel, address: alertState.channel === "push" ? "" : typed, rules: rules });
+      if (r.error) { alertState.error = r.error; alertState.ok = ""; alertState.address = typed || ""; }
+      else { alertState = { step: "code", channel: alertState.channel, id: r.id, masked: r.masked, address: typed || "", push: r.push || null, error: "", ok: "" }; }
       rerender();
     });
     var cf = $("#codeform");
@@ -803,9 +842,9 @@
       $("#code").focus();
       cf.addEventListener("submit", async function (ev) {
         ev.preventDefault();
-        var btn = cf.querySelector(".btn"); btn.disabled = true;
+        var btn = cf.querySelector('button[type="submit"]'); btn.disabled = true;
         var r = await post({ action: "verify", id: alertState.id, code: $("#code").value });
-        if (r.error) { alertState.error = r.error; } else { alertState = { step: "done", channel: alertState.channel, ok: "You're signed up. Alerts will go to " + r.masked + "." }; cache.alerts = null; }
+        if (r.error) { alertState.error = r.error; } else { alertState = { step: "done", channel: alertState.channel, push: alertState.push, ok: "You're signed up. Alerts will go to " + r.masked + "." }; cache.alerts = null; }
         rerender();
       });
     }

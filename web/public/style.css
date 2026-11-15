@@ -207,6 +207,7 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .seg { display: inline-flex; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 3px; gap: 2px; }
 .seg button { border: 0; background: transparent; padding: 8px 14px; border-radius: 9px; color: var(--ink-2); font-weight: 600; font-size: 15px; cursor: pointer; min-height: 44px; }
 .seg button[aria-pressed="true"] { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line-2) inset; }
+.seg button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── Lists, tables, bars ──────────────────────────────────────── */
 .kv { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; font-size: 13.5px; margin: 0; }
@@ -264,8 +265,11 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .code-input { font-family: var(--mono) !important; letter-spacing: .4em; font-size: 22px !important; text-align: center; }
 fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 fieldset.field legend { font-weight: 700; font-size: 16px; margin-bottom: 8px; padding: 0; }
-.form .seg { display: flex; width: 100%; }
-.form .seg button { flex: 1; }
+.form .seg { display: flex; width: 100%; flex-wrap: wrap; }
+.form .seg button { flex: 1 1 5.5rem; }
+a.btn { text-decoration: none; }
+a.btn:hover { text-decoration: none; }
+.msg[role="alert"] { margin: 0; }
 .choices { display: grid; gap: 10px; }
 label.choice {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
