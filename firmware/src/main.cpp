@@ -5,15 +5,13 @@
     - BME688 on Grove I2C (addr 0x76)
     - Built-in SSD1306 128x64 OLED (addr 0x3C)
     - Passive buzzer on D3 (hazard alarm ONLY)
-    - USER button D1
+    - USER button on D0 (D1 and the BOOT button also work)
 
   Button:
     tap   = next page (or dismiss an alert / mute a hazard alarm)
     hold  = push a fresh snapshot to the web portal
 
-  Pages (auto-cycle every 10 s):
-    0 Air Quality  1 Odor Detail  2 Environment  3 Gas Analysis
-    4 Outdoor      5 Network      6 Fart Tracker
+  Pages auto-cycle every 5 s (see the C_* card list).
 
   Architecture:
     loop()   — sensor, button, buzzer, OLED. Never touches the network.
@@ -30,6 +28,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <math.h>
 #include "bsec2.h"
 #include "secrets.h"               // WIFI_CREDS, OPENAI_API_KEY, OPENAI_MODEL
 #include "web_dashboard_config.h"  // WEB_DASHBOARD_URL, WEB_DASHBOARD_KEY
@@ -49,7 +48,11 @@
   #define I2C_BEGIN() Wire.begin()
 #endif
 
-#define BTN_PIN        D1
+// Page / long-press button is D0 (GPIO2). D1 and the XIAO BOOT button (GPIO9)
+// also work. Each input arms only after it has read "released", so a pin
+// that is held low (or wired to something else) can never jam the button.
+#define BTN_PIN        D0
+static const uint8_t BTN_PINS[] = { D0, D1, 9 };
 #define BTN_LONG_MS    700
 #define BTN_DEBOUNCE_MS 25
 #define BUZZER_PIN     D3
@@ -58,7 +61,10 @@
 #define SCREEN_HEIGHT  64
 #define OLED_ADDR      0x3C
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// 100 kHz during frame transfers (library default is 400 kHz): the OLED shares
+// the bus with the Grove-cabled BME688, and the extra capacitance corrupted
+// pixels at 400 kHz. A full frame takes ~95 ms, which the loop budget absorbs.
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 100000UL, 100000UL);
 
 #define PAGE_CYCLE_MS       5000UL    // metric cards auto-advance
 
@@ -100,11 +106,19 @@ static bsecSensor sensorListLpSafe[] = {
   BSEC_OUTPUT_RUN_IN_STATUS,
 };
 
-// Optional diagnostics; dropped automatically if the config rejects them.
+// Optional raw T/RH diagnostics. Off by default: while they were subscribed the
+// bench C3 stayed in BSEC run-in (accuracy 0) for 50+ min, whereas the original
+// output set historically reached accuracy 1 at ~33 min. Not yet proven to be
+// the cause. Build with -DSM_BSEC_RAW_EXTRAS=1 to experiment.
+#ifndef SM_BSEC_RAW_EXTRAS
+#define SM_BSEC_RAW_EXTRAS 0
+#endif
+#if SM_BSEC_RAW_EXTRAS
 static bsecSensor sensorListRawExtras[] = {
   BSEC_OUTPUT_RAW_TEMPERATURE,
   BSEC_OUTPUT_RAW_HUMIDITY,
 };
+#endif
 
 // bsec2 1.8.x ships no bme688 *IAQ* blob (only AI-Studio selectivity configs,
 // which replace Bosch IAQ), so the bme680 IAQ blob is loaded on every board.
@@ -145,6 +159,13 @@ enum OdorIndex : uint8_t {
   OD_GASOLINE, OD_SMOKE, OD_COOKING, OD_COFFEE, OD_GARBAGE, OD_SWEAT,
   OD_PERFUME, OD_LAUNDRY, OD_SULFUR, OD_SOLVENT, OD_PET, OD_SOUR,
   OD_BURNT, OD_CITRUS
+};
+
+// <=7 chars, for the OLED bar labels
+static const char* const odorShort[ODOR_COUNT] = {
+  "Fart", "Musty", "Cig", "Alcohol", "Weed", "Clean", "Gas", "Smoke",
+  "Cooking", "Coffee", "Garbage", "Sweat", "Perfume", "Laundry", "Sulfur",
+  "Solvent", "Pet", "Sour", "Burnt", "Citrus"
 };
 
 static const char* const odorNames[ODOR_COUNT] = {
@@ -328,7 +349,7 @@ struct Telemetry {
   float   cfiScore;
   uint8_t cfiPercent, vtrLevel;
   int     fartCount;
-  bool    fullBundle, gasValid, runIn, stab;
+  bool    fullBundle, gasValid, runIn, stab, bsecRestored;
   float   rawTempC, rawHum;       // NAN when not subscribed
 #if SM_HOME_SENSORS
   HomeAirReading home;
@@ -350,6 +371,7 @@ struct SniffEvent {
 };
 static SniffEvent gSniff = {};
 static bool       gSniffPending = false;
+static uint32_t   gSniffGen = 0;        // bumped per queued event; guards clear-after-send
 static bool       gPushRequested = false;
 
 // net → main: connection info + outdoor data
@@ -911,17 +933,21 @@ static void alarmTick(unsigned long now) {
 // ══════════════════════════════════════════════════════════════
 
 static void drawHeader(const char* left, const char* right = nullptr) {
-  display.fillRect(0, 0, SCREEN_WIDTH, 10, SSD1306_WHITE);
-  display.setTextColor(SSD1306_BLACK);
+  // Plain text + underline. A solid white bar ghosts/streaks on SSD1306 panels.
+  display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
-  display.setCursor(2, 1);
-  display.print(left);
   if (hazardActive && !right) right = "HAZ";
+  // Truncate the title so it never runs into the right-hand badge
+  const int maxLeft = (SCREEN_WIDTH - 4 - (right ? (int)strlen(right) * 6 + 6 : 0)) / 6;
+  char title[22];
+  strlcpy(title, left, min((int)sizeof(title), maxLeft + 1));
+  display.setCursor(2, 1);
+  display.print(title);
   if (right) {
     display.setCursor(SCREEN_WIDTH - (int)(strlen(right) * 6) - 2, 1);
     display.print(right);
   }
-  display.setTextColor(SSD1306_WHITE);
+  display.drawFastHLine(0, 9, SCREEN_WIDTH, SSD1306_WHITE);
 }
 
 static void drawBar(int x, int y, int w, int h, uint8_t pct) {
@@ -1065,7 +1091,8 @@ static void drawHistory(HistId id, float minSpan, int y = 41, int h = 23) {
 
 // Range bar with a value marker; `pct` 0-100 along the scale
 static void drawRangeBar(int y, uint8_t pct, const char* lo, const char* hi) {
-  const int x = 18, w = SCREEN_WIDTH - 36;
+  const int x = (int)strlen(lo) * 6 + 3;
+  const int w = SCREEN_WIDTH - (int)strlen(hi) * 6 - 3 - x;
   display.setCursor(0, y - 1);  display.print(lo);
   display.setCursor(SCREEN_WIDTH - (int)strlen(hi) * 6, y - 1); display.print(hi);
   display.drawRect(x, y, w, 6, SSD1306_WHITE);
@@ -1077,7 +1104,8 @@ static void drawRangeBar(int y, uint8_t pct, const char* lo, const char* hi) {
 static void drawMiniBar(int y, const char* label, int pct, const char* right) {
   display.setCursor(0, y);
   display.print(label);
-  const int x = 42, w = 52;
+  const int x = 44;                                            // labels are <= 7 chars
+  const int w = SCREEN_WIDTH - (int)strlen(right) * 6 - 3 - x;
   display.drawRect(x, y, w, 7, SSD1306_WHITE);
   if (pct > 0) display.fillRect(x + 1, y + 1, constrain(pct, 0, 100) * (w - 2) / 100, 5, SSD1306_WHITE);
   printRight(y, right);
@@ -1127,7 +1155,7 @@ static void cardHomeScore(const NetStatus& n) {
 }
 
 static void cardIaq() {
-  drawHeader("Indoor Air (IAQ)", calibrationBadgeText(ss_iaqAcc, ss_stabStatus, ss_runInStatus));
+  drawHeader("Indoor Air", calibrationBadgeText(ss_iaqAcc, ss_stabStatus, ss_runInStatus));
   char buf[12];
   snprintf(buf, sizeof(buf), "%.0f", ss_iaq);
   drawBigValue(buf, "", iaqQuality(ss_iaq));
@@ -1222,15 +1250,22 @@ static void cardOdors() {
         if (ss_scores[idx[j]] > ss_scores[idx[i]]) { uint8_t t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
     for (uint8_t r = 0; r < 4; r++) {
       char label[8], pct[6];
-      strlcpy(label, odorNames[idx[r]], sizeof(label));
+      strlcpy(label, odorShort[idx[r]], sizeof(label));
       snprintf(pct, sizeof(pct), "%u%%", ss_scores[idx[r]]);
-      drawMiniBar(13 + r * 10, label, ss_scores[idx[r]], pct);
+      drawMiniBar(12 + r * 10, label, ss_scores[idx[r]], pct);
     }
   }
   char buf[24];
   snprintf(buf, sizeof(buf), "Farts today: %d", fartCount);
-  display.setCursor(0, 56);
+  display.setCursor(0, 55);
   display.print(buf);
+}
+
+static void shortCat(const char* in, char* out, size_t len) {
+  if (!strcasecmp(in, "Moderate"))       strlcpy(out, "Mod", len);
+  else if (!strcasecmp(in, "Very High")) strlcpy(out, "VHigh", len);
+  else if (!strcasecmp(in, "Very Low"))  strlcpy(out, "VLow", len);
+  else { strlcpy(out, in, len); if (strlen(out) > 5) out[5] = '\0'; }
 }
 
 static void cardAllergens(const NetStatus& n) {
@@ -1241,12 +1276,12 @@ static void cardAllergens(const NetStatus& n) {
     return;
   }
   char r[8];
-  strlcpy(r, n.home.moldCat, sizeof(r));   drawMiniBar(14, "Mold",  n.home.moldPct, r);
-  strlcpy(r, n.home.miteCat, sizeof(r));   drawMiniBar(25, "Mites", n.home.mitePct, r);
-  strlcpy(r, n.home.dryCat, sizeof(r));    drawMiniBar(36, "Dry",   n.home.dryPct, r);
-  strlcpy(r, n.home.petLevel, sizeof(r));  drawMiniBar(47, "Pet",   n.home.petIdx, r);
-  display.setCursor(0, 57);
-  display.print(F("(estimates)"));
+  shortCat(n.home.moldCat, r, sizeof(r));   drawMiniBar(13, "Mold",  n.home.moldPct, r);
+  shortCat(n.home.miteCat, r, sizeof(r));   drawMiniBar(23, "Mites", n.home.mitePct, r);
+  shortCat(n.home.dryCat, r, sizeof(r));    drawMiniBar(33, "Dry",   n.home.dryPct, r);
+  shortCat(n.home.petLevel, r, sizeof(r));  drawMiniBar(43, "Pet",   n.home.petIdx, r);
+  display.setCursor(0, 55);
+  display.print(F("estimates"));
 }
 
 static void cardOutdoor(const NetStatus& n) {
@@ -1270,9 +1305,10 @@ static void cardOutdoor(const NetStatus& n) {
   }
 }
 
-// Word-wrap plain ASCII text into 21-column lines starting at y
+// Word-wrap plain ASCII text into 21-column lines starting at y (9 px pitch).
+// If the text needs more than maxLines, the last line ends with "...".
 static void drawWrapped(const char* text, int y, int maxLines) {
-  char line[22];
+  char line[24];
   int len = strlen(text), pos = 0, lines = 0;
   while (pos < len && lines < maxLines) {
     while (text[pos] == ' ') pos++;
@@ -1285,19 +1321,24 @@ static void drawWrapped(const char* text, int y, int maxLines) {
     int n = end - pos;
     memcpy(line, text + pos, n);
     line[n] = '\0';
-    display.setCursor(0, y + lines * 9);
-    display.print(line);
     pos = end;
     lines++;
+    if (lines == maxLines && pos < len) {   // overflow: trim and add an ellipsis
+      if (n > 18) n = 18;
+      while (n > 0 && line[n - 1] == ' ') n--;
+      strcpy(line + n, "...");
+    }
+    display.setCursor(0, y + (lines - 1) * 9);
+    display.print(line);
   }
 }
 
 static void cardSnark(const NetStatus& n) {
   drawHeader("SniffMaster Says");
   if (n.snark[0]) {
-    drawWrapped(n.snark, 13, 6);
+    drawWrapped(n.snark, 11, 6);
   } else if (homeFresh(n) && n.home.headline[0]) {
-    drawWrapped(n.home.headline, 13, 6);
+    drawWrapped(n.home.headline, 11, 6);
   } else {
     display.setCursor(0, 24);
     display.print(n.connected ? F("Thinking of an insult") : F("WiFi offline"));
@@ -1639,7 +1680,8 @@ static void loadBsecState() {
     bsecPrefs.remove(BSEC_STATE_KEY);
     bsecPrefs.remove(BSEC_GUARD_KEY);
     Serial.println(F("[BSEC] Previous restore never produced data — cold start"));
-  } else if (bsecPrefs.getBytesLength(BSEC_STATE_KEY) == sizeof(PersistedBsecState)) {
+  } else if (bsecPrefs.isKey(BSEC_STATE_KEY) &&
+             bsecPrefs.getBytesLength(BSEC_STATE_KEY) == sizeof(PersistedBsecState)) {
     static PersistedBsecState st;   // ~230 B; static keeps it off the loop stack
     bsecPrefs.getBytes(BSEC_STATE_KEY, &st, sizeof(st));
     if (st.magic == BSEC_STATE_MAGIC && st.version == BSEC_STATE_VER &&
@@ -1661,7 +1703,8 @@ static void loadBsecState() {
     Serial.println(F("[BSEC] No saved state — cold start"));
   }
 
-  if (bsecPrefs.getBytesLength(BSEC_HOME_KEY) == sizeof(PersistedHomeBaseline)) {
+  if (bsecPrefs.isKey(BSEC_HOME_KEY) &&
+      bsecPrefs.getBytesLength(BSEC_HOME_KEY) == sizeof(PersistedHomeBaseline)) {
     PersistedHomeBaseline st = {};
     bsecPrefs.getBytes(BSEC_HOME_KEY, &st, sizeof(st));
     if (st.magic == HOME_BASE_MAGIC && st.version == HOME_BASE_VER) {
@@ -1729,13 +1772,16 @@ static void clearRestoreGuard() {
 static bool subscribeBsecOutputs(const char* context) {
   bsecFullBundle = bsecRawExtras = false;
 
+#if SM_BSEC_RAW_EXTRAS
   // Full list + raw temp/humidity diagnostics
   bsecSensor withExtras[ARRAY_LEN(sensorList) + ARRAY_LEN(sensorListRawExtras)];
   memcpy(withExtras, sensorList, sizeof(sensorList));
   memcpy(withExtras + ARRAY_LEN(sensorList), sensorListRawExtras, sizeof(sensorListRawExtras));
   if (envSensor.updateSubscription(withExtras, ARRAY_LEN(withExtras), BSEC_SAMPLE_RATE_LP)) {
     bsecFullBundle = bsecRawExtras = true;
-  } else if (envSensor.updateSubscription(sensorList, ARRAY_LEN(sensorList), BSEC_SAMPLE_RATE_LP)) {
+  } else
+#endif
+  if (envSensor.updateSubscription(sensorList, ARRAY_LEN(sensorList), BSEC_SAMPLE_RATE_LP)) {
     bsecFullBundle = true;
   } else if (envSensor.updateSubscription(sensorListLpSafe, ARRAY_LEN(sensorListLpSafe), BSEC_SAMPLE_RATE_LP)) {
     latestCompGas = latestGasPct = 0;
@@ -1877,6 +1923,7 @@ static void processSample(unsigned long now) {
       gSniff.primaryConf = scores[i1];
       gSniff.fartCount = fartCount;
       gSniffPending = true;
+      gSniffGen++;
     }
     ss_prevSulfurConf = sulfur;
   }
@@ -1906,6 +1953,7 @@ static void processSample(unsigned long now) {
     t.vtrLevel = computeVtrLevel(hum, co2, iaq);
     t.fartCount = fartCount;
     t.fullBundle = bsecFullBundle;
+    t.bsecRestored = calState.bsecStateLoaded;
     t.gasValid = latestGasValid;
     t.runIn = latestRunInStatus >= 1.0f;
     t.stab = latestStabStatus >= 1.0f;
@@ -1979,7 +2027,13 @@ static void onLongPress() {
 }
 
 static void handleButton(unsigned long now) {
-  const bool raw = digitalRead(BTN_PIN) == LOW;
+  static bool pinArmed[sizeof(BTN_PINS)] = {};
+  bool raw = false;
+  for (uint8_t i = 0; i < sizeof(BTN_PINS); i++) {
+    const bool low = digitalRead(BTN_PINS[i]) == LOW;
+    if (!pinArmed[i]) { if (!low) pinArmed[i] = true; continue; }
+    raw |= low;
+  }
   if (raw != btnLastRaw) { btnLastRaw = raw; btnRawChangeMs = now; }
   if (now - btnRawChangeMs < BTN_DEBOUNCE_MS) return;
 
@@ -2095,7 +2149,10 @@ static int request(const String& url, const char* body, String* response,
   } else {
     code = http.GET();
   }
-  if (response) *response = (code > 0) ? http.getString() : String();
+  if (response) {
+    // 204/304 carry no body; reading one makes mbedTLS log -76 on the closed socket
+    *response = (code > 0 && code != 204 && code != 304) ? http.getString() : String();
+  }
   http.end();
   return code;
 }
@@ -2461,7 +2518,7 @@ static bool fetchSnark(const Telemetry& t) {
   sys["role"] = "system";
   sys["content"] =
       "You are SniffMaster, a snarky home air-quality sensor with a tiny screen. "
-      "Write ONE sarcastic but accurate summary of this house's air, max 110 characters, "
+      "Write ONE sarcastic but accurate summary of this house's air, max 100 characters, "
       "plain ASCII, no emoji, no hashtags, no quotes. Use only the data given. "
       "If something is actually unhealthy, say so plainly first.";
   JsonObject usr = msgs.add<JsonObject>();
@@ -2543,6 +2600,7 @@ static bool sendSnapshot(const Telemetry& t) {
   doc["bsecCfg"]    = bsecCfgId;
   doc["bsecBundle"] = t.fullBundle ? "full" : "safe";
   doc["gasValid"]   = t.gasValid;
+  doc["bsecRestored"] = t.bsecRestored;   // calibration resumed from NVS this boot
   doc["runIn"]      = t.runIn ? 1 : 0;
   doc["stab"]       = t.stab ? 1 : 0;
   if (isfinite(t.rawTempC)) doc["tempRawC"] = roundf(t.rawTempC * 10) / 10.0f;
@@ -2680,11 +2738,13 @@ static void task(void*) {
       Telemetry t;
       SniffEvent sniff;
       bool sniffPending, pushReq;
+      uint32_t sniffGen;
       {
         LockGuard g;
         t = gTelem;
         sniff = gSniff;
         sniffPending = gSniffPending;
+        sniffGen = gSniffGen;
         pushReq = gPushRequested;
         gPushRequested = false;
       }
@@ -2701,8 +2761,9 @@ static void task(void*) {
         lastSniffAttemptMs = now;
         if (sendSniffEvent(sniff)) {
           lastSniffOkMs = millis();
+          // Only clear if no newer event was queued while this one uploaded
           LockGuard g;
-          gSniffPending = false;
+          if (gSniffGen == sniffGen) gSniffPending = false;
         }
       } else if (postDue) {
         lastPostAttemptMs = now;
@@ -2757,7 +2818,7 @@ static void task(void*) {
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  pinMode(BTN_PIN, INPUT_PULLUP);
+  for (uint8_t p : BTN_PINS) pinMode(p, INPUT_PULLUP);
 
   Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
@@ -2816,8 +2877,15 @@ void setup() {
 }
 
 // Retry the BSEC subscription once if no data ever arrives
+// BSEC health counters, reported (and reset) with the [LOOP] line
+static uint16_t bsecRunFail = 0, bsecTimingViol = 0;
+static int      bsecLastFailStatus = 0;
+
 static void bsecWatchdog(unsigned long now, bool ran) {
   if (!ran) {
+    bsecRunFail++;
+    bsecLastFailStatus = (int)envSensor.status;
+    if ((int)envSensor.status == (int)BSEC_W_SC_CALL_TIMING_VIOLATION) bsecTimingViol++;
     int bs = (int)envSensor.status, ms = (int)envSensor.sensor.status;
     if (bs != lastBsecStatusLog || ms != lastBmeStatusLog) {
       Serial.printf("[BSEC] run() issue: status=%d sensor=%d\n", bs, ms);
@@ -2965,8 +3033,11 @@ void loop() {
   const unsigned long took = millis() - now;
   if (took > loopMaxMs) loopMaxMs = took;
   if (now - lastLoopLogMs >= 10000UL) {
-    Serial.printf("[LOOP] max=%lums heap=%u minHeap=%u oledRecov=%u\n",
-                  loopMaxMs, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(), oledRecoveries);
+    Serial.printf("[LOOP] max=%lums heap=%u minHeap=%u oledRecov=%u bsecFail=%u timing=%u last=%d acc=%u runIn=%.0f stab=%.0f\n",
+                  loopMaxMs, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(), oledRecoveries,
+                  bsecRunFail, bsecTimingViol, bsecLastFailStatus, latestIAQAccuracy,
+                  latestRunInStatus, latestStabStatus);
+    bsecRunFail = bsecTimingViol = 0;
     loopMaxMs = 0;
     lastLoopLogMs = now;
   }

@@ -35,6 +35,10 @@ import {
 } from "../lib/store.js";
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import { buildHomeMetrics, mergeClimateHistory } from "../lib/homeAir.js";
+import { toGuestView, guestTopic } from "../lib/guest.js";
+import { analyzeCause } from "../lib/causes.js";
+import { toOledView } from "../lib/oled.js";
+import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
 import {
@@ -51,6 +55,17 @@ import {
 } from "../lib/thresholds.js";
 import { getCapeLaunches, getCached as getCachedLaunches, setCache as setCacheLaunches, fetchLaunches } from "../lib/launches.js";
 import { Redis } from "@upstash/redis";
+import { createHash } from "node:crypto";
+import { insightFacts, insightCacheKey, claudeInsights, fallbackInsights } from "../lib/insights.js";
+import {
+  RULES as SUBSCRIBER_RULES,
+  AlertError,
+  channelStatus,
+  loadSubscribers,
+  startSubscription,
+  confirmSubscription,
+  unsubscribe,
+} from "../lib/subscribers.js";
 
 // ── Shared helpers (identical across the merged files; defined once here) ──
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -778,15 +793,8 @@ async function officeStats(req, res) {
 // like the other dashboard GETs. Never returns any API key.
 const HOME_OUTDOOR_TTL_SEC = 15 * 60;
 
-async function homeStats(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Cache-Control", "no-store");
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
-
-  try {
+export async function buildHomePayload(triggersInput) {
+    const triggers = parseTriggers(triggersInput);
     // Full snapshots cover the last 24h. Mold (72h) and dust mites (7d) read
     // the compact 10-minute series, which survives after the full buffer rolls.
     const [latest, legacy, series] = await Promise.all([
@@ -794,7 +802,7 @@ async function homeStats(req, res) {
       getHistory(24 * 60),
       getHomeSeries(),
     ]);
-    if (!latest) return res.status(204).end();
+    if (!latest) return null;
     const history = mergeClimateHistory(series.coarse, legacy, series.fine);
 
     const lat = Number(latest.lat);
@@ -833,6 +841,12 @@ async function homeStats(req, res) {
     }
 
     const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
+    
+    const smell = analyzeSmell(latest, legacy);
+    const cause = analyzeCause(latest, legacy, { outdoor, pollen });
+    const withPollen = { ...metrics, pollen };
+    const outlook = allergyOutlook(withPollen, triggers, smell);
+    const ventilation = ventilationAdvice(withPollen, smell, triggers);
 
     // 24 h oldest→newest series for the trend sparklines.
     const dayAgo = Date.now() - 24 * 3600 * 1000;
@@ -850,18 +864,77 @@ async function homeStats(req, res) {
       pm25: pick((h) => h.pm25),
     };
 
-    return res.status(200).json({
+    return {
       mode: "home",
       receivedAt: latest.receivedAt || null,
       city: latest.city || "",
       located: haveLoc,
       ...metrics,
       pollen,
+      smell,
+      cause,
+      outlook,
+      ventilation,
       series: trend,
-    });
+    };
+}
+
+async function homeStats(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+
+  try {
+    const payload = await buildHomePayload(req.query?.triggers);
+    if (!payload) return res.status(204).end();
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("home-stats error:", err);
     return res.status(500).json({ error: "home-stats error" });
+  }
+}
+
+// ── oled ─────────────────────────────────────────────────────────────────
+// GET /api/oled — tiny pre-formatted status for the wall-mounted OLED:
+// smell state, likely cause + action, allergen level, outdoor pollen/AQI.
+// Device-sized (under ~700 bytes). Read-only like the other dashboard GETs.
+async function oled(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  try {
+    // A wall display near the cats cares about every household trigger.
+    const payload = await buildHomePayload("cat,dog,pollen,dustMite,mold,smoke");
+    if (!payload) return res.status(204).end();
+    return res.status(200).json(toOledView(payload));
+  } catch (err) {
+    console.error("oled error:", err);
+    return res.status(500).json({ error: "oled error" });
+  }
+}
+
+// ── guest ────────────────────────────────────────────────────────────────
+// GET /api/guest — public, read-only view for visitors. Same analysis as the
+// Home tab but trimmed to what a guest needs: no location, city, coordinates,
+// device details or occupancy. Also returns the push-alert topic to follow.
+async function guest(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  try {
+    const payload = await buildHomePayload(req.query?.triggers);
+    if (!payload) return res.status(204).end();
+    return res.status(200).json(toGuestView(payload, { topic: guestTopic() }));
+  } catch (err) {
+    console.error("guest error:", err);
+    return res.status(500).json({ error: "guest error" });
   }
 }
 
@@ -869,7 +942,7 @@ async function homeStats(req, res) {
 // GET /api/sniff-stream — lightweight SSE stream for the latest sulfur/VSC
 // priority event. Polls Redis for up to 25 seconds, then the browser reconnects.
 const STREAM_WINDOW_MS = 25000;
-const POLL_MS = 1500;
+const POLL_MS = 10000; // was 1500ms (~57K Redis cmds/day per open tab); only /classic uses this stream now
 const HEARTBEAT_MS = 10000;
 
 function sleep(ms) {
@@ -1388,6 +1461,154 @@ async function reportCard(req, res) {
   }
 }
 
+// ── insights ─────────────────────────────────────────────────────────────
+// GET /api/insights — friendly briefing for the dashboard's front page.
+// Claude writes it when ANTHROPIC_API_KEY is set (see lib/insights.js); the
+// result is cached per bucketed room state so a busy page costs one call per
+// ~20 minutes of meaningful change, not one per visitor.
+const INSIGHTS_TTL_SEC = 20 * 60;
+
+async function insights(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=60, stale-while-revalidate=300");
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  try {
+    const home = await buildHomePayload("");
+    if (!home) return res.status(204).end();
+    const latest = await getLatest();
+    let weather = null;
+    try {
+      const hit = await getJsonCache("insights-weather");
+      weather = hit || (await fetchForecastAndCurrent(getEffectiveLocation(latest)));
+      if (!hit && weather) await setJsonCache("insights-weather", weather, 30 * 60);
+    } catch (err) {
+      console.error("insights: forecast failed:", err?.message || err);
+    }
+    const facts = insightFacts(home, latest, weather);
+    const key = `insights:${createHash("sha256").update(insightCacheKey(facts)).digest("hex").slice(0, 20)}`;
+    let out = await getJsonCache(key);
+    if (!out) {
+      out = (await claudeInsights(facts)) || fallbackInsights(facts);
+      out.generatedAt = Date.now();
+      await setJsonCache(key, out, out.source === "claude" ? INSIGHTS_TTL_SEC : 120);
+    }
+    return res.status(200).json({ ...out, receivedAt: home.receivedAt, aiConfigured: Boolean(process.env.ANTHROPIC_API_KEY) });
+  } catch (err) {
+    console.error("insights error:", err);
+    return res.status(500).json({ error: "insights error" });
+  }
+}
+
+// ── sensors ──────────────────────────────────────────────────────────────
+// GET /api/sensors?range=1h|6h|24h|7d — every BME688 / BSEC channel as
+// downsampled column arrays for the detail charts, plus the latest snapshot.
+// 1h–24h read the full 1-minute snapshot buffer; 7d reads the compact
+// 10-minute climate series (temperature, humidity, CO2, IAQ only).
+const SENSOR_FIELDS = ["iaq", "staticIaq", "voc", "dVoc", "co2", "tempF", "humidity", "pressHpa", "gasR", "compGas", "gasPct", "airScore", "iaqAcc", "pm25", "pm10"];
+const RANGE_MIN = { "1h": 60, "6h": 360, "24h": 1440 };
+
+function bucketMean(rows, maxPoints, pickers) {
+  const step = Math.max(1, Math.ceil(rows.length / maxPoints));
+  const out = { t: [] };
+  for (const k of Object.keys(pickers)) out[k] = [];
+  for (let i = 0; i < rows.length; i += step) {
+    const chunk = rows.slice(i, i + step);
+    out.t.push(Math.round(chunk.reduce((a, r) => a + Number(r.receivedAt ?? r.t), 0) / chunk.length));
+    for (const [k, pick] of Object.entries(pickers)) {
+      const vals = chunk.map(pick).filter((v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v))).map(Number);
+      out[k].push(vals.length ? Math.round((vals.reduce((a, v) => a + v, 0) / vals.length) * 100) / 100 : null);
+    }
+  }
+  return out;
+}
+
+async function sensors(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  const range = ["1h", "6h", "24h", "7d"].includes(req.query?.range) ? req.query.range : "6h";
+  try {
+    const latest = await getLatest();
+    if (!latest) return res.status(204).end();
+    let series;
+    let odors = null;
+    if (range === "7d") {
+      const { coarse } = await getHomeSeries();
+      const rows = [...coarse].sort((a, b) => a.t - b.t);
+      series = bucketMean(rows, 336, {
+        tempF: (r) => (Number.isFinite(Number(r.tc)) ? (r.tc * 9) / 5 + 32 : null),
+        humidity: (r) => r.rh,
+        co2: (r) => r.co2,
+        iaq: (r) => r.iaq,
+        pm25: (r) => r.pm25,
+      });
+    } else {
+      const cutoff = Date.now() - RANGE_MIN[range] * 60 * 1000;
+      const rows = (await getHistory(RANGE_MIN[range] + 30)).filter((r) => Number(r.receivedAt) >= cutoff).reverse();
+      const pickers = Object.fromEntries(SENSOR_FIELDS.map((k) => [k, (r) => r[k]]));
+      series = bucketMean(rows, 240, pickers);
+      // Odor classifier scores, same buckets, for the smell heatmap.
+      const step = Math.max(1, Math.ceil(rows.length / 240));
+      odors = [];
+      for (let i = 0; i < rows.length; i += step) {
+        const chunk = rows.slice(i, i + step).filter((r) => Array.isArray(r.odors));
+        odors.push(chunk.length ? Array.from({ length: 20 }, (_, j) => Math.round(Math.max(...chunk.map((r) => Number(r.odors[j]) || 0)))) : null);
+      }
+    }
+    return res.status(200).json({ range, latest, series, odors });
+  } catch (err) {
+    console.error("sensors error:", err);
+    return res.status(500).json({ error: "sensors error" });
+  }
+}
+
+// ── alerts ───────────────────────────────────────────────────────────────
+// GET  /api/alerts               → which channels work + the rule catalogue
+// GET  /api/alerts?unsub=<token> → one-tap unsubscribe (HTML page)
+// POST /api/alerts {action:"subscribe", channel, address, rules}
+// POST /api/alerts {action:"verify", id, code}
+async function alerts(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "GET" && req.query?.unsub) {
+    let ok = false;
+    try {
+      ok = await unsubscribe(req.query.unsub);
+    } catch (err) {
+      console.error("alerts unsubscribe:", err);
+    }
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SniffMaster alerts</title>
+<body style="font:16px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;display:grid;place-items:center;min-height:90vh;margin:0;padding:16px">
+<div style="max-width:420px;text-align:center"><h1 style="font-size:22px">${ok ? "You're unsubscribed" : "Already unsubscribed"}</h1>
+<p style="color:#9aa7b8">${ok ? "You won't get any more SniffMaster alerts." : "That link has already been used or has expired."}</p>
+<p><a href="/#/alerts" style="color:#7cc4ff">Back to the dashboard</a></p></div></body>`);
+  }
+  if (req.method === "GET") {
+    const subs = await loadSubscribers().catch(() => []);
+    return res.status(200).json({
+      channels: channelStatus(),
+      subscriberCount: subs.filter((s) => s.verified).length,
+      rules: Object.fromEntries(Object.entries(SUBSCRIBER_RULES).map(([k, r]) => [k, { label: r.label, unit: r.unit, dir: r.dir, def: r.def, min: r.min, max: r.max }])),
+    });
+  }
+  if (req.method !== "POST") return res.status(405).json({ error: "GET or POST" });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const ip = String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
+  try {
+    if (body.action === "subscribe") {
+      return res.status(200).json(await startSubscription({ channel: body.channel, address: body.address, rules: body.rules, ip }));
+    }
+    if (body.action === "verify") {
+      return res.status(200).json(await confirmSubscription({ id: body.id, code: body.code }));
+    }
+    return res.status(400).json({ error: "Unknown action." });
+  } catch (err) {
+    if (err instanceof AlertError) return res.status(err.status).json({ error: err.message });
+    console.error("alerts error:", err);
+    return res.status(500).json({ error: "Something went wrong. Try again in a minute." });
+  }
+}
+
 // ── dispatcher ───────────────────────────────────────────────────────────
 const ROUTES = {
   apod,
@@ -1396,10 +1617,15 @@ const ROUTES = {
   "occupancy-briefing": occupancyBriefing,
   "office-stats": officeStats,
   "home-stats": homeStats,
+  guest,
+  oled,
   "sniff-stream": sniffStream,
   "weather-briefing": weatherBriefing,
   settings,
   "report-card": reportCard,
+  insights,
+  sensors,
+  alerts,
 };
 
 export default async function handler(req, res) {
