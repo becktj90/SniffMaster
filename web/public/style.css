@@ -5290,3 +5290,16 @@ body *::after {
   .hm-visitor-copy, .hm-drivers { min-width: 0; flex-basis: 100%; }
 }
 #card-home { grid-column: 1 / -1; min-width: 0; }
+
+/* Home: smell + sensitivities */
+.hm-now-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.hm-now-block h3{margin:6px 0 8px;font-size:1.15rem;line-height:1.3}
+.hm-now-meta{font-weight:700;margin-bottom:6px}
+.hm-action{margin:8px 0;padding:8px 10px;border-left:3px solid currentColor;background:rgba(255,255,255,.05);border-radius:6px;font-size:.92rem}
+.hm-action-safety{border-left-width:5px;font-weight:700}
+.hm-vent{margin-top:12px;padding:10px 12px;border-radius:8px;background:rgba(255,255,255,.05)}
+.hm-triggers{margin-bottom:8px}
+.hm-trig{cursor:pointer;border:1px solid rgba(255,255,255,.25);background:transparent;color:inherit;font:inherit;padding:6px 12px}
+.hm-trig.is-on{background:rgba(120,201,255,.25);border-color:#78c9ff;font-weight:700}
+.hm-trig-row{margin:10px 0}
+.hm-trig-row small{opacity:.7}

@@ -85,7 +85,6 @@
           </div>
         </div>
         <div class="topbar-actions">
-          <button class="chrome-btn" id="trajectory-launch-btn" type="button">Gatornauts</button>
           <button class="chrome-btn accent" id="manual-refresh-btn" type="button">Refresh Now</button>
         </div>
       </div>
@@ -94,12 +93,11 @@
 
   <div class="section-shell">
     <nav class="section-nav" aria-label="Dashboard sections">
-      <button class="section-btn is-active" type="button" data-view-target="dashboard">Overview</button>
+      <button class="section-btn" type="button" data-view-target="dashboard">Overview</button>
       <button class="section-btn" type="button" data-view-target="environment">Local Area</button>
       <button class="section-btn" type="button" data-view-target="analysis">Air &amp; Signal</button>
       <button class="section-btn" type="button" data-view-target="household">Home</button>
       <button class="section-btn" type="button" data-view-target="history">Trends</button>
-      <button class="section-btn" type="button" data-view-target="space">Space</button>
       <button class="section-btn" type="button" data-view-target="system">System</button>
     </nav>
   </div>
@@ -312,20 +310,6 @@
       </div>
     </section>
 
-    <section class="card bro-card" id="card-bro" data-view="analysis">
-      <div class="card-header">
-        <span>Room Read</span>
-        <span class="header-pill" id="bro-badge">Stand by</span>
-      </div>
-      <div class="bro-summary-shell">
-        <div class="bro-kicker">Current Conditions</div>
-        <div class="bro-summary" id="bro-summary">A straight read on the room will show up here once live data is flowing.</div>
-      </div>
-      <details class="bro-details" open>
-        <summary>Full readout</summary>
-        <div id="bro-report" class="bro-report-shell">A full room readout will appear here once the device has enough data to react to.</div>
-      </details>
-    </section>
 
     <section class="card" id="card-intel" data-view="analysis">
       <div class="card-header">
@@ -498,62 +482,7 @@
       <div class="source-caption">Source: <a href="https://www.bosch-sensortec.com/products/environmental-sensors/gas-sensors/bme688/" target="_blank" rel="noopener noreferrer">Bosch BME688</a> device telemetry · <a href="https://www.bosch-sensortec.com/software-tools/software/bme688-software/" target="_blank" rel="noopener noreferrer">BSEC2</a>-derived proxies · local comfort, cognition, and persistence heuristics</div>
     </section>
 
-    <section class="card orbital-card" id="card-space" data-view="space">
-      <div class="card-header">
-        <span>Space Coast Launch Deck</span>
-        <span class="header-pill" id="launch-badge">No launch feed</span>
-      </div>
-      <div class="space-hero">
-        <div class="space-radar" aria-hidden="true">
-          <div class="space-radar-ring is-outer"></div>
-          <div class="space-radar-ring is-mid"></div>
-          <div class="space-radar-ring is-inner"></div>
-          <div class="space-radar-track"></div>
-          <div class="space-marker space-history-marker" id="space-history-marker"></div>
-          <div class="space-marker space-launch-marker" id="space-launch-marker"></div>
-          <div class="space-core"></div>
-        </div>
-        <div class="space-hero-copy">
-          <div class="space-kicker">Cape Snapshot</div>
-          <div class="space-title" id="space-title">Waiting for Cape launch data...</div>
-          <p class="space-sub" id="space-sub">Next launch timing and daybook context will appear here with the next live snapshot.</p>
-          <div class="space-stat-row">
-            <div class="space-stat">
-              <span class="space-stat-label">Next Window</span>
-              <span class="space-stat-value" id="space-stat-window">--</span>
-            </div>
-            <div class="space-stat">
-              <span class="space-stat-label">This Year</span>
-              <span class="space-stat-value" id="space-stat-count">--</span>
-            </div>
-            <div class="space-stat">
-              <span class="space-stat-label">History Mark</span>
-              <span class="space-stat-value" id="space-stat-history">--</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="report-stack" id="space-report">
-        <div class="report-empty">Waiting for Cape launch data...</div>
-      </div>
-      <div class="launch-stack" id="launch-stack"></div>
-      <div class="source-caption">Source: <a href="https://www.rocketlaunch.live/" target="_blank" rel="noopener noreferrer">RocketLaunch.Live</a> · Cape launch manifest · curated Space Coast daybook</div>
-    </section>
 
-    <section class="card apod-card" id="card-history" data-view="space">
-      <div class="card-header">
-        <span>Astronomy Picture of the Day</span>
-        <span class="header-pill" id="history-badge">NASA APOD</span>
-      </div>
-      <div class="apod-date" id="apod-date">Loading today's picture...</div>
-      <div class="apod-title" id="apod-title">Astronomy Picture of the Day</div>
-      <div class="apod-image-wrap" id="apod-image-wrap">
-        <div class="apod-placeholder">Today's astronomy image is loading.</div>
-      </div>
-      <p class="apod-explanation" id="apod-explanation">NASA's Astronomy Picture of the Day will appear here.</p>
-      <div class="apod-copyright" id="apod-copyright"></div>
-      <div class="source-caption">Source: <a href="https://apod.nasa.gov/apod/" target="_blank" rel="noopener noreferrer">NASA Astronomy Picture of the Day</a> · <a href="https://api.nasa.gov/" target="_blank" rel="noopener noreferrer">NASA Open APIs</a></div>
-    </section>
 
     <section class="card" id="card-occupancy" data-view="analysis">
       <div class="card-header">
@@ -1045,188 +974,12 @@
       <div class="source-caption">Source: device snapshots · priority odor events · relay history in Upstash Redis</div>
     </section>
 
-    <section class="card system-card" id="card-specs" data-view="system">
-      <div class="card-header">
-        <span>Technical Specifications</span>
-      </div>
-      <p class="card-summary">Key engineering parameters for the SniffMaster Pro v4.0 sensing platform.</p>
-      <div style="overflow-x:auto">
-      <table class="access-table">
-        <thead><tr><th>Parameter</th><th>Value</th><th>Notes</th></tr></thead>
-        <tbody>
-          <tr><td>MCU</td><td>ESP32-S3 @ 240 MHz</td><td>Dual-core Xtensa LX7, 512 KB SRAM, 8 MB Flash</td></tr>
-          <tr><td>Sensor</td><td>Bosch BME688</td><td>Temp/RH/Pressure + MOX gas element, I2C @ 0x76</td></tr>
-          <tr><td>Display</td><td>SSD1306 128×64 OLED</td><td>I2C @ 0x3C, 7 auto-cycling pages + special modes</td></tr>
-          <tr><td>Sample Rate</td><td>LP: 3s / ULP: 300s</td><td>BSEC2 low-power mode for continuous monitoring</td></tr>
-          <tr><td>IAQ Range</td><td>0–500</td><td>Bosch BSEC2 composite index, accuracy 0–3</td></tr>
-          <tr><td>VOC Range</td><td>0.5–50+ ppm eq.</td><td>Breath VOC equivalent, EMA-smoothed</td></tr>
-          <tr><td>Gas Resistance</td><td>10 kΩ – 2 MΩ</td><td>MOX response: low R = reducing gases, high R = clean air</td></tr>
-          <tr><td>Odor Channels</td><td>12 base + 8 derived</td><td>SmellNet TFLite model + cross-correlation post-processing</td></tr>
-          <tr><td>ML Model</td><td>SmellNet v1 (TFLite)</td><td>7-feature input, 12-class output, ~4 KB quantized</td></tr>
-          <tr><td>Connectivity</td><td>WiFi 802.11 b/g/n</td><td>Multi-SSID failover, HTTPS to Vercel + OpenAI + AIO</td></tr>
-          <tr><td>Power</td><td>USB-C 5V, ~100 mA active</td><td>WiFi + sensor + OLED + buzzer</td></tr>
-          <tr><td>Stack Size</td><td>16 KB loop task</td><td>Increased from 8 KB default for HTTPS + JSON payloads</td></tr>
-        </tbody>
-      </table>
-      </div>
-    </section>
 
-    <section class="card system-card" id="card-method" data-view="system">
-      <div class="card-header">
-        <span>Detection Pipeline</span>
-      </div>
-      <p class="card-summary">How raw signals become room-level classifications and scores.</p>
-      <details class="microcopy" open>
-        <summary>Signal processing chain</summary>
-        <p><strong>I2C acquisition:</strong> the XIAO ESP32-S3 polls the Bosch BME688 over I2C for gas resistance, temperature, humidity, and pressure at the BSEC2 sample rate.</p>
-        <p><strong>BSEC2 virtual sensors:</strong> Bosch's proprietary library derives IAQ (0–500), VOC equivalent (ppm), CO2 equivalent, stabilization status, and calibration accuracy from raw resistance patterns.</p>
-        <p><strong>EMA smoothing:</strong> VOC readings pass through an exponential moving average filter to suppress single-sample noise while preserving rapid events like farts or cooking.</p>
-        <p><strong>SmellNet classification:</strong> A TensorFlow Lite model trained with Bosch AI-Studio on labeled gas-response patterns scores 12 odor channels simultaneously (fart, cooking, alcohol, smoke, perfume, etc.).</p>
-        <p><strong>Cross-correlation:</strong> Post-processor resolves misclassification by checking gasR patterns, CO2 correlation, humidity, and timing context against each odor hypothesis.</p>
-        <p><strong>Home baseline:</strong> Device builds an EMA of quiet indoor readings over time. False positives are suppressed by comparing current readings against the learned home profile.</p>
-        <p><strong>Composite scoring:</strong> Room Quality Score (0–100) fuses IAQ, VOC, CO2, humidity, odor detections, and outdoor AQI into a single actionable number.</p>
-      </details>
-    </section>
 
-    <section class="card system-card" id="card-pseudocode" data-view="system">
-      <div class="card-header">
-        <span>Sensor Pipeline Pseudocode</span>
-      </div>
-      <p class="card-summary">Simplified logic flow for the main sensing loop running on the ESP32.</p>
-      <pre class="pseudocode"><code>// ── SniffMaster Pro v4.0 Main Loop ──────────────────────
 
-loop():
-  handleButton()                    // gesture state machine
-  bsecRan = envSensor.run()         // poll BME688 via BSEC2
-  melTick()                         // background melody engine
-  maintainWiFi()                    // multi-SSID failover
-  pollPortalCommand()               // check for remote actions
 
-  if newDataReady:
-    // ── Raw → Derived ──
-    vocSmooth = pushAndSmooth(vocRaw)     // EMA filter
-    tier      = smellTier(vocSmooth)      // 0-5 severity
-    scores[]  = scoreOdors(voc, iaq, co2, // SmellNet inference
-                           temp, hum, gasR, dVoc)
 
-    // ── Post-processing ──
-    correctOdorScores(scores, gasR, co2)  // cross-correlation
-    updateHomeBaseline(readings)          // learn quiet indoor
-    applyHomeMlTuning(scores, baseline)   // suppress false pos
-    deriveExpandedOdors(scores, context)  // 8 derived families
-    stabilizePrimaryOdor(scores)          // 2-sample persistence
 
-    // ── Composite assessment ──
-    airScore = computeAirScore(iaq, voc, co2,
-                               hum, scores, outdoorAqi)
-
-    // ── Event detection ──
-    if fartSpike(scores, dVoc, gasR):
-      fartCount++; playAlert(); pushEvent()
-    if dVocSpike or airScoreJump:
-      playOdorChangeMelody(oldTier, newTier)
-
-    // ── Cloud sync (gated by RSSI) ──
-    if pendingAiFetch and rssi > -82:
-      fetchGPTSassyMsg(snapshot)          // 5-15s HTTPS POST
-    if webPostDue:
-      sendToWebDashboard(snapshot)        // Vercel + Upstash
-
-    // ── Display ──
-    renderPage(displayPage)               // 7 auto-cycling pages</code></pre>
-    </section>
-
-    <section class="card system-card" id="card-confidence" data-view="system">
-      <div class="card-header">
-        <span>Signal Confidence Model</span>
-      </div>
-      <ul class="system-list">
-        <li><strong>Direct measurement (high confidence):</strong> temperature (±1°C), humidity (±3% RH), pressure (±1 hPa), gas resistance (relative)</li>
-        <li><strong>BSEC2 derived (medium-high):</strong> IAQ (calibration-dependent, accuracy 0–3), VOC equivalent, CO2 equivalent, stabilization status</li>
-        <li><strong>ML classifier (medium):</strong> 12 odor channels scored 0–100%, cross-correlated with gasR/CO2/timing, 2-sample persistence filter</li>
-        <li><strong>Composite scores (medium):</strong> Room Quality (0–100), CFI ventilation index, smell tier (0–5) — fuses multiple signals</li>
-        <li><strong>AI commentary (low-medium):</strong> GPT-generated environmental analysis — entertaining but not a measurement</li>
-        <li><strong>Experimental (low):</strong> breath screening — novelty feature</li>
-      </ul>
-    </section>
-
-    <section class="card system-card" id="card-architecture" data-view="system">
-      <div class="card-header">
-        <span>System Architecture</span>
-      </div>
-      <p class="card-summary">Data flow from sensor to dashboard.</p>
-      <pre class="pseudocode"><code>┌─────────────┐    I2C     ┌──────────────┐
-│  BME688     │───────────→│  ESP32-S3    │
-│  Gas/Env    │  0x76      │  BSEC2 +     │
-│  Sensor     │            │  SmellNet ML │
-└─────────────┘            └──────┬───────┘
-                                  │
-                    ┌─────────────┼─────────────┐
-                    │             │             │
-              ┌─────▼─────┐ ┌────▼────┐ ┌─────▼─────┐
-              │  SSD1306  │ │ Buzzer  │ │   WiFi    │
-              │  OLED     │ │ Melody  │ │   HTTPS   │
-              │  128×64   │ │ Engine  │ │   Relay   │
-              └───────────┘ └─────────┘ └─────┬─────┘
-                                              │
-                          ┌───────────────────┼────────┐
-                          │                   │        │
-                    ┌─────▼─────┐  ┌──────────▼──┐ ┌──▼───┐
-                    │  OpenAI   │  │   Vercel    │ │ AIO  │
-                    │  GPT-4    │  │   + Upstash │ │ MQTT │
-                    │  Analysis │  │   Dashboard │ │      │
-                    └───────────┘  └─────────────┘ └──────┘</code></pre>
-    </section>
-
-    <section class="card system-card" id="card-usecases" data-view="system">
-      <div class="card-header">
-        <span>Applications</span>
-      </div>
-      <ul class="system-list">
-        <li><strong>Indoor air quality:</strong> continuous IAQ/VOC/CO2 monitoring with trend analysis and ventilation recommendations</li>
-        <li><strong>Occupancy sensing:</strong> CO2 accumulation rate for meeting-room vitality assessment</li>
-        <li><strong>HVAC diagnostics:</strong> room-to-room comparison of ventilation effectiveness using CFI and VTR indices</li>
-        <li><strong>Odor classification:</strong> real-time 12-channel odor scoring with cross-correlation and home baseline suppression</li>
-        <li><strong>Event detection:</strong> sub-second response to rapid VOC spikes (cooking, cleaning products, biological events)</li>
-        <li><strong>Research platform:</strong> custom odor training via Bosch AI-Studio, labeled data export, ML model iteration</li>
-      </ul>
-    </section>
-
-    <section class="card system-card" id="card-theme" data-view="system">
-      <div class="card-header">
-        <span>Theme Studio</span>
-        <span class="header-pill" id="theme-badge">Obsidian Lab</span>
-      </div>
-      <p class="card-summary">Switch between the refined HUD and a deliberately flashy early-90s workstation skin.</p>
-      <div class="theme-shell">
-        <div class="theme-switch-row">
-          <div class="theme-switch-copy">
-            <div class="theme-switch-title" id="theme-current-title">Obsidian Lab</div>
-            <div class="theme-switch-note" id="theme-current-note">Refined dark HUD with cyan telemetry, crisp hierarchy, and fast scan readability.</div>
-          </div>
-          <label class="theme-switch" for="theme-retro-toggle">
-            <input id="theme-retro-toggle" type="checkbox" role="switch" aria-label="Toggle Retro 90s theme">
-            <span class="theme-switch-track" aria-hidden="true">
-              <span class="theme-switch-thumb"></span>
-            </span>
-            <span class="theme-switch-label" id="theme-current-tag">Default mode active</span>
-          </label>
-        </div>
-        <div class="theme-preview-grid" id="theme-preview-panel" data-theme="obsidian">
-          <div class="theme-preview-card is-primary">
-            <div class="theme-preview-kicker">Current look</div>
-            <div class="theme-preview-title">Obsidian Lab</div>
-            <div class="theme-preview-note">Dark glass, cyan telemetry, and cleaner contrast.</div>
-          </div>
-          <div class="theme-preview-card is-retro">
-            <div class="theme-preview-kicker">Alternate look</div>
-            <div class="theme-preview-title">Retro '92</div>
-            <div class="theme-preview-note">Teal, magenta, chrome, and a confident early-90s workstation attitude.</div>
-          </div>
-        </div>
-      </div>
-      <div class="theme-status" id="theme-status">Current portal theme: Obsidian Lab.</div>
-    </section>
 
     <section class="card system-card" id="card-controls" data-view="system">
       <div class="card-header">
@@ -1304,61 +1057,6 @@ loop():
       </div>
     </section>
   </main>
-
-  <div class="arcade-overlay" id="trajectory-overlay" hidden aria-hidden="true">
-    <button class="arcade-close-x" id="trajectory-close-x" type="button" aria-label="Close game">&times;</button>
-    <div class="arcade-backdrop" id="trajectory-backdrop"></div>
-    <section class="arcade-shell" role="dialog" aria-modal="true" aria-labelledby="trajectory-title">
-      <div class="arcade-head">
-        <div>
-          <div class="arcade-kicker">Hidden Mission</div>
-          <h2 class="arcade-title" id="trajectory-title">Gatornauts</h2>
-          <p class="arcade-subtitle">Escape velocity required. Navigate Kessler fields. Evade xenobio entities.</p>
-        </div>
-        <div class="arcade-head-actions">
-          <button class="chrome-btn" id="trajectory-restart-btn" type="button">Restart mission</button>
-          <button class="chrome-btn" id="trajectory-close-btn" type="button">Close</button>
-        </div>
-      </div>
-
-      <div class="arcade-cabinet">
-        <div class="arcade-screen-shell">
-          <canvas id="trajectory-canvas" width="960" height="640" aria-label="Trajectory hidden arcade game"></canvas>
-          <div class="arcade-scanlines" aria-hidden="true"></div>
-          <div class="arcade-glow" aria-hidden="true"></div>
-        </div>
-
-        <div class="arcade-sidecar">
-          <div class="arcade-panel">
-            <div class="arcade-panel-kicker">Mission Brief</div>
-            <div class="arcade-panel-copy" id="trajectory-brief">
-              Initiate suborbital escape sequence. Navigate Kessler debris fields. Anomalous xenobiological entities patrol the periapsis gap — evasive Δv maneuvers required!
-            </div>
-          </div>
-          <div class="arcade-panel">
-            <div class="arcade-panel-kicker">Controls</div>
-            <div class="arcade-control-list">
-              <div><strong>Left / Right:</strong> lateral Δv</div>
-              <div><strong>↑ / Space:</strong> Δv burn burst</div>
-              <div><strong>Z / X:</strong> laser cannon</div>
-              <div><strong>Enter:</strong> relaunch</div>
-            </div>
-          </div>
-          <div class="arcade-panel">
-            <div class="arcade-panel-kicker">Telemetry</div>
-            <div class="arcade-telemetry" id="trajectory-mission-status">Mission screen standing by.</div>
-          </div>
-        </div>
-      </div>
-
-    </section>
-    <div class="arcade-mobile-controls" id="trajectory-mobile-controls">
-      <button class="arcade-touch-btn" type="button" data-trajectory-action="left">← Left</button>
-      <button class="arcade-touch-btn thrust" type="button" data-trajectory-action="boost">Boost</button>
-      <button class="arcade-touch-btn fire" type="button" data-trajectory-action="fire">🔫 Fire</button>
-      <button class="arcade-touch-btn" type="button" data-trajectory-action="right">Right →</button>
-    </div>
-  </div>
 
   <footer class="footer-bar">
     <span id="last-update">No data yet</span>

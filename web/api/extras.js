@@ -35,6 +35,7 @@ import {
 } from "../lib/store.js";
 import { buildReportCardSvg, renderReportCardPng } from "../lib/reportCard.js";
 import { buildHomeMetrics, mergeClimateHistory } from "../lib/homeAir.js";
+import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
 import {
@@ -833,6 +834,11 @@ async function homeStats(req, res) {
     }
 
     const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
+    const triggers = parseTriggers(req.query?.triggers);
+    const smell = analyzeSmell(latest, legacy);
+    const withPollen = { ...metrics, pollen };
+    const outlook = allergyOutlook(withPollen, triggers, smell);
+    const ventilation = ventilationAdvice(withPollen, smell, triggers);
 
     // 24 h oldest→newest series for the trend sparklines.
     const dayAgo = Date.now() - 24 * 3600 * 1000;
@@ -857,6 +863,9 @@ async function homeStats(req, res) {
       located: haveLoc,
       ...metrics,
       pollen,
+      smell,
+      outlook,
+      ventilation,
       series: trend,
     });
   } catch (err) {
