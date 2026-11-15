@@ -248,3 +248,28 @@ test("ventilation: do not open windows into high pollen for a pollen-allergic us
   assert.equal(ventilationAdvice(m, null, []).action, "open");
   assert.equal(ventilationAdvice({ ...m, outdoor: { usAqi: 160 } }, null, []).action, "keep-closed");
 });
+
+test("ventilation: reasons name the readings behind the verdict", () => {
+  const m = { gases: { co2: 1400 }, pollen, climate: { humidity: 40 }, indoorOutdoor: {}, outdoor: { usAqi: 40 } };
+  const filter = ventilationAdvice(m, null, ["pollen"]);
+  assert.deepEqual(filter.reasons.map((r) => r.label), ["Indoor CO₂", "Pollen outside", "Outdoor AQI"]);
+  assert.deepEqual(filter.reasons.map((r) => r.tone), ["poor", "poor", "good"]);
+  assert.equal(filter.reasons[0].value, "1,400 ppm");
+
+  const open = ventilationAdvice(m, null, []);
+  assert.deepEqual(open.reasons.map((r) => r.label), ["Indoor CO₂", "Outdoor AQI"]);
+
+  const shut = ventilationAdvice({ ...m, outdoor: { usAqi: 160 } }, null, []);
+  assert.deepEqual(shut.reasons.map((r) => r.label), ["Outdoor AQI", "Indoor CO₂"]);
+
+  const fan = ventilationAdvice({ ...m, climate: { humidity: 60 }, indoorOutdoor: { absHumidityDelta: -5 } }, null, []);
+  assert.equal(fan.action, "fan");
+  assert.deepEqual(fan.reasons.map((r) => r.label), ["Indoor CO₂", "Outdoor moisture"]);
+
+  const clear = ventilationAdvice({ gases: { co2: 620 }, pollen: { ok: false }, climate: { humidity: 40 }, indoorOutdoor: {}, outdoor: { usAqi: 30 } }, null, []);
+  assert.equal(clear.action, "none");
+  assert.ok(clear.reasons.every((r) => r.tone === "good"));
+
+  // No data at all: still a safe default, but no invented reasons.
+  assert.deepEqual(ventilationAdvice({}, null, []).reasons, []);
+});

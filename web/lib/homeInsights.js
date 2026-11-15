@@ -572,7 +572,11 @@ export function allergyOutlook(metrics, triggers, smell = null, severities = {})
 
 // ── Windows: open or closed? ───────────────────────────────────────────────
 
-/** One clear recommendation using indoor state, outdoor air and pollen. */
+/** One clear recommendation using indoor state, outdoor air and pollen.
+ * Returns the verdict plus the readings behind it, so the dashboard can
+ * show why — every reason is a real reading, toned against the same
+ * thresholds the verdict uses. A missing reading simply leaves its reason
+ * out; nothing is ever guessed. */
 export function ventilationAdvice(metrics, smell, triggers = []) {
   const m = metrics || {};
   const wantsPollen = parseTriggers(triggers).includes("pollen");
@@ -580,17 +584,40 @@ export function ventilationAdvice(metrics, smell, triggers = []) {
   const pollenHigh = pol && pol.score >= 4;
   const aq = m.outdoor?.usAqi;
   const outdoorBad = Number.isFinite(aq) && aq >= 101;
-  const indoorStale = (m.gases?.co2 ?? 0) >= 1000 || smell?.smellsBad || (m.gases?.iaq ?? 0) >= 150;
+  const co2 = m.gases?.co2;
+  const iaq = m.gases?.iaq;
+  const indoorStale = (co2 ?? 0) >= 1000 || smell?.smellsBad || (iaq ?? 0) >= 150;
   const ahDelta = m.indoorOutdoor?.absHumidityDelta;
   const outdoorWet = Number.isFinite(ahDelta) && ahDelta < -3 && (m.climate?.humidity ?? 0) >= 55;
 
-  if (outdoorBad) return { action: "keep-closed", text: `Keep windows shut: outdoor air is ${Math.round(aq)} AQI.` };
+  const co2Reason = () => Number.isFinite(co2)
+    ? { label: "Indoor CO₂", value: `${Math.round(co2).toLocaleString("en-US")} ppm`, tone: co2 >= 1000 ? "poor" : "good", note: co2 >= 1000 ? "Stale" : "Fresh" }
+    : null;
+  const iaqReason = () => Number.isFinite(iaq) && iaq >= 150
+    ? { label: "Indoor IAQ", value: String(Math.round(iaq)), tone: "poor", note: "Poor" }
+    : null;
+  const smellReason = () => smell?.smellsBad
+    ? { label: "Smell indoors", value: "Detected", tone: "poor", note: "Detected" }
+    : null;
+  const staleReason = () => (Number.isFinite(co2) && co2 >= 1000 ? co2Reason() : null) || iaqReason() || smellReason();
+  const aqiReason = () => Number.isFinite(aq)
+    ? { label: "Outdoor AQI", value: String(Math.round(aq)), tone: aq >= 101 ? "poor" : "good", note: aq >= 101 ? "Dirty" : "Clean" }
+    : null;
+  const pollenReason = () => pol
+    ? { label: "Pollen outside", value: pol.category ? `${pol.name} · ${pol.category}` : `${pol.name} · score ${pol.score}`, tone: pol.score >= 4 ? "poor" : "good", note: pol.score >= 4 ? "High" : "Low" }
+    : null;
+  const wetReason = () => Number.isFinite(ahDelta)
+    ? { label: "Outdoor moisture", value: `${Math.abs(ahDelta).toFixed(1)} g/m³ more than inside`, tone: "fair", note: "Wetter" }
+    : null;
+  const some = (...rs) => rs.filter(Boolean).slice(0, 3);
+
+  if (outdoorBad) return { action: "keep-closed", text: `Keep windows shut: outdoor air is ${Math.round(aq)} AQI.`, reasons: some(aqiReason(), staleReason()) };
   if (indoorStale && (pollenHigh && wantsPollen)) {
-    return { action: "filter", text: `Air inside is stale but ${pol.name} pollen is high outside. Run the fan with a HEPA filter instead of opening windows.` };
+    return { action: "filter", text: `Air inside is stale but ${pol.name} pollen is high outside. Run the fan with a HEPA filter instead of opening windows.`, reasons: some(staleReason(), pollenReason(), aqiReason()) };
   }
-  if (indoorStale && outdoorWet) return { action: "fan", text: "Air is stale but it is more humid outside. Use the exhaust fan rather than opening windows." };
-  if (indoorStale) return { action: "open", text: "Open windows for 10 minutes: indoor air is stale and outdoor air is fine." };
-  return { action: "none", text: "No ventilation needed right now." };
+  if (indoorStale && outdoorWet) return { action: "fan", text: "Air is stale but it is more humid outside. Use the exhaust fan rather than opening windows.", reasons: some(staleReason(), wetReason()) };
+  if (indoorStale) return { action: "open", text: "Open windows for 10 minutes: indoor air is stale and outdoor air is fine.", reasons: some(staleReason(), aqiReason(), pol && pol.score < 4 ? pollenReason() : null) };
+  return { action: "none", text: "No ventilation needed right now.", reasons: some(co2Reason(), aqiReason(), pol && pol.score < 4 ? pollenReason() : null) };
 }
 
 /** Score helper retained for tests and the UI legend. */

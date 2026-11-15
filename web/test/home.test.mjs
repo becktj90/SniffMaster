@@ -233,5 +233,8 @@ test("e2e: /api/home-stats against fake Redis + stubbed network", async () => {
   assert.equal(payload.pollen.ok, false);               // no key set => honest "unavailable", no Google call
   assert.ok(!urls.some((u) => u.includes("googleapis")));
   assert.ok(payload.score.value > 0 && Array.isArray(payload.series.t));
+  assert.equal(payload.solar, undefined);            // dead Google Solar fetch removed
+  assert.equal(payload.ventilation.action, "none");  // co2 700, clean outdoor air
+  assert.ok(payload.ventilation.reasons.every((r) => r.tone === "good"));
   assert.ok(!JSON.stringify(payload).includes("AIzaSy"));
 });
