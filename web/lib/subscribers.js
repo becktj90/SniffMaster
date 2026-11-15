@@ -9,9 +9,10 @@
  *   3. Every alert carries a one-tap unsubscribe link (/api/alerts?unsub=…).
  *
  * Delivery: email through Brevo (BREVO_API_KEY + ALERT_EMAIL_FROM), text
- * through ClickSend (the same account the owner alerts use). A channel whose
- * credentials are missing is reported as unavailable to the page instead of
- * pretending to work.
+ * through ClickSend (the same account the owner alerts use), and phone
+ * notifications through a private ntfy.sh topic (no account credit). A
+ * channel whose credentials are missing, or a texting account with no
+ * credit, is reported as unavailable instead of pretending to work.
  *
  * Storage is one small JSON document (capped at MAX_SUBSCRIBERS) plus
  * short-lived pending-code entries, all through the existing Redis cache
@@ -21,8 +22,8 @@
  */
 
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { getJsonCache, setJsonCache, incrCounter, withLock } from "./store.js";
-import { sendViaClickSend, PUBLIC_BASE_URL } from "./notify.js";
+import { getJsonCache, setJsonCache, getCounter, incrCounter, withLock } from "./store.js";
+import { sendViaClickSend, sendViaNtfy, clickSendBalance, PUBLIC_BASE_URL } from "./notify.js";
 
 export const MAX_SUBSCRIBERS = 100;
 const SUBS_KEY = "subscribers:v1"; // stored via setJsonCache with a long TTL
@@ -59,7 +60,47 @@ export function channelStatus() {
   return {
     email: Boolean(env("BREVO_API_KEY") && env("ALERT_EMAIL_FROM")),
     sms: Boolean(env("CLICKSEND_USERNAME") && env("CLICKSEND_API_KEY")),
+    // ntfy.sh accepts a publish to any topic. No API key and no credit.
+    push: true,
   };
+}
+
+const BALANCE_KEY = "clicksend-balance";
+const BALANCE_TTL_SEC = 2 * 60;
+
+/** Channels the page can offer right now. Text is hidden when the balance is empty. */
+export async function alertChannels() {
+  const channels = channelStatus();
+  let smsReason = null;
+  if (channels.sms) {
+    const balance = await cachedClickSendBalance();
+    if (balance !== null && balance <= 0) {
+      channels.sms = false;
+      smsReason = "credit";
+    }
+  }
+  return { channels, smsReason };
+}
+
+async function cachedClickSendBalance() {
+  try {
+    const cached = await getJsonCache(BALANCE_KEY);
+    if (cached && typeof cached.balance === "number" && Date.now() - Number(cached.at) < BALANCE_TTL_SEC * 1000) {
+      return cached.balance;
+    }
+  } catch { /* a cache miss just means we ask ClickSend */ }
+  try {
+    const balance = await clickSendBalance();
+    if (balance === null) return null;
+    await setJsonCache(BALANCE_KEY, { balance, at: Date.now() }, BALANCE_TTL_SEC).catch(() => {});
+    return balance;
+  } catch {
+    return null;
+  }
+}
+
+async function rememberEmptyBalance() {
+  await setJsonCache(BALANCE_KEY, { balance: 0, at: Date.now() }, BALANCE_TTL_SEC).catch(() => {});
 }
 
 // ── Validation ────────────────────────────────────────────────────────────
@@ -98,11 +139,43 @@ export function normalizeRules(input) {
 }
 
 export function maskAddress(channel, address) {
+  if (channel === "push") return "your phone";
   if (channel === "email") {
     const [u, d] = address.split("@");
     return `${u.slice(0, 2)}${"•".repeat(Math.max(1, u.length - 2))}@${d}`;
   }
   return `${"•".repeat(Math.max(0, address.length - 4))}${address.slice(-4)}`;
+}
+
+/** What to tell the person when a code can't be delivered. */
+export function explainDeliveryFailure(channel, err) {
+  const msg = String(err?.message || err || "");
+  if (/INSUFFICIENT_CREDIT/i.test(msg)) {
+    return { status: 503, message: "Text alerts are paused because the texting account is out of credit." };
+  }
+  if (/INVALID_RECIPIENT|INVALID_NUMBER/i.test(msg)) {
+    return {
+      status: 400,
+      message: channel === "sms"
+        ? "That phone number can't receive texts. Check the number and try again."
+        : "That address can't receive messages. Check it and try again.",
+    };
+  }
+  if (/timeout/i.test(msg)) {
+    return { status: 504, message: "The message service didn't answer. Try again in a minute." };
+  }
+  if (channel === "push") return { status: 502, message: "We couldn't send the notification. Try again in a minute." };
+  if (channel === "email") return { status: 502, message: "We couldn't send the email. Check the address and try again." };
+  return { status: 502, message: "We couldn't send the text. Try again in a minute." };
+}
+
+export function pushLinks(topic) {
+  const path = encodeURIComponent(topic);
+  return {
+    topic,
+    web: `https://ntfy.sh/${path}`,
+    app: `ntfy://ntfy.sh/${path}`,
+  };
 }
 
 // ── Rule evaluation (pure) ────────────────────────────────────────────────
@@ -253,11 +326,22 @@ ${unsubUrl ? `<p style="font-size:12px;color:#8a96aa">Don't want these? <a href=
 }
 
 async function deliver(sub, subject, text, withUnsub = true) {
-  const unsubUrl = withUnsub ? `${PUBLIC_BASE_URL}/api/alerts?unsub=${encodeURIComponent(sub.token)}` : null;
+  const unsubUrl = withUnsub && sub.token ? `${PUBLIC_BASE_URL}/api/alerts?unsub=${encodeURIComponent(sub.token)}` : null;
   if (sub.channel === "email") return sendEmail(sub.address, subject, text, unsubUrl);
+  if (sub.channel === "push") {
+    const body = ascii(unsubUrl ? `${text} Stop: ${unsubUrl}` : text).slice(0, 400);
+    const r = await sendViaNtfy(body || "SniffMaster alert", {
+      url: pushLinks(sub.address).web,
+      title: ascii(subject).slice(0, 80) || "SniffMaster",
+      clickUrl: unsubUrl ? PUBLIC_BASE_URL : `${PUBLIC_BASE_URL}/#/alerts`,
+      priority: 4,
+    });
+    if (!r.sent) throw new Error(r.failures?.[0]?.error || "push not sent");
+    return;
+  }
   const body = ascii(`SniffMaster: ${text}${unsubUrl ? ` Stop: ${unsubUrl}` : ""}`).slice(0, 600);
   const r = await sendViaClickSend(body, [sub.address]);
-  if (!r.sent) throw new Error(r.failures?.[0]?.error || "sms not sent");
+  if (!r.sent) throw new Error(r.failures?.[0]?.error || r.failures?.[0]?.status || "sms not sent");
 }
 
 const ascii = (t) =>
@@ -279,32 +363,53 @@ export class AlertError extends Error {
 }
 
 export async function startSubscription({ channel, address, rules, ip }) {
-  if (!["email", "sms"].includes(channel)) throw new AlertError(400, "Pick email or text.");
-  if (!channelStatus()[channel]) throw new AlertError(503, channel === "sms" ? "Text alerts aren't set up on this dashboard yet." : "Email alerts aren't set up on this dashboard yet.");
-  const addr = normalizeAddress(channel, address);
+  if (!["email", "sms", "push"].includes(channel)) throw new AlertError(400, "Pick email, text, or a phone notification.");
+  if (channel === "sms") {
+    const availability = await alertChannels();
+    if (!availability.channels.sms) {
+      throw new AlertError(503, availability.smsReason === "credit"
+        ? "Text alerts are paused because the texting account is out of credit."
+        : "Text alerts aren't set up on this dashboard yet.");
+    }
+  } else if (channel === "email" && !channelStatus().email) {
+    throw new AlertError(503, "Email alerts aren't set up on this dashboard yet.");
+  }
+  const addr = channel === "push"
+    ? `sniff-${randomBytes(12).toString("hex")}`
+    : normalizeAddress(channel, address);
   if (!addr) throw new AlertError(400, channel === "sms" ? "That phone number doesn't look right." : "That email address doesn't look right.");
 
   const ipKey = createHash("sha256").update(String(ip || "?")).digest("hex").slice(0, 16);
-  if ((await incrCounter(`alerts-ip:${ipKey}`, 3600)) > 6) throw new AlertError(429, "Too many sign-ups from here. Try again in an hour.");
-  if ((await incrCounter(`alerts-addr:${createHash("sha256").update(addr).digest("hex").slice(0, 16)}`, 3600)) > 3) {
-    throw new AlertError(429, "We just sent a code there. Give it a few minutes.");
-  }
+  if ((await incrCounter(`alerts-ip:${ipKey}`, 3600)) > 12) throw new AlertError(429, "Too many sign-ups from here. Try again in an hour.");
+  const addrKey = `alerts-addr:${createHash("sha256").update(addr).digest("hex").slice(0, 16)}`;
+  // Count only codes that actually went out. A provider failure must not
+  // turn into "we just sent a code" on the next try.
+  if ((await getCounter(addrKey)) >= 3) throw new AlertError(429, "We just sent a code there. Give it a few minutes.");
 
   const subs = await loadSubscribers();
   if (subs.filter((s) => s.verified).length >= MAX_SUBSCRIBERS) throw new AlertError(409, "This dashboard has reached its alert limit.");
 
   const id = randomBytes(9).toString("base64url");
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  await setJsonCache(`alerts-pending:${id}`, { channel, address: addr, rules: normalizeRules(rules), codeHash: hashCode(id, code), tries: 0 }, PENDING_TTL_SEC);
+  const pendingKey = `alerts-pending:${id}`;
+  await setJsonCache(pendingKey, { channel, address: addr, rules: normalizeRules(rules), codeHash: hashCode(id, code), tries: 0 }, PENDING_TTL_SEC);
 
   const msg = `Your SniffMaster code is ${code}. It expires in 15 minutes.`;
   try {
-    await deliver({ channel, address: addr }, "Your SniffMaster alert code", msg, false);
+    await deliver({ channel, address: addr }, "Your SniffMaster code", msg, false);
   } catch (err) {
     console.error("alerts: code delivery failed:", err?.message || err);
-    throw new AlertError(502, "We couldn't send the code. Double-check the address and try again.");
+    await setJsonCache(pendingKey, { dead: true }, 1).catch(() => {});
+    if (/INSUFFICIENT_CREDIT/i.test(String(err?.message || err))) await rememberEmptyBalance();
+    const explained = explainDeliveryFailure(channel, err);
+    throw new AlertError(explained.status, explained.message);
   }
-  return { id, masked: maskAddress(channel, addr) };
+  await incrCounter(addrKey, 3600);
+  return {
+    id,
+    masked: maskAddress(channel, addr),
+    ...(channel === "push" ? { push: pushLinks(addr) } : {}),
+  };
 }
 
 export async function confirmSubscription({ id, code }) {

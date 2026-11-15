@@ -45,6 +45,7 @@ import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
 
 const CLICKSEND_URL = "https://rest.clicksend.com/v3/sms/send";
 const CLICKSEND_MMS_URL = "https://rest.clicksend.com/v3/mms/send";
+const CLICKSEND_ACCOUNT_URL = "https://rest.clicksend.com/v3/account";
 // Hard cap per provider request. Recipients are sent in parallel, so this also
 // bounds total send time — the ESP32 is waiting on /api/update's response, and
 // Vercel Hobby functions have a ~10s budget. A hung provider call must not eat it.
@@ -184,6 +185,18 @@ function clickSendAuthHeader() {
   return `Basic ${Buffer.from(`${username}:${apiKey}`).toString("base64")}`;
 }
 
+/** Account balance in the account currency, or null when ClickSend can't be asked. */
+export async function clickSendBalance() {
+  if (!env("CLICKSEND_USERNAME") || !env("CLICKSEND_API_KEY")) return null;
+  const resp = await fetch(CLICKSEND_ACCOUNT_URL, {
+    headers: { Authorization: clickSendAuthHeader() },
+    signal: AbortSignal.timeout(4000),
+  });
+  const data = await resp.json().catch(() => null);
+  const balance = Number(data?.data?.balance);
+  return resp.ok && Number.isFinite(balance) ? balance : null;
+}
+
 /**
  * Shared success check + diagnostic-detail extraction for both ClickSend SMS
  * and MMS responses — same response shape, same "HTTP 200 but queued_count:0"
@@ -217,35 +230,60 @@ function evaluateClickSendResponse(resp, data) {
   return { ok, detail };
 }
 
+/**
+ * One ClickSend SMS post. `from` is omitted when empty so ClickSend uses the
+ * account's own sender. A hardcoded From that this account doesn't pay for
+ * comes back as INSUFFICIENT_CREDIT / INVALID_SENDER even when a default
+ * sender would still go out.
+ */
+async function postClickSendSms(text, to, from) {
+  const message = { to, body: text, source: "sniffmaster" };
+  if (from) message.from = from;
+  const resp = await fetch(CLICKSEND_URL, {
+    method: "POST",
+    headers: {
+      Authorization: clickSendAuthHeader(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ messages: [message] }),
+    signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+  });
+  const data = await resp.json().catch(() => null);
+  const evaluated = data
+    ? evaluateClickSendResponse(resp, data)
+    : { ok: false, detail: "" };
+  const status = data?.data?.messages?.[0]?.status || data?.response_code || "";
+  return { ok: evaluated.ok, detail: evaluated.detail, status, http: resp.status };
+}
+
+function senderRejection(result) {
+  return /INSUFFICIENT_CREDIT|INVALID_SENDER|INVALID_FROM/i.test(`${result?.status || ""} ${result?.detail || ""}`);
+}
+
 export async function sendViaClickSend(text, recipients) {
   let sent = 0;
   const failures = [];
+  const from = clickSendFrom();
 
   await Promise.all(
     recipients.map(async (to) => {
       try {
-        const resp = await fetch(CLICKSEND_URL, {
-          method: "POST",
-          headers: {
-            Authorization: clickSendAuthHeader(),
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ messages: [{ to, from: clickSendFrom(), body: text, source: "sniffmaster" }] }),
-          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-        });
-
-        const data = await resp.json().catch(() => null);
-        const { ok, detail } = data
-          ? evaluateClickSendResponse(resp, data)
-          : { ok: false, detail: await resp.text().catch(() => "") };
-        if (ok) {
+        let attempt = await postClickSendSms(text, to, from);
+        // The default From is a specific toll-free number. If this account
+        // can't send from it, try once with the account's own sender.
+        if (!attempt.ok && from && senderRejection(attempt)) {
+          const retry = await postClickSendSms(text, to, "");
+          // Keep a sender/credit failure from the first try when the default
+          // sender fails the same way. A different rejection (bad number,
+          // timeout) is the one the caller can act on.
+          attempt = retry.ok || !senderRejection(retry) ? retry : attempt;
+        }
+        if (attempt.ok) {
           sent += 1;
         } else {
-          // Log enough of the payload to see msg.status/error_text — the old
-          // 300-char cap cut the response off mid-body, hiding the actual
-          // rejection reason on every failure.
-          failures.push({ to, error: `HTTP ${resp.status} ${detail}`.trim().slice(0, 500) });
-          console.error(`notify: ClickSend send to ${to} failed — HTTP ${resp.status} ${detail}`);
+          const error = `HTTP ${attempt.http} ${attempt.detail}`.trim().slice(0, 500);
+          failures.push({ to, error, status: attempt.status });
+          console.error(`notify: ClickSend send to ${to} failed — ${error}`);
         }
       } catch (err) {
         const message = err?.name === "TimeoutError" ? `timeout after ${SEND_TIMEOUT_MS}ms` : err?.message || String(err);

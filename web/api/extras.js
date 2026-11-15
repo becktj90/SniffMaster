@@ -65,7 +65,7 @@ import { insightFacts, insightCacheKey, claudeInsights, fallbackInsights } from 
 import {
   RULES as SUBSCRIBER_RULES,
   AlertError,
-  channelStatus,
+  alertChannels,
   loadSubscribers,
   startSubscription,
   confirmSubscription,
@@ -1627,8 +1627,10 @@ async function alerts(req, res) {
   }
   if (req.method === "GET") {
     const subs = await loadSubscribers().catch(() => []);
+    const availability = await alertChannels().catch(() => ({ channels: { email: false, sms: false, push: true }, smsReason: null }));
     return res.status(200).json({
-      channels: channelStatus(),
+      channels: availability.channels,
+      smsReason: availability.smsReason,
       subscriberCount: subs.filter((s) => s.verified).length,
       rules: Object.fromEntries(Object.entries(SUBSCRIBER_RULES).map(([k, r]) => [k, { label: r.label, hint: r.hint || "", unit: r.unit, dir: r.dir, def: r.def, min: r.min, max: r.max, easy: r.easy || 0 }])),
     });
