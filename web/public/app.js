@@ -42,7 +42,7 @@
   function levelTone(level) {
     var l = String(level || "").toLowerCase();
     if (!l || l === "--") return "na";
-    if (/^(low|none|fresh|good|excellent|safe)/.test(l)) return "good";
+    if (/very low/.test(l) || /^(low|none|fresh|good|excellent|safe)/.test(l)) return "good";
     if (/^(moderate|fair|elevated|medium)/.test(l)) return "fair";
     if (/^(high)/.test(l)) return "poor";
     return "bad";
@@ -141,7 +141,19 @@
     var x = function (ts) { return padL + ((ts - t0) / (t1 - t0)) * (W - padL - padR); };
     var y = function (v) { return padT + (1 - (v - r[0]) / (r[1] - r[0])) * (H - padT - padB); };
     var id = "g" + (++chartId);
+    var toneStroke = { good: css("--good"), fair: css("--fair"), poor: css("--poor"), bad: css("--bad") };
     var html = '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" role="img" aria-label="' + esc(opts.label || "chart") + '">';
+    (opts.zones || []).forEach(function (z) {
+      var topV = Math.min(r[1], z.hi), botV = Math.max(r[0], z.lo);
+      if (topV <= botV) return;
+      var top = y(topV), bot = y(botV);
+      html += '<rect x="' + padL + '" y="' + top.toFixed(1) + '" width="' + (W - padL - padR) + '" height="' + Math.max(0, bot - top).toFixed(1) + '" fill="' + (toneStroke[z.tone] || "transparent") + '" fill-opacity="0.16"/>';
+    });
+    (opts.marks || []).forEach(function (m) {
+      if (m.y < r[0] || m.y > r[1]) return;
+      var yy = y(m.y).toFixed(1);
+      html += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy + '" y2="' + yy + '" stroke="' + (toneStroke[m.tone] || css("--ink-3")) + '" stroke-width="2" stroke-dasharray="6 4"/>';
+    });
     html += '<defs><linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + series[0].color + '" stop-opacity=".22"/><stop offset="1" stop-color="' + series[0].color + '" stop-opacity="0"/></linearGradient></defs>';
     for (var i = 0; i <= 3; i++) {
       var gv = r[0] + ((r[1] - r[0]) * i) / 3;
@@ -288,15 +300,50 @@
 
   // ── Sensors ────────────────────────────────────────────────────────
   var CHANNELS = [
-    { key: "iaq", title: "Indoor air quality (IAQ)", unit: "", d: 0, color: "--series-1", extra: { key: "staticIaq", name: "Static IAQ" }, note: "0–50 excellent, 51–100 good, 101–150 lightly polluted, 151–200 moderately polluted, 200+ heavily polluted." },
-    { key: "co2", title: "CO₂ equivalent", unit: " ppm", d: 0, color: "--series-1", note: "Estimated from VOCs by BSEC. Under 800 ppm feels fresh; above 1,200 ppm most people notice stuffiness." },
-    { key: "voc", title: "Breath VOC equivalent", unit: " ppm", d: 2, color: "--series-1", note: "Volatile organic compounds from people, cooking, cleaners and furniture." },
-    { key: "gasR", title: "Gas resistance", unit: " kΩ", d: 0, color: "--series-3", scale: 0.001, note: "The raw MOX reading. Lower resistance means more reducing gases (VOCs, smoke, sulfur) in the air." },
-    { key: "tempF", title: "Temperature", unit: " °F", d: 1, color: "--series-2", note: "Heat-compensated by BSEC so the sensor's own warmth is removed." },
-    { key: "humidity", title: "Relative humidity", unit: " %", d: 1, color: "--series-3", note: "40–60% is the comfortable band. Above 60% for long stretches favors mold and dust mites." },
-    { key: "pressHpa", title: "Barometric pressure", unit: " hPa", d: 1, color: "--series-1", note: "Falling pressure often means weather is on the way." },
-    { key: "gasPct", title: "Gas percentage", unit: " %", d: 0, color: "--series-3", note: "Where the current gas reading sits within this sensor's own learned history (BSEC)." },
+    { key: "iaq", title: "Indoor air quality (IAQ)", unit: "", d: 0, color: "--series-1", extra: { key: "staticIaq", name: "Static IAQ" }, note: "Lower is cleaner. The colored bands are the usual indoor ranges.", floor: 0, y: [0, 200],
+      zones: [{ lo: 0, hi: 100, tone: "good", label: "Good, under 100" }, { lo: 100, hi: 150, tone: "fair", label: "Watch, 100 to 150" }, { lo: 150, hi: 500, tone: "bad", label: "High, above 150" }],
+      marks: [{ y: 100, tone: "fair" }, { y: 150, tone: "bad" }] },
+    { key: "co2", title: "CO₂ equivalent", unit: " ppm", d: 0, color: "--series-1", note: "Estimated from gases. Under 800 feels fresh. Above 1,200 most people notice stuffiness.", floor: 0, y: [400, 1600],
+      zones: [{ lo: 0, hi: 800, tone: "good", label: "Fresh, under 800" }, { lo: 800, hi: 1200, tone: "fair", label: "Getting stuffy, 800 to 1,200" }, { lo: 1200, hi: 5000, tone: "bad", label: "Stuffy, above 1,200" }],
+      marks: [{ y: 800, tone: "fair" }, { y: 1200, tone: "bad" }] },
+    { key: "voc", title: "Breath VOC equivalent", unit: " ppm", d: 2, color: "--series-1", note: "Vapors from people, cooking, cleaners, and furniture. Lower is calmer.", floor: 0, y: [0, 4],
+      zones: [{ lo: 0, hi: 1, tone: "good", label: "Low, under 1" }, { lo: 1, hi: 2.5, tone: "fair", label: "Noticeable, 1 to 2.5" }, { lo: 2.5, hi: 20, tone: "bad", label: "High, above 2.5" }],
+      marks: [{ y: 1, tone: "fair" }, { y: 2.5, tone: "bad" }] },
+    { key: "gasR", title: "Gas resistance", unit: " kΩ", d: 0, color: "--series-3", scale: 0.001, note: "There is no fixed good or bad line. A falling line means more gases in the air." },
+    { key: "tempF", title: "Temperature", unit: " °F", d: 1, color: "--series-2", note: "Most homes feel comfortable between 68 and 76°F.", y: [60, 84],
+      zones: [{ lo: 68, hi: 76, tone: "good", label: "Comfortable, 68 to 76°F" }, { lo: 60, hi: 68, tone: "fair", label: "Cool, 60 to 68°F" }, { lo: 76, hi: 84, tone: "fair", label: "Warm, 76 to 84°F" }, { lo: 32, hi: 60, tone: "bad", label: "Cold, under 60°F" }, { lo: 84, hi: 110, tone: "bad", label: "Hot, above 84°F" }],
+      marks: [{ y: 68, tone: "good" }, { y: 76, tone: "good" }] },
+    { key: "humidity", title: "Relative humidity", unit: " %", d: 1, color: "--series-3", note: "40–60% is comfortable. Long stretches above 60% favor mold and dust mites.", floor: 0, y: [25, 75],
+      zones: [{ lo: 40, hi: 60, tone: "good", label: "Comfortable, 40 to 60%" }, { lo: 30, hi: 40, tone: "fair", label: "A bit dry, 30 to 40%" }, { lo: 60, hi: 70, tone: "fair", label: "A bit damp, 60 to 70%" }, { lo: 0, hi: 30, tone: "bad", label: "Too dry, under 30%" }, { lo: 70, hi: 100, tone: "bad", label: "Too damp, above 70%" }],
+      marks: [{ y: 40, tone: "good" }, { y: 60, tone: "fair" }] },
+    { key: "pressHpa", title: "Barometric pressure", unit: " hPa", d: 1, color: "--series-1", note: "No good or bad line. A falling line often means weather is on the way." },
+    { key: "gasPct", title: "Gas percentage", unit: " %", d: 0, color: "--series-3", note: "Where this reading sits in the sensor's own history. It is not a health limit.", floor: 0, y: [0, 100] },
   ];
+  function zoneFor(c, v) {
+    if (!c.zones || !isNum(v)) return null;
+    for (var i = 0; i < c.zones.length; i++) if (v >= c.zones[i].lo && v < c.zones[i].hi) return c.zones[i];
+    return null;
+  }
+  function guideRange(values, c) {
+    var nums = (values || []).filter(isNum).map(Number);
+    if (!nums.length) return c.y || [0, 1];
+    var lo = Math.min.apply(null, nums);
+    var hi = Math.max.apply(null, nums);
+    var marks = (c.marks || []).map(function (m) { return m.y; }).sort(function (a, b) { return a - b; });
+    var below = null, above = null;
+    marks.forEach(function (y) {
+      if (y <= lo + (hi - lo) * 0.02) below = y;
+      if (above === null && y >= hi) above = y;
+    });
+    if (below !== null) lo = Math.min(lo, below);
+    if (above !== null) hi = Math.max(hi, above);
+    var span = Math.max(hi - lo, 1);
+    var pad = Math.max(span * 0.12, c.key === "voc" ? 0.12 : 1);
+    var y0 = lo - (below === null ? pad : pad * 0.35);
+    var y1 = hi + (above === null ? pad * 0.45 : span * 0.22);
+    if (c.floor !== undefined) y0 = Math.max(c.floor, y0);
+    return [y0, y1];
+  }
   async function pageSensors() {
     var d = await load("sensors");
     if (!d) return noData();
@@ -308,7 +355,11 @@
       var st = stats(vals);
       var nowV = isNum(L[c.key]) ? L[c.key] * (c.scale || 1) : null;
       if (!st && !isNum(nowV)) return "";
-      return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + '</p></div><div class="now"><span class="num">' + fmt(nowV, c.d) + "</span><br><small>" + esc(c.unit.trim() || "index") + " now</small></div></div>" +
+      var zone = zoneFor(c, nowV);
+      var legend = (c.zones || []).map(function (z) { return '<span><i class="swatch ' + z.tone + '"></i>' + esc(z.label) + "</span>"; }).join("");
+      return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + "</p>" +
+        (zone ? '<p class="level-now">' + pill(zone.label.split(",")[0], zone.tone) + "</p>" : "") + '</div><div class="now"><span class="num">' + fmt(nowV, c.d) + "</span><br><small>" + esc(c.unit.trim() || "index") + " now</small></div></div>" +
+        (legend ? '<div class="legend bands">' + legend + "</div>" : "") +
         (c.extra && S[c.extra.key] ? '<div class="legend"><span><i style="background:' + css(c.color) + '"></i>' + esc(c.title.split(" (")[0]) + '</span><span><i style="background:' + css("--series-2") + '"></i>' + esc(c.extra.name) + "</span></div>" : "") +
         '<div class="chart" data-ch="' + c.key + '"></div>' +
         (st ? '<div class="mma"><span>Low <b>' + fmt(st.min, c.d) + "</b></span><span>Avg <b>" + fmt(st.avg, c.d) + "</b></span><span>High <b>" + fmt(st.max, c.d) + "</b></span></div>" : "") + "</div>";
@@ -346,7 +397,7 @@
       var vals = (d.series[c.key] || []).map(function (v) { return isNum(v) && c.scale ? v * c.scale : v; });
       var series = [{ name: c.title, values: vals, color: css(c.color) }];
       if (c.extra && d.series[c.extra.key]) series.push({ name: c.extra.name, values: d.series[c.extra.key], color: css("--series-2"), dash: true });
-      lineChart(el, { t: d.series.t, series: series, unit: c.unit, label: c.title, fmt: function (v) { return fmt(v, c.d); } });
+      lineChart(el, { t: d.series.t, series: series, unit: c.unit, label: c.title, zones: c.zones, marks: c.marks, yRange: c.y || c.zones ? guideRange(vals, c) : undefined, fmt: function (v) { return fmt(v, c.d); } });
     });
   }
 
@@ -359,24 +410,84 @@
     var sniffs = await load("sniffs").catch(function () { return []; });
     window.__sensorData = sens;
     var sm = home.smell || {};
+    var sense = home.airSense || {};
+    var cause = home.cause || sense.cause || {};
     var latest = (sens && sens.latest) || {};
     var odors = Array.isArray(latest.odors) ? latest.odors : [];
-    var ranked = odors.map(function (v, i) { return { i: i, v: Number(v) || 0 }; }).sort(function (a, b) { return b.v - a.v; });
-    var bars = ranked.map(function (o) {
-      return '<div class="hbar' + (o.v < 20 ? " dim" : "") + '"><span>' + esc(ODORS[o.i]) + '</span><span class="track"><i style="width:' + Math.min(100, o.v) + "%;background:" + (o.v >= 65 ? css("--series-2") : css("--series-1")) + '"></i></span><span class="v">' + fmt(o.v) + "</span></div>";
+    var rankedAtlas = (sense.odors && sense.odors.length) ? sense.odors : odors.map(function (v, i) { return { index: i, score: Number(v) || 0, name: ODORS[i], active: (Number(v) || 0) >= 8 }; }).sort(function (a, b) { return b.score - a.score; });
+    var bars = rankedAtlas.map(function (o) {
+      var v = o.score || 0;
+      return '<div class="hbar' + (v < 20 ? " dim" : "") + '"><span>' + esc(o.name || ODORS[o.index]) + '</span><span class="track"><i style="width:' + Math.min(100, v) + "%;background:" + (v >= 65 ? css("--series-2") : css("--series-1")) + '"></i></span><span class="v">' + fmt(v) + "</span></div>";
     }).join("");
     var tone = sm.smellsBad ? (sm.safety ? "bad" : "poor") : sm.tone === "fair" ? "fair" : "good";
+    var nose = sense.sensoryLoad || {};
+    var debt = sense.freshnessDebt || {};
+    var character = sense.character || {};
     var main = '<div class="card"><p class="kicker">Right now</p><h2 style="font-size:22px;margin:0 0 6px">' + esc(sm.headline || "No reading yet") + "</h2>" +
-      '<div class="chips" style="margin:6px 0 10px">' + pill(sm.level || "—", tone) + (sm.confidence ? pill(sm.confidence + " confidence", "na") : "") + (sm.trend ? pill(sm.trend, sm.trend === "worsening" ? "poor" : "na") : "") + "</div>" +
+      '<div class="chips" style="margin:6px 0 10px">' + (sm.smellsBad ? pill(sm.level || "Smelly", tone) : pill(sm.tone === "fair" ? "Slightly off" : "Fresh", tone)) + (sm.confidence ? pill(sm.confidence + " confidence", "na") : "") + (sm.trend ? pill(sm.trend, sm.trend === "worsening" ? "poor" : "na") : "") +
+      (nose.band ? pill("Nose: " + nose.band, nose.value >= 65 ? "poor" : nose.value >= 40 ? "fair" : "good") : "") +
+      (character.headline ? pill(character.headline, "na") : "") + "</div>" +
       (sm.action ? '<div class="callout ' + (sm.safety ? "bad" : "fair") + '">' + esc(sm.action) + "</div>" : "") +
+      (cause.label ? '<p class="note"><b>Likely situation. </b>' + esc(cause.label) + (cause.action ? " — " + esc(cause.action) : "") + "</p>" : "") +
       '<p class="note">' + esc(sm.detail || "") + "</p></div>";
-    var how = '<div class="card"><h3>How smell detection works</h3><p class="muted" style="margin:6px 0 0">The BME688 heats a metal-oxide plate and measures its resistance; smelly gases lower it. SniffMaster learns this room\'s own clean-air level, corrects for humidity, and only calls a smell when the drop holds for several minutes. A small neural network on the device then guesses the source from the 20 classes on the right.</p></div>';
+
+    var story = (sense.breathStory || []).map(function (line) { return "<li>" + esc(line) + "</li>"; }).join("");
+    var storyCard = '<div class="card"><div class="card-head"><h3>Everything known about this air</h3><span class="sub">derived from every signal</span></div>' +
+      (story ? '<ol class="breath-story">' + story + "</ol>" : '<p class="muted">Waiting for enough readings to build the story.</p>') +
+      '<p class="note">' + esc(sense.honesty || "Smell families are associations from indoor-air science, not a lab chemical ID.") + "</p></div>";
+
+    var metrics = '<div class="grid g-3" style="margin-top:0">' +
+      '<div class="card stat"><p class="kicker">Sensory load</p><div class="value num">' + fmt(nose.value) + '<small>/100</small></div><div class="line">' + esc(nose.text || "How much a nose would notice.") + "</div></div>" +
+      '<div class="card stat"><p class="kicker">Freshness debt</p><div class="value num">' + fmt(debt.pct) + '<small>%</small></div><div class="line">' + esc(debt.text || "Distance below this room's clean baseline.") + "</div></div>" +
+      '<div class="card stat"><p class="kicker">Bouquet</p><div class="value" style="font-size:22px;font-family:var(--sans);font-weight:700">' + esc((sense.odorComplexity && sense.odorComplexity.label) || "—") + '</div><div class="line">' + esc((sense.odorComplexity && sense.odorComplexity.text) || "") + "</div></div></div>";
+
+    var bouquetCards = (sense.bouquets || []).map(function (b) {
+      return '<div class="tip ' + (b.strength === "strong" ? "bad" : b.strength === "likely" ? "fair" : "good") + '"><b>' + esc(b.label) + " · " + esc(b.strength) + " · " + fmt(b.score) + '</b><p>' + esc(b.why) + (b.regions && b.regions.length ? " Common in: " + esc(b.regions.join(", ")) + "." : "") + "</p></div>";
+    }).join("");
+    var bouquetCard = '<div class="card"><div class="card-head"><h3>Worldwide smell bouquets</h3><span class="sub">multi-class matches</span></div>' +
+      (bouquetCards ? '<div class="tips">' + bouquetCards + "</div>" : '<p class="muted">No multi-class bouquet is strong enough yet.</p>') +
+      '<p class="note">Bouquets combine several smell classes plus humidity or outdoor AQI. They describe atmospheres people recognize worldwide — incense, spice kitchens, monsoon damp, garage petrol — without claiming a lab ID.</p></div>';
+
+    var familyRows = (sense.families || []).map(function (f) {
+      return "<dt>" + esc(f.family) + "</dt><dd>" + fmt(f.score) + '<div class="small muted">' + esc((f.senses || []).slice(0, 4).join(", ")) +
+        (f.compounds && f.compounds.length ? " · often linked with " + esc(f.compounds.slice(0, 3).join(", ")) : "") + "</div></dd>";
+    }).join("");
+    var familyCard = '<div class="card"><div class="card-head"><h3>Chemical families</h3><span class="sub">associations</span></div>' +
+      (familyRows ? '<dl class="kv">' + familyRows + "</dl>" : '<p class="muted">No family is clearly active.</p>') +
+      '<p class="note">Compound names are common associations for that smell family in published indoor-air work — not a measurement of those molecules.</p></div>';
+
+    var atlasCards = (sense.activeOdors || rankedAtlas.filter(function (o) { return o.score >= 20; }).slice(0, 8)).map(function (o) {
+      return '<article class="odor-card"><div class="card-head"><h3>' + esc(o.name) + "</h3>" + pill(String(o.score), o.score >= 65 ? "poor" : o.score >= 40 ? "fair" : "good") + "</div>" +
+        '<p class="muted small" style="margin:0 0 8px">' + esc(o.family || "") + (o.senses && o.senses.length ? " · " + esc(o.senses.join(", ")) : "") + "</p>" +
+        (o.sources && o.sources.length ? '<p class="note" style="margin:0 0 6px"><b>Common sources. </b>' + esc(o.sources.join(", ")) + "</p>" : "") +
+        (o.compounds && o.compounds.length ? '<p class="note" style="margin:0 0 6px"><b>Often linked with. </b>' + esc(o.compounds.join(", ")) + "</p>" : "") +
+        (o.regions && o.regions.length ? '<p class="note" style="margin:0 0 6px"><b>Where it shows up. </b>' + esc(o.regions.join(", ")) + "</p>" : "") +
+        (o.also ? '<p class="note" style="margin:0 0 6px">' + esc(o.also) + "</p>" : "") +
+        (o.tip ? '<p class="note" style="margin:0"><b>What to do. </b>' + esc(o.tip) + "</p>" : "") +
+        "</article>";
+    }).join("");
+    var atlasCard = '<div class="card"><div class="card-head"><h3>Active smells, explained</h3><span class="sub">' + fmt(sense.atlasSize || 20) + " class atlas</span></div>" +
+      (atlasCards ? '<div class="odor-grid">' + atlasCards + "</div>" : '<p class="muted">Nothing is clearly above background yet.</p>') + "</div>";
+
+    var extraBits = [];
+    if (sense.staticGap) extraBits.push('<div class="tip fair"><b>Live vs background IAQ</b><p>' + esc(sense.staticGap.reading) + "</p></div>");
+    if (sense.pressure) extraBits.push('<div class="tip good"><b>Pressure</b><p>' + esc(sense.pressure.text) + "</p></div>");
+    if (sense.windowLeak) extraBits.push('<div class="tip ' + (sense.windowLeak.level === "likely" ? "bad" : "fair") + '"><b>Outdoor air</b><p>' + esc(sense.windowLeak.text) + "</p></div>");
+    if (sense.comfort) extraBits.push('<div class="tip good"><b>Comfort</b><p>' + esc(sense.comfort.text) + "</p></div>");
+    if (home.ventilation && home.ventilation.text) extraBits.push('<div class="tip fair"><b>Windows</b><p>' + esc(home.ventilation.text) + "</p></div>");
+    var derivedCard = extraBits.length ? '<div class="card"><div class="card-head"><h3>More derived signals</h3><span class="sub">multi-variable</span></div><div class="tips">' + extraBits.join("") + "</div></div>" : "";
+
+    var how = '<div class="card"><h3>How smell detection works</h3><p class="muted" style="margin:6px 0 0">The BME688 heats a metal-oxide plate and measures its resistance; smelly gases lower it. SniffMaster learns this room\'s own clean-air level, corrects for humidity, and only calls a smell when the drop holds for several minutes. A small neural network on the device scores 20 smell classes. The atlas and bouquets add worldwide context and multi-signal stories on top — still associations, not a lab assay.</p></div>';
     var events = (sniffs || []).length
       ? '<ul class="events">' + sniffs.map(function (e) { return "<li><span>" + esc(e.label || e.primary || "Sulfur event") + '</span><span class="muted num">' + esc(e.receivedAt ? clock(e.receivedAt, true) : "") + "</span></li>"; }).join("") + "</ul>"
       : '<p class="muted" style="margin:0">No strong sulfur events recorded recently.</p>';
-    return head("Smell", "What the gas sensor and on-device smell model notice, and how sure they are.") +
-      '<div class="grid g-2">' + '<div class="stack" style="margin:0">' + main + how + "</div>" +
+    return head("Smell", "Every smell class the sensor knows, what that air usually means worldwide, and what we can derive from the whole room.") +
+      '<div class="grid g-2">' + '<div class="stack" style="margin:0">' + main + storyCard + how + "</div>" +
       '<div class="card"><div class="card-head"><h3>Smell model scores</h3><span class="sub">0–100 per class · live</span></div>' + (bars || '<p class="muted">No classifier output yet.</p>') + '<p class="note">Scores under 20 are background noise. The model holds back until the sensor is calibrated.</p></div></div>' +
+      '<div style="margin-top:16px">' + metrics + "</div>" +
+      '<div class="grid g-2" style="margin-top:16px">' + bouquetCard + familyCard + "</div>" +
+      '<div style="margin-top:16px">' + atlasCard + "</div>" +
+      (derivedCard ? '<div style="margin-top:16px">' + derivedCard + "</div>" : "") +
       '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div id="heat"></div></div>' +
       '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">Recent sulfur events</h3>' + events + "</div>";
   }
@@ -470,7 +581,45 @@
     var cmp = [["Temperature", cl.tempF, cToF(o.tempC), "°F", 1], ["Humidity", cl.humidity, o.humidity, "%", 0], ["Moisture in the air", cl.absHumidity, o.absHumidity, "g/m³", 1], ["Dew point", cToF(cl.dewPointC), cToF(o.dewPointC), "°F", 0]];
     var cmpRows = cmp.map(function (c) { return "<tr><td>" + esc(c[0]) + '</td><td class="num">' + fmt(c[1], c[4]) + " " + c[3] + '</td><td class="num">' + fmt(c[2], c[4]) + " " + c[3] + "</td></tr>"; }).join("");
     var advice = home.ventilation && home.ventilation.text;
-    return head("Outside" + (home.city ? " · " + home.city : ""), "Local weather and outdoor air from Open-Meteo, compared with what's inside.") +
+    var g = home.googleAir || {};
+    var pollName = { pm25: "Fine dust", pm10: "Dust", o3: "Ozone", no2: "Nitrogen dioxide", so2: "Sulfur dioxide", co: "Carbon monoxide", nh3: "Ammonia" };
+    var plain = function (code) { return pollName[code] || (code ? String(code).replace(/_/g, " ") : "—"); };
+    var us = (g.indexes || []).filter(function (i) { return i.code === "usa_epa"; })[0] || (g.indexes || [])[0];
+    var uaqi = (g.indexes || []).filter(function (i) { return i.code === "uaqi"; })[0];
+    var gPoll = (g.pollutants || []).map(function (p) {
+      return '<div class="poll"><div><b>' + esc(p.name) + "</b>" + (p.effects ? "<p>" + esc(p.effects) + "</p>" : "") + '</div><span class="num">' + fmt(p.value, p.value < 10 ? 1 : 0) + " " + esc(p.unit) + "</span></div>";
+    }).join("");
+    var hours = (g.hourly || []).map(function (h) {
+      var when = h.t ? new Date(h.t).toLocaleTimeString([], { hour: "numeric" }) : "";
+      return "<div><b>" + esc(when) + "</b><span class=\"hi\">" + fmt(h.aqi) + "</span><br><span class=\"small muted\">" + esc((h.category || "").replace(/ air quality/i, "")) + "</span></div>";
+    }).join("");
+    var health = g.health || {};
+    var pol = home.pollen || {};
+    var pollenItems = [].concat(pol.types || [], pol.plants || []);
+    var pollenChips = pollenItems.map(function (p) {
+      return '<span class="tone ' + levelTone(p.category) + '">' + esc(p.name) + (p.category ? " · " + esc(p.category) : "") + (isNum(p.value) ? " " + fmt(p.value) : "") + "</span>";
+    }).join(" ");
+    var mapCard = '<div class="card map-card"><div class="card-head"><h3>Around the house</h3><span class="sub">' + (g.heatmap ? "Streets plus Google air colors" : "Local map") + "</span></div>" +
+      (home.location ? '<div id="local-map" class="local-map" role="region" aria-label="Map of the area around the sensor"></div>' : '<p class="muted">The map shows up once the sensor reports its location.</p>') +
+      '<p class="note">The pin is your sensor. ' + (g.heatmap ? "Green on the map is cleaner outdoor air and red is dirtier, from Google. " : "") + "Street map © OpenStreetMap.</p></div>";
+    var googleCard = g.ok ? '<div class="card"><h3 style="margin-bottom:8px">Outdoor air, from Google</h3>' +
+      '<div class="grid g-3">' +
+      '<div class="stat"><p class="kicker">US AQI</p><div class="value num">' + fmt(us && us.aqi) + "</div><div class=\"line\">" + esc(us && us.category || "") + "</div></div>" +
+      (uaqi ? '<div class="stat"><p class="kicker">Universal index</p><div class="value num">' + fmt(uaqi.aqi) + "</div><div class=\"line\">" + esc(uaqi.category || "") + "</div></div>" : "") +
+      '<div class="stat"><p class="kicker">Main pollutant</p><div class="line" style="font-size:16px;color:var(--ink)">' + esc(plain(us && us.dominant)) + "</div></div></div>" +
+      (health.olderAdults ? '<p class="callout" style="margin-top:12px"><b>For older adults. </b>' + esc(health.olderAdults) + "</p>" : "") +
+      (health.everyone ? '<p class="note"><b>For everyone. </b>' + esc(health.everyone) + "</p>" : "") +
+      (health.children || health.lungs || health.heart ? '<details class="more"><summary>Advice for children, lungs, and heart</summary><div class="more-body">' +
+        [health.children && "<p><b>Children. </b>" + esc(health.children) + "</p>", health.lungs && "<p><b>Lungs. </b>" + esc(health.lungs) + "</p>", health.heart && "<p><b>Heart. </b>" + esc(health.heart) + "</p>", health.active && "<p><b>Exercise. </b>" + esc(health.active) + "</p>", health.pregnancy && "<p><b>Pregnancy. </b>" + esc(health.pregnancy) + "</p>"].filter(Boolean).join("") +
+        "</div></details>" : "") +
+      (gPoll ? '<div class="polls">' + gPoll + "</div>" : "") +
+      (hours ? '<h3 style="margin:14px 0 8px">Later today</h3><div class="forecast hours">' + hours + "</div>" : "") +
+      "</div>" : (g.reason ? '<div class="card"><h3>Google outdoor air</h3><p class="muted">' + esc(g.reason) + ". Open-Meteo numbers are still shown below.</p></div>" : "");
+    var pollenCard = '<div class="card"><h3 style="margin-bottom:8px">Pollen</h3>' +
+      (pol.ok ? '<div class="chips">' + pollenChips + "</div>" + ((pol.tips || []).map(function (t) { return '<p class="note">' + esc(t) + "</p>"; }).join("")) + '<p class="note">' + esc(pol.source || "") + (pol.date ? " · " + esc(pol.date) : "") + "</p>" : '<p class="muted">' + esc(pol.reason || "No pollen reading yet.") + "</p>") + "</div>";
+    return head("Outside" + (home.city ? " · " + home.city : ""), "A map of the neighborhood, plus outdoor air, pollen, and weather.") +
+      mapCard +
+      '<div class="grid g-2" style="margin-top:16px">' + googleCard + pollenCard + "</div>" +
       '<div class="grid g-3">' +
       '<div class="card stat"><p class="kicker">Now</p><div class="value num">' + fmt(cur && cur.tempF) + '<small>°F</small></div><div class="line">' + esc(cur ? cur.condition + " · feels " + fmt(cur.feelsLikeF) + "°F" : "—") + '</div><div class="line muted small">' + esc(cur ? "Wind " + (cur.windSpeed || "calm") + " " + (cur.windDir || "") + " · " + fmt(cur.pressHpa) + " hPa" : "") + "</div></div>" +
       '<div class="card stat"><p class="kicker">Outdoor AQI</p><div class="value num">' + fmt(o.usAqi) + '</div><div class="line">' + pill((wx && wx.outdoorLevel) || "—", levelTone(wx && wx.outdoorLevel)) + "</div></div>" +
@@ -479,6 +628,33 @@
       '<div class="grid g-2" style="margin-top:16px"><div class="card"><h3 style="margin-bottom:10px">Outdoor pollutants</h3><dl class="kv">' + pollRows + "</dl></div>" +
       '<div class="card"><h3 style="margin-bottom:10px">Inside vs outside</h3><table style="width:100%;border-collapse:collapse;font-size:13.5px"><thead><tr class="muted small"><th style="text-align:left;font-weight:600;padding-bottom:6px">&nbsp;</th><th style="text-align:left;font-weight:600">Inside</th><th style="text-align:left;font-weight:600">Outside</th></tr></thead><tbody>' + cmpRows + "</tbody></table>" +
       '<p class="note">When the outside air holds less moisture than inside, opening up dries the home out. When it holds more, keep the windows shut on humid days.</p></div></div>';
+  }
+  var localMap = null;
+  function drawMap() {
+    var home = cache.home && cache.home.data;
+    var el = document.getElementById("local-map");
+    if (!el || !home || !home.location) return;
+    if (!window.L) { el.innerHTML = '<p class="muted" style="padding:16px">The map could not load. The air numbers below are still here.</p>'; return; }
+    if (localMap) { try { localMap.remove(); } catch (e) { /* container already gone */ } localMap = null; }
+    var lat = home.location.lat, lon = home.location.lon;
+    var map = L.map(el, { scrollWheelZoom: false }).setView([lat, lon], 12);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: "&copy; OpenStreetMap",
+    }).addTo(map);
+    if (home.googleAir && home.googleAir.heatmap) {
+      L.tileLayer("/api/air-tile?z={z}&x={x}&y={y}", {
+        opacity: 0.62, minZoom: 6, maxZoom: 12, attribution: "Air colors: Google",
+      }).addTo(map);
+    }
+    var g = home.googleAir || {};
+    var us = (g.indexes || []).filter(function (i) { return i.code === "usa_epa"; })[0];
+    var pol = home.pollen && home.pollen.ok ? topPollen(home.pollen) : "";
+    var popup = "<b>Your sensor</b><br>" + (us ? "Outdoor AQI " + esc(String(us.aqi)) + " · " + esc(us.category || "") + "<br>" : "") + (pol ? "Pollen: " + esc(pol) : "");
+    L.circleMarker([lat, lon], { radius: 11, color: "#ffffff", weight: 3, fillColor: "#2a6fdb", fillOpacity: 1 })
+      .addTo(map).bindPopup(popup);
+    localMap = map;
+    setTimeout(function () { map.invalidateSize(); }, 60);
   }
 
   // ── Alerts ─────────────────────────────────────────────────────────
@@ -490,13 +666,26 @@
     if (!ch[alertState.channel]) alertState.channel = ch.email ? "email" : "sms";
     var none = !ch.email && !ch.sms;
     var saved = store("sm-alert-rules") || {};
-    var rules = Object.keys(info.rules).map(function (k) {
-      var r = info.rules[k];
-      var on = saved[k] !== undefined ? saved[k] !== false : ["iaq", "co2", "humidityHi", "smell", "pet"].indexOf(k) >= 0;
+    var presetOn = ["pet", "mold", "pollen", "smell", "humidityHi"];
+    var ruleList = Object.keys(info.rules).map(function (k) { return [k, info.rules[k]]; }).sort(function (a, b) {
+      return (a[1].easy || 99) - (b[1].easy || 99);
+    });
+    var choice = function (k, r) {
+      var on = saved[k] !== undefined ? saved[k] !== false : presetOn.indexOf(k) >= 0;
+      return '<label class="choice' + (on ? "" : " off") + '"><span><b>' + esc(r.label) + "</b><span>" + esc(r.hint || "") + "</span></span>" +
+        '<input type="checkbox" role="switch" data-rule="' + k + '"' + (on ? " checked" : "") + "></label>";
+    };
+    var easy = ruleList.filter(function (x) { return x[1].easy; }).map(function (x) { return choice(x[0], x[1]); }).join("");
+    var more = ruleList.filter(function (x) { return !x[1].easy; }).map(function (x) { return choice(x[0], x[1]); }).join("");
+    var numbers = ruleList.filter(function (x) { return x[1].dir !== "flag"; }).map(function (x) {
+      var k = x[0], r = x[1];
       var val = isNum(saved[k]) ? saved[k] : r.def;
-      return '<label class="rule' + (on ? "" : " off") + '"><input type="checkbox" data-rule="' + k + '"' + (on ? " checked" : "") + "><span>" + esc(r.label) + "</span>" +
-        (r.dir === "flag" ? '<span class="lim">when detected</span>' : '<span class="lim">' + (r.dir === "above" ? "above" : "below") + ' <input type="number" data-lim="' + k + '" value="' + val + '" min="' + r.min + '" max="' + r.max + '" step="' + (r.max <= 20 ? 0.5 : 1) + '"' + (on ? "" : " disabled") + ">" + esc(r.unit.trim()) + "</span>") + "</label>";
+      return '<label class="rule"><span>' + esc(r.label) + "</span>" +
+        '<span class="lim">' + (r.dir === "above" ? "above" : "below") + ' <input type="number" data-lim="' + k + '" value="' + val + '" min="' + r.min + '" max="' + r.max + '" step="' + (r.max <= 20 ? 0.5 : 1) + '">' + esc(r.unit.trim()) + "</span></label>";
     }).join("");
+    var rules = '<div class="choices">' + easy + "</div>" +
+      (more ? '<details class="more"><summary>More alerts</summary><div class="choices">' + more + "</div></details>" : "") +
+      '<details class="more"><summary>Change the exact numbers</summary><p class="muted small">Leave these alone if you just want a message when something is higher than usual.</p><div class="rules">' + numbers + "</div></details>";
     var msg = (alertState.error ? '<div class="msg err">' + esc(alertState.error) + "</div>" : "") + (alertState.ok ? '<div class="msg ok">' + esc(alertState.ok) + "</div>" : "");
     var body;
     if (alertState.step === "code") {
@@ -512,11 +701,11 @@
         '<button type="button" data-ch="sms" aria-pressed="' + (alertState.channel === "sms") + '"' + (ch.sms ? "" : " disabled") + ">Text message" + (ch.sms ? "" : " (not set up)") + "</button></div>" +
         '<div class="field"><label for="addr">' + (alertState.channel === "sms" ? "Mobile number" : "Email address") + "</label>" +
         (alertState.channel === "sms" ? '<input id="addr" type="tel" autocomplete="tel" placeholder="(555) 123-4567" required>' : '<input id="addr" type="email" autocomplete="email" placeholder="you@example.com" required>') + "</div>" +
-        '<div class="field"><label>Tell me when…</label><div class="rules">' + rules + "</div></div>" +
+        '<fieldset class="field"><legend>Tell me when…</legend>' + rules + "</fieldset>" +
         '<p class="muted small" style="margin:0">You\'ll get one message when a reading crosses your limit, a reminder at most every 3 hours if it stays there, and nothing more until it clears.' + (alertState.channel === "sms" ? " Message and data rates may apply." : "") + "</p>" +
-        '<div><button class="btn" type="submit"' + (none ? " disabled" : "") + ">Send my code</button></div></form>";
+        '<div><button class="btn block" type="submit"' + (none ? " disabled" : "") + ">Send my code</button></div></form>";
     }
-    return head("Alerts", "Get a heads-up by email or text when the air in here crosses a level you choose. Anyone with this link can sign up.") +
+    return head("Alerts", "Pick what you want to hear about. A text or email arrives when it happens, and each message has a link to stop.") +
       '<div class="grid g-side"><div class="card">' + body + "</div>" +
       '<div class="card"><h3>How it works</h3><ol class="muted" style="padding-left:18px;margin:10px 0 0;display:grid;gap:8px"><li>Pick email or text and the readings you care about.</li><li>Confirm with the code we send, so nobody can sign you up by mistake.</li><li>SniffMaster checks every couple of minutes and only messages you when something changes.</li></ol>' +
       '<p class="note">' + info.subscriberCount + " " + (info.subscriberCount === 1 ? "person is" : "people are") + " signed up." + (none ? " Email and text delivery aren't configured on this dashboard yet." : "") + "</p></div></div>";
@@ -526,11 +715,7 @@
       b.addEventListener("click", function () { alertState.channel = b.dataset.ch; alertState.error = ""; rerender(); });
     });
     view.querySelectorAll("[data-rule]").forEach(function (cb) {
-      cb.addEventListener("change", function () {
-        var lim = view.querySelector('[data-lim="' + cb.dataset.rule + '"]');
-        if (lim) lim.disabled = !cb.checked;
-        cb.closest(".rule").classList.toggle("off", !cb.checked);
-      });
+      cb.addEventListener("change", function () { cb.closest(".choice") && cb.closest(".choice").classList.toggle("off", !cb.checked); });
     });
     var restart = $("#restart");
     if (restart) restart.addEventListener("click", function () { alertState = { step: "form", channel: alertState.channel, error: "", ok: "" }; rerender(); });
@@ -576,7 +761,7 @@
     sensors: { render: pageSensors, poll: ["sensors"], title: "Sensors", after: drawSensorCharts },
     smell: { render: pageSmell, poll: ["home", "sensors"], title: "Smell", after: drawHeat },
     pets: { render: pagePets, poll: ["home", "sensors"], title: "Pet meter", after: drawPetChart, bind: bindPets },
-    outside: { render: pageOutside, poll: ["home", "weather"], title: "Outside" },
+    outside: { render: pageOutside, poll: ["home", "weather"], title: "Outside", after: drawMap },
     alerts: { render: pageAlerts, poll: [], title: "Alerts", bind: bindAlerts },
   };
   var currentRoute = null;

@@ -88,6 +88,10 @@ app.all("/api/alerts", (req, res, next) => {
   req.query = { ...req.query, fn: "alerts" };
   next();
 }, wrap(extrasHandler));
+app.all("/api/air-tile", (req, res, next) => {
+  req.query = { ...req.query, fn: "air-tile" };
+  next();
+}, wrap(extrasHandler));
 app.all("/api/guest", (req, res, next) => {
   req.query = { ...req.query, fn: "guest" };
   next();

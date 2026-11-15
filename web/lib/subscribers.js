@@ -37,16 +37,20 @@ const BREVO_URL = "https://api.brevo.com/v3/smtp/email";
  * `below` rules when value <= limit. Ranges keep values sane.
  */
 export const RULES = {
-  iaq:        { label: "Indoor air quality (IAQ)", unit: "", dir: "above", def: 150, min: 50, max: 400, get: (c) => c.iaq },
-  co2:        { label: "CO₂ (estimated)",          unit: " ppm", dir: "above", def: 1200, min: 600, max: 3000, get: (c) => c.co2 },
-  voc:        { label: "Breath VOC",               unit: " ppm", dir: "above", def: 2.5, min: 0.5, max: 20, get: (c) => c.voc },
-  humidityHi: { label: "Humidity high",            unit: "%",    dir: "above", def: 65, min: 40, max: 95, get: (c) => c.humidity },
-  humidityLo: { label: "Humidity low",             unit: "%",    dir: "below", def: 25, min: 5, max: 45, get: (c) => c.humidity },
-  tempHi:     { label: "Temperature high",         unit: "°F",   dir: "above", def: 85, min: 70, max: 110, get: (c) => c.tempF },
-  tempLo:     { label: "Temperature low",          unit: "°F",   dir: "below", def: 60, min: 32, max: 72, get: (c) => c.tempF },
-  pet:        { label: "Pet dander index",         unit: "/100", dir: "above", def: 50, min: 10, max: 100, get: (c) => c.petIndex },
-  outdoorAqi: { label: "Outdoor AQI",              unit: "",     dir: "above", def: 100, min: 25, max: 300, get: (c) => c.outdoorAqi },
-  smell:      { label: "Room smells bad",          unit: "",     dir: "flag",  def: 1, min: 1, max: 1, get: (c) => (c.smellsBad ? 1 : 0) },
+  pet:        { easy: 1, label: "Pet allergens", hint: "Message me when pet dander is higher than usual.", unit: "/100", dir: "above", def: 50, min: 10, max: 100, get: (c) => c.petIndex, say: (v) => `Pet allergens are at ${Math.round(v)} out of 100, which is higher than usual.` },
+  mold:       { easy: 2, label: "Mold risk", hint: "Message me when the house has been damp enough for mold.", unit: "", dir: "above", def: 60, min: 20, max: 100, get: (c) => c.moldPct, say: (v) => `Mold risk is ${Math.round(v)} out of 100, which is higher than usual.` },
+  dustMite:   { easy: 3, label: "Dust mites", hint: "Message me when the air has favored dust mites.", unit: "", dir: "above", def: 60, min: 20, max: 100, get: (c) => c.dustMitePct, say: (v) => `Dust-mite risk is ${Math.round(v)} out of 100, which is higher than usual.` },
+  pollen:     { easy: 4, label: "Outdoor pollen", hint: "Message me when pollen outside is moderate or worse.", unit: "/5", dir: "above", def: 3, min: 1, max: 5, get: (c) => c.pollenIndex, say: (v) => `Outdoor pollen is ${Number(v).toFixed(0)} out of 5, which is moderate or worse.` },
+  smell:      { easy: 5, label: "A bad smell", hint: "Message me when the room smells off.", unit: "", dir: "flag", def: 1, min: 1, max: 1, get: (c) => (c.smellsBad ? 1 : 0) },
+  humidityHi: { easy: 6, label: "Too damp", hint: "Message me when the air in the house is too humid.", unit: "%", dir: "above", def: 65, min: 40, max: 95, get: (c) => c.humidity, say: (v) => `Humidity is ${Math.round(v)}%, which is damper than usual.` },
+  airScore:   { easy: 7, label: "Air score drops", hint: "Message me when the home air score gets low.", unit: "/100", dir: "below", def: 60, min: 20, max: 80, get: (c) => c.airScore, say: (v) => `The home air score is ${Math.round(v)} out of 100, which is lower than usual.` },
+  co2:        { easy: 8, label: "Stuffy air", hint: "Message me when the room needs a window or a fan.", unit: " ppm", dir: "above", def: 1200, min: 600, max: 3000, get: (c) => c.co2, say: (v) => `The air is stuffy, about ${Math.round(v)} ppm of CO₂.` },
+  iaq:        { label: "Indoor air quality", hint: "Message me when the air-quality index is poor.", unit: "", dir: "above", def: 150, min: 50, max: 400, get: (c) => c.iaq },
+  voc:        { label: "Chemical smells", hint: "Message me when chemical vapors are high.", unit: " ppm", dir: "above", def: 2.5, min: 0.5, max: 20, get: (c) => c.voc },
+  humidityLo: { label: "Too dry", hint: "Message me when the air is very dry.", unit: "%", dir: "below", def: 25, min: 5, max: 45, get: (c) => c.humidity },
+  tempHi:     { label: "Too warm", hint: "Message me when the house is too warm.", unit: "°F", dir: "above", def: 85, min: 70, max: 110, get: (c) => c.tempF },
+  tempLo:     { label: "Too cool", hint: "Message me when the house is too cool.", unit: "°F", dir: "below", def: 60, min: 32, max: 72, get: (c) => c.tempF },
+  outdoorAqi: { label: "Outdoor air", hint: "Message me when the air outside is unhealthy.", unit: "", dir: "above", def: 100, min: 25, max: 300, get: (c) => c.outdoorAqi },
 };
 
 const env = (n) => (typeof process.env[n] === "string" ? process.env[n].trim() : "");
@@ -116,9 +120,21 @@ export function alertContext(snapshot = {}, home = {}) {
     // OpenWeatherMap index as outdoorAqi, which isn't on the same scale.
     outdoorAqi: isFinite(n(home?.outdoor?.usAqi)) ? n(home.outdoor.usAqi) : n(snapshot.outdoorAqi) > 5 ? n(snapshot.outdoorAqi) : NaN,
     petIndex: n(home?.petAllergen?.index),
+    moldPct: n(home?.biological?.mold?.pct),
+    dustMitePct: n(home?.biological?.dustMite?.pct),
+    pollenIndex: pollenIndex(home?.pollen),
+    airScore: n(home?.score?.value),
     smellsBad: !!home?.smell?.smellsBad,
     smellHeadline: home?.smell?.headline || "",
   };
+}
+
+function pollenIndex(pollen) {
+  if (!pollen?.ok) return NaN;
+  const vals = [...(pollen.types || []), ...(pollen.plants || [])]
+    .map((x) => Number(x?.value))
+    .filter((v) => Number.isFinite(v));
+  return vals.length ? Math.max(...vals) : NaN;
 }
 
 function fmtVal(rule, v) {
@@ -163,16 +179,17 @@ export function decideSubscriberAlerts(subs, ctx, now = Date.now()) {
 export function alertText(tripped, ctx) {
   const parts = tripped.map(({ key, rule, value, limit }) => {
     if (key === "smell") return ctx.smellHeadline || "The room smells off.";
+    if (typeof rule.say === "function") return rule.say(value, limit);
     const word = rule.dir === "above" ? "above" : "below";
     return `${rule.label} is ${fmtVal(rule, value)}, ${word} your ${fmtVal(rule, limit)} limit.`;
   });
   const tips = [];
   const keys = new Set(tripped.map((t) => t.key));
-  if (keys.has("co2") || keys.has("iaq") || keys.has("voc") || keys.has("smell")) tips.push("Cracking a window or running a fan for 10–15 minutes usually clears it.");
-  if (keys.has("humidityHi")) tips.push("A dehumidifier or the bathroom fan will bring humidity down.");
+  if (keys.has("co2") || keys.has("iaq") || keys.has("voc") || keys.has("smell") || keys.has("airScore")) tips.push("Cracking a window or running a fan for 10–15 minutes usually clears it.");
+  if (keys.has("humidityHi") || keys.has("mold") || keys.has("dustMite")) tips.push("A dehumidifier or the bathroom fan will bring the dampness down.");
   if (keys.has("humidityLo")) tips.push("A humidifier or a few plants will help with the dry air.");
   if (keys.has("pet")) tips.push("Running an air purifier and vacuuming soft surfaces helps with dander.");
-  if (keys.has("outdoorAqi")) tips.push("Outdoor air is worse than usual, so keep the windows shut for now.");
+  if (keys.has("outdoorAqi") || keys.has("pollen")) tips.push("Keep the windows shut for now. Outdoor air is worse than usual.");
   return [...parts, tips[0]].filter(Boolean).join(" ");
 }
 

@@ -20,6 +20,7 @@
     { "source": "/api/insights", "destination": "/api/extras?fn=insights" },
     { "source": "/api/sensors", "destination": "/api/extras?fn=sensors" },
     { "source": "/api/alerts", "destination": "/api/extras?fn=alerts" },
+    { "source": "/api/air-tile", "destination": "/api/extras?fn=air-tile" },
     { "source": "/classic", "destination": "/classic/index.html" },
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
