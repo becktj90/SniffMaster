@@ -90,6 +90,19 @@ button, input, select { font: inherit; color: inherit; }
 .tabs a:hover { background: var(--card); text-decoration: none; color: var(--ink); }
 .tabs a[aria-current="page"] { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line) inset; }
 .tabs svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* Tab icons: filled shapes and accent details inside the tab SVGs. The
+   base .tabs svg rule is stroke-only, so these classes opt individual
+   shapes back into fills. Every color is a theme token, so the icons
+   read in both dark and light themes. */
+.tabs svg .fill { fill: currentColor; stroke: none; }
+.tabs svg .acc { fill: var(--accent); stroke: none; }
+.tabs svg .accs { stroke: var(--accent); fill: none; }
+.tabs svg .sun { fill: var(--fair); stroke: none; }
+.tabs svg .area { fill: currentColor; fill-opacity: .16; stroke: none; }
+/* The active tab's icon picks up the accent in both layouts: mobile
+   already colors the whole link accent, desktop keeps the pill and
+   the ink label, so only the icon turns accent there. */
+.tabs a[aria-current="page"] svg { color: var(--accent); }
 .status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
 .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
 .status.live .dot { background: var(--good); box-shadow: 0 0 0 4px var(--good-bg); }
