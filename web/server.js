@@ -76,6 +76,26 @@ app.all("/api/settings", (req, res, next) => {
   next();
 }, wrap(extrasHandler));
 
+app.all("/api/insights", (req, res, next) => {
+  req.query = { ...req.query, fn: "insights" };
+  next();
+}, wrap(extrasHandler));
+app.all("/api/sensors", (req, res, next) => {
+  req.query = { ...req.query, fn: "sensors" };
+  next();
+}, wrap(extrasHandler));
+app.all("/api/alerts", (req, res, next) => {
+  req.query = { ...req.query, fn: "alerts" };
+  next();
+}, wrap(extrasHandler));
+app.all("/api/guest", (req, res, next) => {
+  req.query = { ...req.query, fn: "guest" };
+  next();
+}, wrap(extrasHandler));
+app.all("/api/report-card", (req, res, next) => {
+  req.query = { ...req.query, fn: "report-card" };
+  next();
+}, wrap(extrasHandler));
 app.all("/api/update", wrap(updateHandler));
 app.all("/api/latest", wrap(latestHandler));
 app.all("/api/history", wrap(historyHandler));
