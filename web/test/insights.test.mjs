@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
 import { buildHomeMetrics } from "../lib/homeAir.js";
+import { fallbackInsights, insightFacts } from "../lib/insights.js";
 
 const now = Date.now();
 // Deterministic pseudo-noise.
@@ -86,6 +87,44 @@ test("too little history says it is learning instead of guessing", () => {
 test("low sensor accuracy lowers confidence", () => {
   const h = day({ spikeFromMin: 20 }).map((r) => ({ ...r, iaqAcc: 0 }));
   assert.equal(analyzeSmell(latestOf(h), h, { now }).confidence, "low");
+});
+
+test("a low-accuracy gas shift is not a strong smell", () => {
+  const h = day({ spikeFromMin: 20 }).map((r) => ({ ...r, iaqAcc: 1 }));
+  const odors = Array(20).fill(0);
+  odors[10] = 70;
+  const latest = latestOf(h, { odors, iaqAcc: 1, iaq: 40, co2: 600, stab: 1, runIn: 1 });
+  const s = analyzeSmell(latest, h, { now });
+  assert.equal(s.smellsBad, false);
+  assert.notEqual(s.level, "Strong smell");
+  assert.equal(s.cause, null);
+  assert.doesNotMatch(s.headline, /strong smell/i);
+  const home = {
+    score: { value: 90, grade: "Great" },
+    smell: s,
+    climate: { tempF: 72, humidity: 45 },
+    gases: { iaq: 40, co2: 600 },
+  };
+  const facts = insightFacts(home, { iaqAcc: 1, stab: 1, runIn: 1, iaq: 40, co2: 600, gasR: latest.gasR }, null);
+  const out = fallbackInsights(facts);
+  assert.match(out.headline, /great shape/i);
+  assert.doesNotMatch(out.headline, /smells a little off/i);
+  assert.match(out.summary, /sensor is running/i);
+  assert.match(out.summary, /room air has not varied/i);
+  assert.doesNotMatch(out.summary, /still calibrating/i);
+  assert.equal(facts.indoor.sensorCalibrated, false);
+});
+
+test("a cold boot still says the sensor is calibrating", () => {
+  const facts = insightFacts(
+    { score: { value: 90, grade: "Great" }, climate: { tempF: 70, humidity: 40 }, gases: { iaq: 25, co2: 450 } },
+    { iaqAcc: 0, stab: 0, runIn: 0, iaq: 25, co2: 450, gasR: 150000 },
+    null,
+  );
+  const out = fallbackInsights(facts);
+  assert.match(out.summary, /still calibrating/i);
+  assert.doesNotMatch(out.summary, /room air has not varied/i);
+  assert.equal(facts.score, 90);
 });
 
 test("parseTriggers whitelists", () => {

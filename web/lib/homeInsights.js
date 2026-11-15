@@ -219,30 +219,37 @@ export function analyzeSmell(latest, history, { now = Date.now() } = {}) {
   // When the classifier is present and every channel is still background,
   // keep that distinction instead of asserting "Strong smell" or alerting.
   const unclassifiedGasChange = rawGasChange && odors.length > 0 && topOdorScore < 20;
-  const bad = rawGasChange && !unclassifiedGasChange && !(cause && cause.benign && dNow < 0.6);
+  // Accuracy below 2 is not a trusted odor call, even if one class is above
+  // background. Time spent in a still room does not promote that accuracy.
+  const lowAccuracy = Number.isFinite(acc) && acc < 2;
+  const lowAccuracyGasShift = rawGasChange && lowAccuracy;
+  const trustedCause = !lowAccuracy;
+  const bad = rawGasChange && !unclassifiedGasChange && !lowAccuracyGasShift && !(cause && cause.benign && trustedCause && dNow < 0.6);
   const smellsBad = bad;
-  const safety = cause && SAFETY[cause.index] ? SAFETY[cause.index] : null;
+  const safety = trustedCause && cause && SAFETY[cause.index] ? SAFETY[cause.index] : null;
 
   let headline;
-  if (unclassifiedGasChange) headline = "Gas signal changed, but no odor class is confirmed.";
+  if (lowAccuracyGasShift && !unclassifiedGasChange) headline = "Gas signal changed, but BSEC accuracy is still too low to call it a smell.";
+  else if (unclassifiedGasChange) headline = "Gas signal changed, but no odor class is confirmed.";
   else if (!bad) headline = dNow >= 0.12 ? "Air is slightly off but not smelly." : "Air smells fresh.";
   else if (cause && !cause.benign) headline = `${level.label}: probably ${cause.name.toLowerCase()}.`;
   else headline = `${level.label}.`;
 
   const action = bad ? (safety || (cause && SUGGEST[cause.index]) || "Open a window or run a fan; check for a spill, trash or damp spot.") : null;
+  const gasShift = unclassifiedGasChange || lowAccuracyGasShift;
 
   return {
-    state: smellsBad ? "bad" : unclassifiedGasChange ? "unclassified" : "ok",
+    state: smellsBad ? "bad" : gasShift ? "unclassified" : "ok",
     smellsBad,
-    unclassifiedGasChange,
-    level: unclassifiedGasChange ? "Unclassified gas change" : level.label,
-    tone: unclassifiedGasChange ? "fair" : bad ? level.tone : dNow >= 0.12 ? "fair" : "good",
+    unclassifiedGasChange: gasShift,
+    level: gasShift ? (unclassifiedGasChange ? "Unclassified gas change" : "Low-accuracy gas change") : level.label,
+    tone: gasShift ? "fair" : bad ? level.tone : dNow >= 0.12 ? "fair" : "good",
     headline,
     action,
     safety: !!safety,
     trend: rawGasChange ? trend : null,
     sinceMinutes: sinceMs === null ? null : Math.round(sinceMs / MIN),
-    cause,
+    cause: lowAccuracyGasShift ? null : cause,
     confidence,
     deficit: Math.round(dNow * 100) / 100,
     detail:

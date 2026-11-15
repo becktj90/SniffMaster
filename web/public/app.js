@@ -280,9 +280,7 @@
       "</a>";
 
     var bio = home.biological || {};
-    var sample = home.airSample || {};
-    var sampleActive = sample.state === "baseline" || sample.state === "measure";
-    var sampleCard = '<div class="card"><div class="card-head"><h3>Air sample</h3>' + pill(sampleActive ? "Running" : sample.result ? "Complete" : "Ready", sampleActive ? "fair" : sample.result ? "good" : "na") + '</div><p style="margin:0 0 8px;font-weight:600">' + esc(sampleActive ? "Measuring a short VOC response…" : sample.result || "Hold the device button to start a 35-second sample.") + '</p>' + (sampleActive && isNum(sample.progress) ? '<p class="note">' + fmt(sample.progress) + '% complete</p>' : '') + (sample.result ? '<dl class="kv"><dt>VOC change</dt><dd>' + fmt(sample.deltaVoc, 2) + ' ppm</dd><dt>Baseline</dt><dd>' + fmt(sample.baselineVoc, 2) + ' ppm</dd></dl>' : '') + '<p class="note">A room-air VOC response only — not an alcohol, health, or identity test.</p></div>';
+    var sampleCard = airSampleCard(home.airSample);
     var risks = '<div class="card"><div class="card-head"><h3>Allergen & moisture risk</h3><span class="sub">estimates</span></div><dl class="kv">' +
       "<dt>Pet dander</dt><dd>" + pill(pet.level || "—", levelTone(pet.level)) + "</dd>" +
       "<dt>Mold</dt><dd>" + pill((bio.mold && bio.mold.category) || "—", levelTone(bio.mold && bio.mold.category)) + "</dd>" +
@@ -304,7 +302,26 @@
       '<div class="where">Higher is healthier · this is the OLED Home Score · updated ' + esc(ago(home.receivedAt)) + "</div>" + deviceRows + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
       '<div class="grid g-4" style="margin-top:16px">' + tiles.join("") + "</div>" +
-      '<div class="grid g-2" style="margin-top:16px">' + outside + risks + "</div>" + '<div style="margin-top:16px">' + sampleCard + "</div>";
+      '<div class="grid g-2" style="margin-top:16px">' + outside + risks + "</div>" + sampleCard;
+  }
+  function airSampleCard(sample) {
+    sample = sample || {};
+    var phrase = { no_shift: "No meaningful VOC shift", mild: "Mild VOC response", strong: "Strong VOC response" };
+    var stateLabel = { idle: "Idle", baseline: "Baseline", measure: "Measuring", result: "Result", rejected: "Not ready", cancelled: "Cancelled" };
+    var live = sample.state === "baseline" || sample.state === "measure";
+    var tone = sample.result === "strong" ? "poor" : sample.result === "mild" ? "fair" : sample.result === "no_shift" ? "good" : live ? "fair" : "na";
+    var headline = live
+      ? (sample.state === "baseline" ? "Collecting a 10 second baseline." : "Measuring the VOC change.")
+      : (phrase[sample.result] || "Hold the right-hand button to sample the air in front of the sensor.");
+    var prog = isNum(sample.progress) ? Math.max(0, Math.min(100, Math.round(Number(sample.progress)))) : 0;
+    var whenSec = Number(sample.completedAt);
+    var when = isNum(sample.completedAt) && whenSec > 1000000000 ? clock(whenSec > 1000000000000 ? whenSec : whenSec * 1000) : "";
+    var delta = isNum(sample.deltaVoc) ? '<p class="muted" style="margin:0 0 8px">VOC change ' + fmt(sample.deltaVoc, 2) + " ppm" + (isNum(sample.baselineVoc) ? " from a " + fmt(sample.baselineVoc, 2) + " ppm baseline" : "") + "</p>" : "";
+    var bar = live ? '<div class="hbar"><span>' + esc(stateLabel[sample.state] || "Progress") + '</span><div class="track"><i style="width:' + prog + '%"></i></div><span class="v">' + prog + "%</span></div>" : "";
+    return '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Air sample</h3>' + pill(live ? (stateLabel[sample.state] || "Running") : sample.result ? (phrase[sample.result] || "Complete") : "Ready", tone) + "</div>" +
+      '<p style="margin:0 0 8px;font-weight:600">' + esc(headline) + "</p>" + delta + bar +
+      (when && !live ? '<p class="muted small" style="margin:8px 0 0">Latest result ' + esc(when) + "</p>" : "") +
+      '<p class="note">VOC response only. Not a health or alcohol test.</p></div>';
   }
   function topPollen(p) {
     var items = [].concat(p.types || [], p.plants || []).filter(function (x) { return isNum(x.value); }).sort(function (a, b) { return b.value - a.value; });
@@ -398,11 +415,22 @@
       "<dt>Wi-Fi signal</dt><dd>" + fmt(L.wifiRssi) + " dBm</dd>" +
       "<dt>Uptime</dt><dd>" + (isNum(L.uptime) ? fmt(L.uptime / 3600, 1) + " h" : "—") + "</dd>" +
       "<dt>Last reading</dt><dd>" + esc(L.receivedAt ? clock(L.receivedAt) + " (" + ago(L.receivedAt) + ")" : "—") + "</dd></dl>" +
-      (Number(L.iaqAcc) < 2 ? '<p class="note">The BME688 calibrates itself against the air it sees. Accuracy climbs to "High" after a few hours of normal use, including some time with fresh air.</p>' : "") + "</div>";
+      (sensorNote(L)) + "</div>";
 
     var addon = ["pm25", "pm10"].some(function (k) { return isNum(L[k]); }) ? "" :
       '<div class="card"><h3>Want particulate readings?</h3><p class="muted" style="margin:6px 0 0">The BME688 senses gases, not dust. Adding a Sensirion SEN5x (PM1–PM10) makes the pet dander meter far more precise, and the firmware already has a hook for it in <code>home_sensors.h</code>.</p></div>';
 
+    function sensorNote(L) {
+      var acc = Number(L.iaqAcc);
+      var settled = L.stab === 1 || L.stab === true || L.runIn === 1 || L.runIn === true;
+      var publishing = isNum(L.gasR) && Number(L.gasR) > 0 && isNum(L.iaq) && isNum(L.co2) && Number(L.co2) > 0;
+      var posted = /room air has not varied/i.test(L.calibration || "");
+      if ((acc >= 1 && acc < 2 && settled && publishing) || posted)
+        return '<p class="note">The sensor is running, and BSEC accuracy is still low because the room air has not varied. Accuracy rises when the air changes, not from uptime alone.</p>';
+      if (acc < 2)
+        return '<p class="note">The sensor is still warming up. This is a cold start, not a sensor that has already been publishing in still air.</p>';
+      return "";
+    }
     window.__sensorData = d;
     return head("Sensors", "Every channel from the BME688 and BSEC2, at full precision.", seg) +
       (sensorRange === "7d" ? '<div class="callout" style="margin-bottom:16px">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</div>' : "") +

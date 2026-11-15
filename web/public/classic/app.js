@@ -354,6 +354,7 @@ function applyTheme(theme, options = {}) {
 function headerCalibrationText(d) {
   if (d.highAccuracyIaq) return "Ready";
   const label = `${d.calibration || ""}`.trim().toLowerCase();
+  if (label.includes("room air") || label.includes("accuracy still low") || label.includes("accuracy is still low")) return "Accuracy low";
   if (label.includes("learn")) return "Learning room";
   if (label.includes("restor")) return "Restoring cal";
   if (label.includes("warm")) return "Sensor warmup";
@@ -369,6 +370,12 @@ function calibrationNarrative(d) {
     };
   }
   const label = `${d.calibration || ""}`.trim().toLowerCase();
+  if (label.includes("room air") || label.includes("accuracy still low") || label.includes("accuracy is still low")) {
+    return {
+      short: "Accuracy low",
+      detail: "The sensor is running, and BSEC accuracy is still low because the room air has not varied."
+    };
+  }
   if (label.includes("learn")) {
     return {
       short: "Learning room",
