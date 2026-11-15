@@ -150,6 +150,15 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .ring svg { width: 100%; height: 100%; transform: rotate(135deg); }
 .ring .track { stroke: var(--card-2); }
 .ring .arc { transition: stroke-dashoffset .9s cubic-bezier(.2,.8,.2,1); }
+.ring .seg { stroke-linecap: butt; }
+.ring .seg.ghost { opacity: .18; }
+.ring .tick { stroke: var(--ink-3); stroke-width: 2; stroke-linecap: round; }
+@media (prefers-reduced-motion: reduce) {
+  .ring .arc { transition: none; }
+}
+.gauge-note { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--ink); max-width: 36ch; }
+.driver { margin: 0; font-size: 12.5px; color: var(--ink-2); }
+.driver b { color: var(--ink); }
 .ring-label { position: absolute; inset: 0; display: grid; place-content: center; }
 .ring-label .num { font-size: 58px; font-weight: 600; line-height: 1; }
 .ring-label .grade { font-size: 13px; color: var(--ink-2); margin-top: 6px; font-weight: 600; letter-spacing: .02em; }
