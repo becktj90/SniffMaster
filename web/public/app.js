@@ -159,7 +159,9 @@
       var gv = r[0] + ((r[1] - r[0]) * i) / 3;
       var gy = y(gv);
       html += '<line class="grid-line" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + gy + '" y2="' + gy + '"/>';
-      html += '<text class="axis-text" x="' + (padL - 6) + '" y="' + (gy + 3.5) + '" text-anchor="end">' + esc(opts.tick ? opts.tick(gv) : fmt(gv, Math.abs(r[1] - r[0]) < 6 ? 1 : 0)) + "</text>";
+      var yLabel = opts.tick ? opts.tick(gv) : fmt(gv, Math.abs(r[1] - r[0]) < 6 ? 1 : 0);
+      if (i === 3 && opts.unit && !opts.tick) yLabel += " " + opts.unit.trim(); // unit lives on the top tick, HMI-style
+      html += '<text class="axis-text" x="' + (padL - 6) + '" y="' + (gy + 3.5) + '" text-anchor="end">' + esc(yLabel) + "</text>";
     }
     var span = t1 - t0, n = W < 420 ? 3 : 5;
     for (var k = 0; k <= n; k++) {
@@ -179,6 +181,10 @@
       if (si === 0 && area) html += '<path d="' + area + "L" + lastX + " " + (H - padB) + "L" + firstX + " " + (H - padB) + 'Z" fill="url(#' + id + ')"/>';
       html += '<path d="' + d + '" fill="none" stroke="' + s.color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' + (s.dash ? ' stroke-dasharray="4 4"' : "") + "/>";
     });
+    // "Now" dot on the latest reading, so the current value is visible at a glance.
+    var s0 = series[0], lastJ = -1;
+    for (var j = s0.values.length - 1; j >= 0; j--) { if (isNum(s0.values[j])) { lastJ = j; break; } }
+    if (lastJ >= 0) html += '<circle class="now-dot" cx="' + x(t[lastJ]).toFixed(1) + '" cy="' + y(Number(s0.values[lastJ])).toFixed(1) + '" r="4" fill="' + s0.color + '" stroke="' + css("--card") + '" stroke-width="2"/>';
     html += '<line class="crosshair" y1="' + padT + '" y2="' + (H - padB) + '" visibility="hidden"/>';
     series.forEach(function (s) { html += '<circle class="dot" r="4.5" fill="' + s.color + '" visibility="hidden"/>'; });
     html += "</svg>";
@@ -266,11 +272,15 @@
     var out = home.outdoor || {};
     var cur = wx && wx.current;
     var vent = home.ventilation || {};
+    // Sparkline color means state, not series identity: green while the reading
+    // is in its good band, amber when it drifts, red/orange when it is bad.
+    var tempTone = !isNum(cl.tempF) ? "--ink-3" : cl.tempF >= 68 && cl.tempF <= 76 ? "--good" : cl.tempF >= 60 && cl.tempF <= 84 ? "--fair" : "--poor";
+    var co2Tone = !isNum(g.co2) ? "--ink-3" : g.co2 <= 800 ? "--good" : g.co2 <= 1200 ? "--fair" : "--bad";
 
     var tiles = [
-      '<a class="card stat" href="#/smell"><p class="kicker">Smell</p><div class="value" style="font-size:22px;font-family:var(--sans);font-weight:700">' + esc(smell.level || "—") + '</div><div class="line">' + esc(smell.headline || "") + "</div>" + (smell.sinceMinutes ? '<div class="line muted small">For ' + smell.sinceMinutes + " min · " + esc(smell.trend || "") + "</div>" : "") + "</a>",
-      '<a class="card stat" href="#/sensors"><p class="kicker">Comfort</p><div class="value num">' + fmt(cl.tempF, 1) + "<small>°F</small> " + fmt(cl.humidity) + '<small>% RH</small></div><div class="line">' + esc(cl.comfort || "") + " · dew point " + fmt(cToF(cl.dewPointC)) + "°F</div>" + spark(s.tempC, css("--series-2")) + "</a>",
-      '<a class="card stat" href="#/sensors"><p class="kicker">' + (g.co2Source === "sensor" ? "CO₂ sensor" : g.co2Source === "estimated" ? "CO₂ estimate" : "CO₂") + '</p><div class="value num">' + fmt(g.co2) + '<small>ppm CO₂</small></div><div class="line">' + esc(vent.text || g.co2Category || "") + (g.co2Source === "estimated" ? " · same BSEC estimate as the OLED" : "") + "</div>" + spark(s.co2, css("--series-1")) + "</a>",
+      '<a class="card stat" href="#/smell"><p class="kicker">Smell</p><div class="value value-md">' + esc(smell.level || "—") + '</div><div class="line">' + esc(smell.headline || "") + "</div>" + (smell.sinceMinutes ? '<div class="line muted small">For ' + smell.sinceMinutes + " min · " + esc(smell.trend || "") + "</div>" : "") + "</a>",
+      '<a class="card stat" href="#/sensors"><p class="kicker">Comfort</p><div class="value num">' + fmt(cl.tempF, 1) + "<small>°F</small> " + fmt(cl.humidity) + '<small>% RH</small></div><div class="line">' + esc(cl.comfort || "") + " · dew point " + fmt(cToF(cl.dewPointC)) + "°F</div>" + spark(s.tempC, css(tempTone)) + "</a>",
+      '<a class="card stat" href="#/sensors"><p class="kicker">' + (g.co2Source === "sensor" ? "CO₂ sensor" : g.co2Source === "estimated" ? "CO₂ estimate" : "CO₂") + '</p><div class="value num">' + fmt(g.co2) + '<small>ppm CO₂</small></div><div class="line">' + esc(vent.text || g.co2Category || "") + (g.co2Source === "estimated" ? " · same BSEC estimate as the OLED" : "") + "</div>" + spark(s.co2, css(co2Tone)) + "</a>",
       '<a class="card stat" href="#/pets"><p class="kicker">Pet meter</p><div class="value num">' + fmt(pet.index) + '<small>/ 100</small></div><div class="line">' + pill(pet.level || "Unknown", levelTone(pet.level)) + ' <span class="muted small">' + esc(pet.confidence ? pet.confidence + " confidence" : "") + "</span></div></a>",
     ];
 
@@ -389,13 +399,14 @@
       var nowV = isNum(L[c.key]) ? L[c.key] * (c.scale || 1) : null;
       if (!st && !isNum(nowV)) return "";
       var zone = zoneFor(c, nowV);
+      var unitSuffix = c.unit.trim() ? " " + c.unit.trim() : "";
       var legend = (c.zones || []).map(function (z) { return '<span><i class="swatch ' + z.tone + '"></i>' + esc(z.label) + "</span>"; }).join("");
       return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + "</p>" +
         (zone ? '<p class="level-now">' + pill(zone.label.split(",")[0], zone.tone) + "</p>" : "") + '</div><div class="now"><span class="num">' + fmt(nowV, c.d) + "</span><br><small>" + esc(c.unit.trim() || "index") + " now</small></div></div>" +
         (legend ? '<div class="legend bands">' + legend + "</div>" : "") +
         (c.extra && S[c.extra.key] ? '<div class="legend"><span><i style="background:' + css(c.color) + '"></i>' + esc(c.title.split(" (")[0]) + '</span><span><i style="background:' + css("--series-2") + '"></i>' + esc(c.extra.name) + "</span></div>" : "") +
         '<div class="chart" data-ch="' + c.key + '"></div>' +
-        (st ? '<div class="mma"><span>Low <b>' + fmt(st.min, c.d) + "</b></span><span>Avg <b>" + fmt(st.avg, c.d) + "</b></span><span>High <b>" + fmt(st.max, c.d) + "</b></span></div>" : "") + "</div>";
+        (st ? '<div class="mma"><span>Low <b>' + fmt(st.min, c.d) + unitSuffix + "</b></span><span>Avg <b>" + fmt(st.avg, c.d) + unitSuffix + "</b></span><span>High <b>" + fmt(st.max, c.d) + unitSuffix + "</b></span></div>" : "") + "</div>";
     }).join("");
 
     var accText = ["Stabilizing", "Low", "Medium", "High"][Number(L.iaqAcc)] || "—";
@@ -468,7 +479,10 @@
     var rankedAtlas = (sense.odors && sense.odors.length) ? sense.odors : odors.map(function (v, i) { return { index: i, score: Number(v) || 0, name: ODORS[i], active: (Number(v) || 0) >= 8 }; }).sort(function (a, b) { return b.score - a.score; });
     var bars = rankedAtlas.map(function (o) {
       var v = o.score || 0;
-      return '<div class="hbar' + (v < 20 ? " dim" : "") + '"><span>' + esc(o.name || ODORS[o.index]) + '</span><span class="track"><i style="width:' + Math.min(100, v) + "%;background:" + (v >= 65 ? css("--series-2") : css("--series-1")) + '"></i></span><span class="v">' + fmt(v) + "</span></div>";
+      // Bar color means strength in the shared state language: mild is fine,
+      // noticeable is worth watching, strong is the one to act on.
+      var barTone = v >= 65 ? "--poor" : v >= 40 ? "--fair" : "--good";
+      return '<div class="hbar' + (v < 20 ? " dim" : "") + '"><span>' + esc(o.name || ODORS[o.index]) + '</span><span class="track"><i style="width:' + Math.min(100, v) + "%;background:" + css(barTone) + '"></i></span><span class="v">' + fmt(v) + "</span></div>";
     }).join("");
     var tone = sm.smellsBad ? (sm.safety ? "bad" : "poor") : sm.tone === "fair" ? "fair" : "good";
     var nose = sense.sensoryLoad || {};
@@ -497,7 +511,7 @@
     var metrics = '<div class="grid g-3" style="margin-top:0">' +
       '<div class="card stat"><p class="kicker">Sensory load</p><div class="value num">' + fmt(nose.value) + '<small>/100</small></div><div class="line">' + esc(nose.text || "How much a nose would notice.") + "</div></div>" +
       '<div class="card stat"><p class="kicker">Freshness debt</p><div class="value num">' + fmt(debt.pct) + '<small>%</small></div><div class="line">' + esc(debt.text || "Distance below this room's clean baseline.") + "</div></div>" +
-      '<div class="card stat"><p class="kicker">Bouquet</p><div class="value" style="font-size:22px;font-family:var(--sans);font-weight:700">' + esc((sense.odorComplexity && sense.odorComplexity.label) || "—") + '</div><div class="line">' + esc((sense.odorComplexity && sense.odorComplexity.text) || "") + "</div></div></div>";
+      '<div class="card stat"><p class="kicker">Bouquet</p><div class="value value-md">' + esc((sense.odorComplexity && sense.odorComplexity.label) || "—") + '</div><div class="line">' + esc((sense.odorComplexity && sense.odorComplexity.text) || "") + "</div></div></div>";
 
     var bouquetCards = (sense.bouquets || []).map(function (b) {
       return '<div class="tip ' + (b.strength === "strong" ? "bad" : b.strength === "likely" ? "fair" : "good") + '"><b>' + esc(b.label) + " · " + esc(b.strength) + " · " + fmt(b.score) + '</b><p>' + esc(b.why) + (b.regions && b.regions.length ? " Common in: " + esc(b.regions.join(", ")) + "." : "") + "</p></div>";
@@ -541,12 +555,12 @@
       : '<p class="muted" style="margin:0">No strong sulfur events recorded recently.</p>';
     return head("Smell", "Every smell class the sensor knows, what that air usually means worldwide, and what we can derive from the whole room.") +
       '<div class="grid g-2">' + '<div class="stack" style="margin:0">' + main + storyCard + how + "</div>" +
-      '<div class="card"><div class="card-head"><h3>Smell model scores</h3><span class="sub">0–100 per class · live</span></div>' + (bars || '<p class="muted">No classifier output yet.</p>') + '<p class="note">Scores under 20 are background noise. The model holds back until the sensor is calibrated.</p></div></div>' +
+      '<div class="card"><div class="card-head"><h3>Smell model scores</h3><span class="sub">0–100 per class · live</span></div>' + '<div class="legend bands"><span><i class="swatch good"></i>Mild 20–39</span><span><i class="swatch fair"></i>Noticeable 40–64</span><span><i class="swatch poor"></i>Strong 65+</span></div>' + (bars || '<p class="muted">No classifier output yet.</p>') + '<p class="note">Scores under 20 are background noise. The model holds back until the sensor is calibrated.</p></div></div>' +
       '<div style="margin-top:16px">' + metrics + "</div>" +
       '<div class="grid g-2" style="margin-top:16px">' + bouquetCard + familyCard + "</div>" +
       '<div style="margin-top:16px">' + atlasCard + "</div>" +
       (derivedCard ? '<div style="margin-top:16px">' + derivedCard + "</div>" : "") +
-      '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div id="heat"></div></div>' +
+      '<div class="card" style="margin-top:16px"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div id="heat"></div><p class="note">Darker means a stronger smell (score 8–100). A row appears once a class rises above background.</p></div>' +
       '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">Recent sulfur events</h3>' + events + "</div>";
   }
   function drawHeat() {
@@ -588,6 +602,11 @@
     };
     var meter = '<div class="meter"><svg viewBox="0 0 300 170" aria-hidden="true">' +
       bands.map(function (b) { return '<path d="' + arc(b[1] + 0.8, b[2] - 0.8) + '" stroke="' + css(b[0]) + '" stroke-width="18" fill="none" stroke-linecap="butt" opacity="' + (idx !== null && idx >= b[1] && idx < b[2] + (b[2] === 100 ? 1 : 0) ? 1 : 0.28) + '"/>'; }).join("") +
+      [[0, "0"], [50, "50"], [100, "100"]].map(function (tv) {
+        var a = Math.PI * (1 - tv[0] / 100);
+        var px = 150 + 138 * Math.cos(a), py = 150 - 138 * Math.sin(a);
+        return '<text x="' + px.toFixed(0) + '" y="' + (py + (tv[0] === 50 ? 2 : 4)).toFixed(0) + '" text-anchor="middle" font-size="11" fill="' + css("--ink-3") + '">' + tv[1] + "</text>";
+      }).join("") +
       '<g class="needle" style="transform:rotate(' + ang + 'deg)"><line x1="150" y1="150" x2="150" y2="44" stroke="' + css("--ink") + '" stroke-width="3" stroke-linecap="round"/></g><circle cx="150" cy="150" r="8" fill="' + css("--ink") + '"/></svg>' +
       '<div class="meter-value"><span class="num">' + fmt(idx) + '</span><div style="margin-top:6px">' + pill(pet.level || "Unknown", levelTone(pet.level)) + " " + pill((pet.confidence || "no") + " confidence", "na") + "</div></div></div>";
     var basis = (pet.basis || []).map(function (b) {
@@ -692,7 +711,7 @@
       '<div class="card stat"><p class="kicker">Windows</p><div class="line" style="font-size:15px;color:var(--ink);margin-top:0">' + esc(advice || "No advice yet.") + "</div></div></div>" +
       (wx && wx.forecast && wx.forecast.length ? '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">Next three days</h3><div class="forecast">' + wx.forecast.map(function (d) { return "<div><b>" + esc(d.label) + '</b><span class="hi">' + fmt(d.highF) + '°</span> <span class="muted">' + fmt(d.lowF) + "°</span><br>" + esc(d.condition) + '<br><span class="small muted">Rain ' + fmt(d.precipChance) + "% · wind " + fmt(d.windMph) + " mph</span></div>"; }).join("") + "</div>" + (wx.briefing ? '<p class="note">' + esc(wx.briefing) + "</p>" : "") + "</div>" : "") +
       '<div class="grid g-2" style="margin-top:16px"><div class="card"><h3 style="margin-bottom:10px">Outdoor pollutants</h3><dl class="kv">' + pollRows + "</dl></div>" +
-      '<div class="card"><h3 style="margin-bottom:10px">Inside vs outside</h3><table style="width:100%;border-collapse:collapse;font-size:13.5px"><thead><tr class="muted small"><th style="text-align:left;font-weight:600;padding-bottom:6px">&nbsp;</th><th style="text-align:left;font-weight:600">Inside</th><th style="text-align:left;font-weight:600">Outside</th></tr></thead><tbody>' + cmpRows + "</tbody></table>" +
+      '<div class="card"><h3 style="margin-bottom:10px">Inside vs outside</h3><table style="width:100%;border-collapse:collapse;font-size:13.5px"><thead><tr class="muted small"><th style="text-align:left;font-weight:600;padding-bottom:6px">Reading</th><th style="text-align:left;font-weight:600">Inside</th><th style="text-align:left;font-weight:600">Outside</th></tr></thead><tbody>' + cmpRows + "</tbody></table>" +
       '<p class="note">When the outside air holds less moisture than inside, opening up dries the home out. When it holds more, keep the windows shut on humid days.</p></div></div>';
   }
   var localMap = null;

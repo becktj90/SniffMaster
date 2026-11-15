@@ -167,6 +167,8 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 /* ── Stat tiles ────────────────────────────────────────────────── */
 .stat .value { font-size: 30px; font-weight: 600; line-height: 1.1; margin: 2px 0; }
 .stat .value small { font-size: 14px; color: var(--ink-3); font-weight: 500; margin-left: 3px; font-family: var(--sans); }
+/* Mid-size value for text readings (smell level, bouquet) — same voice as .value, smaller. */
+.stat .value-md { font-size: 22px; font-family: var(--sans); font-weight: 700; }
 .stat .line { color: var(--ink-2); font-size: 13.5px; margin-top: 6px; }
 .stat .spark { display: block; width: 100%; margin-top: 10px; height: 34px; }
 .brief { display: flex; flex-direction: column; }
