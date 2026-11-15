@@ -2912,11 +2912,14 @@ function renderTelemetry(d) {
   vGasR.textContent = `${fmtGasR(d.gasR)}Ω`;
   vGasR.style.color = gasRColor;
 
-  $("v-compgas").textContent = `${fmtGasR(d.compGas)}Ω`;
+  // Firmware sends gasPctValid:false (and omits compGas/gasPct) when BSEC runs the
+  // LP-safe output bundle — show n/a rather than painting a fake 0% as bad.
+  const gasPctValid = d.gasPctValid !== false;
+  $("v-compgas").textContent = gasPctValid ? `${fmtGasR(d.compGas)}Ω` : "n/a";
 
   const vGasPct = $("v-gaspct");
-  vGasPct.textContent = `${gasPct.toFixed(1)}%`;
-  vGasPct.style.color = gasPctColor;
+  vGasPct.textContent = gasPctValid ? `${gasPct.toFixed(1)}%` : "n/a";
+  vGasPct.style.color = gasPctValid ? gasPctColor : "";
 
   $("v-local-time-card").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
   $("v-uptime-card").textContent = fmtUptime(d.uptime).replace(/^Up /, "");
