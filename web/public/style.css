@@ -70,7 +70,7 @@ button, input, select { font: inherit; color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 700; letter-spacing: -0.01em; }
 .brand:hover { text-decoration: none; }
-.brand-mark { width: 26px; height: 26px; border-radius: 8px; background: conic-gradient(from 210deg, var(--series-3), var(--series-1), #9085e9, var(--series-3)); box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset; }
+.brand-mark { width: 26px; height: 26px; border-radius: 8px; object-fit: cover; display: block; box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset; }
 .tabs { display: flex; gap: 4px; margin: 0 auto; }
 .tabs a { display: flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 10px; color: var(--ink-2); font-weight: 500; font-size: 14px; }
 .tabs a:hover { background: var(--card); text-decoration: none; color: var(--ink); }
