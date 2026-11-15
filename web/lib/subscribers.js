@@ -67,16 +67,44 @@ export function channelStatus() {
 
 const BALANCE_KEY = "clicksend-balance";
 const BALANCE_TTL_SEC = 2 * 60;
+// A real send that ClickSend rejected for credit is the strongest evidence we
+// get: the balance endpoint can still show a few cents (or fail) while every
+// message is refused. Trust the rejection for a while instead of re-offering
+// Text a minute later and failing the next person's signup too.
+const CREDIT_BLOCK_KEY = "clicksend-credit-block";
+const CREDIT_BLOCK_TTL_SEC = 30 * 60;
+// One US text costs a few cents. A balance below this cannot send one.
+const DEFAULT_MIN_BALANCE = 0.1;
 
-/** Channels the page can offer right now. Text is hidden when the balance is empty. */
+function minBalance() {
+  const raw = env("CLICKSEND_MIN_BALANCE");
+  const v = raw === "" ? NaN : Number(raw); // Number("") is 0, which would disable the check
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_MIN_BALANCE;
+}
+
+async function creditBlocked() {
+  try {
+    const hit = await getJsonCache(CREDIT_BLOCK_KEY);
+    return Boolean(hit && Date.now() - Number(hit.at) < CREDIT_BLOCK_TTL_SEC * 1000);
+  } catch {
+    return false;
+  }
+}
+
+/** Channels the page can offer right now. Text is hidden when it can't be paid for. */
 export async function alertChannels() {
   const channels = channelStatus();
   let smsReason = null;
   if (channels.sms) {
-    const balance = await cachedClickSendBalance();
-    if (balance !== null && balance <= 0) {
+    if (await creditBlocked()) {
       channels.sms = false;
       smsReason = "credit";
+    } else {
+      const balance = await cachedClickSendBalance();
+      if (balance !== null && balance < minBalance()) {
+        channels.sms = false;
+        smsReason = "credit";
+      }
     }
   }
   return { channels, smsReason };
@@ -99,8 +127,9 @@ async function cachedClickSendBalance() {
   }
 }
 
+/** Called when ClickSend itself rejected a send for credit. */
 async function rememberEmptyBalance() {
-  await setJsonCache(BALANCE_KEY, { balance: 0, at: Date.now() }, BALANCE_TTL_SEC).catch(() => {});
+  await setJsonCache(CREDIT_BLOCK_KEY, { at: Date.now() }, CREDIT_BLOCK_TTL_SEC).catch(() => {});
 }
 
 // ── Validation ────────────────────────────────────────────────────────────
@@ -472,6 +501,7 @@ export async function runSubscriberAlerts(snapshot, home) {
       } catch (err) {
         failed.add(sub.id);
         console.error("alerts: subscriber send failed:", err?.message || err);
+        if (sub.channel === "sms" && /INSUFFICIENT_CREDIT/i.test(String(err?.message || err))) await rememberEmptyBalance();
       }
     })
   );

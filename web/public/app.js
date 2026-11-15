@@ -833,7 +833,13 @@
       if (!Object.keys(rules).length) { alertState.error = "Pick at least one thing to be alerted about."; alertState.ok = ""; alertState.address = typed || ""; return rerender(); }
       var btn = sub.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = "Sending…";
       var r = await post({ action: "subscribe", channel: alertState.channel, address: alertState.channel === "push" ? "" : typed, rules: rules });
-      if (r.error) { alertState.error = r.error; alertState.ok = ""; alertState.address = typed || ""; }
+      if (r.error) {
+        alertState.error = r.error; alertState.ok = ""; alertState.address = typed || "";
+        // Re-ask which channels work: if text just failed for credit the server
+        // now says so, and the page moves to the App option instead of letting
+        // the next tap fail the same way.
+        cache.alerts = null;
+      }
       else { alertState = { step: "code", channel: alertState.channel, id: r.id, masked: r.masked, address: typed || "", push: r.push || null, error: "", ok: "" }; }
       rerender();
     });
