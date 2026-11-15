@@ -28,6 +28,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <math.h>
 #include "bsec2.h"
 #include "secrets.h"               // WIFI_CREDS, OPENAI_API_KEY, OPENAI_MODEL
 #include "web_dashboard_config.h"  // WEB_DASHBOARD_URL, WEB_DASHBOARD_KEY
@@ -401,6 +402,24 @@ struct HomeStats {
   char  moldCat[10], miteCat[10], dryCat[10], petLevel[10];
   char  headline[80];
 };
+// Pre-formatted wall-display feed (GET /api/oled): the server does the
+// thinking and the wording, so this is just a few short ASCII strings.
+struct WallStatus {
+  bool  valid;
+  unsigned long fetchedMs;
+  int   sc, sl, aq, ot;     // home score, minutes smelly, outdoor AQI, outdoor F (-1/-999 = none)
+  float uv;                 // NAN = none
+  char  sm[10];             // FRESH | SLIGHT | SMELLY | DANGER | LEARNING
+  char  tr[12];             // trend word
+  char  ca[24];             // likely cause
+  char  cc[8];              // cause confidence
+  char  ac[2][24];          // best action, two 21-col lines
+  char  al[10];             // allergen level: CLEAR LOW MODERATE HIGH SEVERE N/A
+  char  an[14];             // top allergen driver, e.g. CAT DANDER
+  char  pl[10];             // outdoor pollen level
+  char  pn[14];             // top pollen type
+  char  wn[24];             // window advice, one 21-col line
+};
 struct NetStatus {
   bool          connected;
   char          ssid[33];
@@ -412,6 +431,7 @@ struct NetStatus {
   WeatherData   weather;
   OutdoorAQI    aqi;
   HomeStats     home;
+  WallStatus    wall;
   char          snark[140];   // OpenAI one-liner, ASCII, wrapped on screen
 };
 static NetStatus gNet = {};
@@ -1350,7 +1370,186 @@ static void cardNetwork(const NetStatus& n) {
   display.setCursor(0, 46); display.print(buf);
 }
 
+
+// ── Retro-future wall cards ────────────────────────────────────
+// Glanceable cards for a wall near the cat area. 1-bit CRT look: chevron
+// title bar, corner brackets, a dotted scan line and a radar sweep. They
+// redraw ~2.5x/s (see updateDisplay) so the animation runs.
+static bool wallFresh(const NetStatus& n) {
+  return n.wall.valid && millis() - n.wall.fetchedMs < 5UL * 60UL * 1000UL;
+}
+static inline bool wallBlink() { return (millis() / 400UL) & 1UL; }
+
+static uint8_t levelSegs(const char* lv) {
+  if (!strcmp(lv, "LOW"))      return 1;
+  if (!strcmp(lv, "MODERATE")) return 3;
+  if (!strcmp(lv, "HIGH"))     return 4;
+  if (!strcmp(lv, "SEVERE"))   return 5;
+  return 0;                                   // CLEAR or N/A
+}
+
+static void drawSegBar(int y, uint8_t segs) {
+  for (uint8_t i = 0; i < 5; i++) {
+    const int x = 2 + i * 25;
+    display.drawRect(x, y, 23, 6, SSD1306_WHITE);
+    if (i < segs) display.fillRect(x + 1, y + 1, 21, 4, SSD1306_WHITE);
+  }
+}
+
+static void retroHeader(const char* title, bool alert, bool live) {
+  const bool inv = alert && wallBlink();      // header flashes on an alert
+  display.fillRect(0, 0, SCREEN_WIDTH, 10, inv ? SSD1306_BLACK : SSD1306_WHITE);
+  display.drawRect(0, 0, SCREEN_WIDTH, 10, SSD1306_WHITE);
+  const uint16_t fg = inv ? SSD1306_WHITE : SSD1306_BLACK;
+  display.setTextColor(fg);
+  display.setTextSize(1);
+  display.setCursor(3, 1);
+  display.print(F(">> "));
+  display.print(title);
+  if (live) {                                  // pulsing link lamp
+    if (wallBlink()) display.fillRect(SCREEN_WIDTH - 9, 2, 5, 5, fg);
+    else             display.drawRect(SCREEN_WIDTH - 9, 2, 5, 5, fg);
+  } else {
+    display.setCursor(SCREEN_WIDTH - 22, 1);
+    display.print(F("N/C"));
+  }
+  display.setTextColor(SSD1306_WHITE);
+}
+
+static void retroCorners() {
+  const int x1 = SCREEN_WIDTH - 1, y0 = 12, y1 = SCREEN_HEIGHT - 1;
+  display.drawFastHLine(0, y0, 4, SSD1306_WHITE);  display.drawFastVLine(0, y0, 4, SSD1306_WHITE);
+  display.drawFastHLine(x1 - 3, y0, 4, SSD1306_WHITE); display.drawFastVLine(x1, y0, 4, SSD1306_WHITE);
+  display.drawFastHLine(0, y1, 4, SSD1306_WHITE);  display.drawFastVLine(0, y1 - 3, 4, SSD1306_WHITE);
+  display.drawFastHLine(x1 - 3, y1, 4, SSD1306_WHITE); display.drawFastVLine(x1, y1 - 3, 4, SSD1306_WHITE);
+}
+
+// A dotted line that drifts down the screen, like a CRT refresh bar.
+static void retroScan() {
+  const int y = 13 + (int)((millis() / 110UL) % 50UL);
+  for (int x = (y & 1) * 2; x < SCREEN_WIDTH; x += 4) display.drawPixel(x, y, SSD1306_INVERSE);
+}
+
+static void drawRadar(int cx, int cy, int r, bool blip) {
+  display.drawCircle(cx, cy, r, SSD1306_WHITE);
+  display.drawCircle(cx, cy, r / 2, SSD1306_WHITE);
+  const float a = (millis() % 3000UL) * (6.2832f / 3000.0f);
+  display.drawLine(cx, cy, cx + (int)(cosf(a) * r), cy + (int)(sinf(a) * r), SSD1306_WHITE);
+  if (blip) display.fillCircle(cx + r / 3, cy - r / 3, 1, SSD1306_WHITE);
+}
+
+// "GRASS: HIGH" (type shortened by the server so this always fits 21 columns)
+static void pollenLine(char* out, size_t n, const WallStatus& w) {
+  if (w.pn[0]) snprintf(out, n, "%.9s: %.8s", w.pn, w.pl);
+  else         snprintf(out, n, "POLLEN: %.8s", w.pl);
+}
+
+static const char* aqiWord(int a) {
+  return a <= 50 ? "GOOD" : a <= 100 ? "MODERATE" : a <= 150 ? "SENSITIVE GRPS" :
+         a <= 200 ? "UNHEALTHY" : a <= 300 ? "VERY UNHEALTHY" : "HAZARDOUS";
+}
+
+static void cardWallSmell(const NetStatus& n) {
+  const WallStatus& w = n.wall;
+  char b[28];
+  if (!wallFresh(n)) {
+    retroHeader("ENV-OS//SMELL", false, false);
+    retroCorners();
+    display.setCursor(2, 22); display.print(n.connected ? F("> LINKING TO CORE...") : F("> WIFI OFFLINE"));
+    display.setCursor(2, 34); display.print(F("> LOCAL SENSOR ONLY"));
+    snprintf(b, sizeof(b), "> AIR SCORE %d", 100 - ss_airScore);
+    display.setCursor(2, 46); display.print(b);
+    retroScan();
+    return;
+  }
+  const bool danger = !strcmp(w.sm, "DANGER");
+  const bool bad    = danger || !strcmp(w.sm, "SMELLY");
+  retroHeader(danger ? "!! DANGER !!" : "ENV-OS//SMELL", bad, true);
+  retroCorners();
+
+  display.setTextSize(2);
+  display.setCursor(2, 14);
+  display.print(w.sm);
+  display.setTextSize(1);
+  drawRadar(112, 22, 10, bad);
+
+  if (bad) {
+    if (w.sl > 0) snprintf(b, sizeof(b), "SINCE %dM  %.9s", w.sl, w.tr);
+    else          snprintf(b, sizeof(b), "%.9s", w.tr);
+    display.setCursor(2, 31); display.print(b);
+    snprintf(b, sizeof(b), "> %.19s", w.ca[0] ? w.ca : "UNKNOWN SOURCE");
+    display.setCursor(2, 40); display.print(b);
+    display.setCursor(2, 49); display.print(w.ac[0]);
+    display.setCursor(2, 57); display.print(w.ac[1]);
+  } else {
+    snprintf(b, sizeof(b), "AIR SCORE %d/100", w.sc < 0 ? 0 : w.sc);
+    display.setCursor(2, 31); display.print(b);
+    display.setCursor(2, 40);
+    display.print(!strcmp(w.sm, "LEARNING") ? F("> LEARNING YOUR ROOM") :
+                  !strcmp(w.sm, "SLIGHT")   ? F("> SLIGHT ODOR NOTED") : F("> NO ODOR DETECTED"));
+    snprintf(b, sizeof(b), "> ALLERGENS %.9s", w.al);
+    display.setCursor(2, 49); display.print(b);
+    drawSegBar(57, levelSegs(w.al));
+  }
+  retroScan();
+}
+
+static void cardWallAllergen(const NetStatus& n) {
+  const WallStatus& w = n.wall;
+  char b[28];
+  if (!wallFresh(n)) {
+    retroHeader("ENV-OS//ALLERGEN", false, false);
+    retroCorners();
+    display.setCursor(2, 28); display.print(F("> AWAITING DATA LINK"));
+    retroScan();
+    return;
+  }
+  const uint8_t segs = levelSegs(w.al);
+  retroHeader("ENV-OS//ALLERGEN", segs >= 4, true);
+  retroCorners();
+  display.setTextSize(2);
+  display.setCursor(2, 14);
+  display.print(w.al);
+  display.setTextSize(1);
+  snprintf(b, sizeof(b), "> %.19s", w.an[0] ? w.an : "NO ACTIVE DRIVER");
+  display.setCursor(2, 31); display.print(b);
+  pollenLine(b, sizeof(b), w);
+  display.setCursor(2, 40); display.print(b);
+  display.setCursor(2, 49); display.print(w.wn[0] ? w.wn : "WINDOWS: NO ACTION");
+  drawSegBar(57, segs);
+  retroScan();
+}
+
+static void cardWallOutdoor(const NetStatus& n) {
+  const WallStatus& w = n.wall;
+  char b[28];
+  if (!wallFresh(n) || w.aq < 0) {
+    retroHeader("ENV-OS//OUTSIDE", false, wallFresh(n));
+    retroCorners();
+    display.setCursor(2, 28); display.print(wallFresh(n) ? F("> NO OUTDOOR FEED") : F("> AWAITING DATA LINK"));
+    retroScan();
+    return;
+  }
+  retroHeader("ENV-OS//OUTSIDE", w.aq > 150, true);
+  retroCorners();
+  snprintf(b, sizeof(b), "%d", w.aq);
+  display.setTextSize(2);
+  display.setCursor(2, 14); display.print(b);
+  display.setTextSize(1);
+  display.setCursor(2 + (int)strlen(b) * 12 + 3, 21); display.print(F("AQI"));
+  if (w.ot > -900) { snprintf(b, sizeof(b), "%dF", w.ot); printRight(14, b); }
+  if (isnan(w.uv)) strlcpy(b, "UV --", sizeof(b)); else snprintf(b, sizeof(b), "UV %.1f", w.uv);
+  display.setCursor(2, 31); display.print(b);
+  snprintf(b, sizeof(b), "> %.18s", aqiWord(w.aq));
+  display.setCursor(2, 40); display.print(b);
+  pollenLine(b, sizeof(b), w);
+  display.setCursor(2, 49); display.print(b);
+  drawSegBar(57, levelSegs(w.pl));
+  retroScan();
+}
+
 enum CardId : uint8_t {
+  C_WALL_SMELL, C_WALL_ALLERGEN, C_WALL_OUTDOOR,
   C_HOME, C_IAQ, C_VOC, C_CO2, C_TEMP, C_HUM, C_PRESS, C_ODORS,
   C_ALLERGEN, C_OUTDOOR, C_SNARK, C_NETWORK, C_COUNT
 };
@@ -1361,6 +1560,9 @@ static void renderCurrentPage() {
   display.clearDisplay();
   display.setTextSize(1);
   switch (displayPage) {
+    case C_WALL_SMELL:    cardWallSmell(n);    break;
+    case C_WALL_ALLERGEN: cardWallAllergen(n); break;
+    case C_WALL_OUTDOOR:  cardWallOutdoor(n);  break;
     case C_HOME:     cardHomeScore(n); break;
     case C_IAQ:      cardIaq();        break;
     case C_VOC:      cardVoc();        break;
@@ -1904,9 +2106,11 @@ static unsigned long lastLocationTryMs = 0;
 static unsigned long weatherOkMs = 0, weatherTryMs = 0;
 static unsigned long aqiOkMs = 0, aqiTryMs = 0;
 static unsigned long homeOkMs = 0, homeTryMs = 0;
+static unsigned long wallOkMs = 0, wallTryMs = 0;
 static unsigned long snarkOkMs = 0, snarkTryMs = 0;
 static int           snarkScore = -1000;    // device air score at last snark
 static const unsigned long HOME_STATS_MS   = 2UL * 60UL * 1000UL;
+static const unsigned long WALL_STATS_MS   = 60UL * 1000UL;   // server edge-caches 30 s
 static const unsigned long SNARK_REFRESH_MS = 20UL * 60UL * 1000UL;
 static const unsigned long SNARK_RETRY_MS   = 5UL * 60UL * 1000UL;
 
@@ -2219,6 +2423,40 @@ static bool fetchHomeStats() {
   Serial.printf("[WEB] home-stats: score=%d %s\n", h.score, h.grade);
   LockGuard g;
   gNet.home = h;
+  return true;
+}
+
+
+// ── Dashboard → device: pre-formatted wall display feed ──────
+static bool fetchWallStatus() {
+  String body;
+  int code = request(dashboardUrl("/api/oled"), nullptr, &body, false, 10000);
+  if (code != 200) { Serial.printf("[WEB] oled feed failed: %d\n", code); return false; }
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return false;
+  if (doc["v"].isNull()) return false;
+
+  WallStatus w = {};
+  w.valid = true;
+  w.fetchedMs = millis();
+  w.sc = doc["sc"] | -1;
+  w.sl = doc["sl"] | 0;
+  w.aq = doc["aq"] | -1;
+  w.ot = doc["ot"] | -999;
+  w.uv = doc["uv"].isNull() ? NAN : doc["uv"].as<float>();
+  strlcpy(w.sm, doc["sm"] | "LEARNING", sizeof(w.sm));
+  strlcpy(w.tr, doc["tr"] | "", sizeof(w.tr));
+  strlcpy(w.ca, doc["ca"] | "", sizeof(w.ca));
+  strlcpy(w.cc, doc["cc"] | "", sizeof(w.cc));
+  strlcpy(w.al, doc["al"] | "N/A", sizeof(w.al));
+  strlcpy(w.an, doc["an"] | "", sizeof(w.an));
+  strlcpy(w.pl, doc["pl"] | "N/A", sizeof(w.pl));
+  strlcpy(w.pn, doc["pn"] | "", sizeof(w.pn));
+  strlcpy(w.wn, doc["wn"] | "", sizeof(w.wn));
+  for (int i = 0; i < 2; i++) strlcpy(w.ac[i], doc["ac"][i] | "", sizeof(w.ac[i]));
+  Serial.printf("[WEB] oled: smell=%s cause=%s allergen=%s pollen=%s\n", w.sm, w.ca, w.al, w.pl);
+  LockGuard g;
+  gNet.wall = w;
   return true;
 }
 
@@ -2551,6 +2789,10 @@ static void task(void*) {
                  (!homeTryMs || now - homeTryMs >= OPTIONAL_RETRY_MS)) {
         homeTryMs = now;
         if (fetchHomeStats()) homeOkMs = millis();
+      } else if (lastPostOkMs && (!wallOkMs || now - wallOkMs >= WALL_STATS_MS) &&
+                 (!wallTryMs || now - wallTryMs >= OPTIONAL_RETRY_MS)) {
+        wallTryMs = now;
+        if (fetchWallStatus()) wallOkMs = millis();
       } else if (t.valid && (!snarkTryMs || now - snarkTryMs >= SNARK_RETRY_MS) &&
                  (!snarkOkMs || now - snarkOkMs >= SNARK_REFRESH_MS ||
                   abs(t.airScore - snarkScore) >= 15)) {
@@ -2693,9 +2935,17 @@ static void updateDisplay(unsigned long now) {
     }
   }
 
-  if (now - lastPageAdvanceMs >= PAGE_CYCLE_MS) {
+  // Wall cards are the glanceable ones: hold them longer than the sensor
+  // cards, and redraw them ~2.5x/s so the radar and scan line animate.
+  const bool wallPage = displayPage <= C_WALL_OUTDOOR;
+  if (now - lastPageAdvanceMs >= (wallPage ? 8000UL : PAGE_CYCLE_MS)) {
     displayPage = (displayPage + 1) % NUM_PAGES;
     lastPageAdvanceMs = now;
+    forceRedraw = true;
+  }
+  static unsigned long lastWallAnimMs = 0;
+  if (wallPage && now - lastWallAnimMs >= 400UL) {
+    lastWallAnimMs = now;
     forceRedraw = true;
   }
   if (forceRedraw) {
