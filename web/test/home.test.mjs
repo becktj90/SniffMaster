@@ -86,13 +86,22 @@ test("data gaps are not counted as damp time", () => {
 });
 
 test("score re-weights over missing sensors and reports coverage honestly", () => {
-  const m = h.buildHomeMetrics({ ...hist(48, 1)[0], iaq: 40, co2: 600 }, hist(48), { now });
+  const m = h.buildHomeMetrics({ ...hist(48, 1)[0], iaq: 40, co2: 600, airScore: 27, tier: 2, primary: "Laundry", primaryConf: 63 }, hist(48), { now });
   assert.equal(m.particulate.measured, false);
   assert.equal(m.score.components.find((c) => c.key === "particulate").score, null);
   assert.ok(m.score.value >= 85);
   const cov = Object.fromEntries(m.coverage.map((c) => [c.metric, c.source]));
   assert.equal(cov["Indoor particulate (PM1/2.5/4/10)"], "missing");
   assert.equal(cov["CO₂"], "estimated");
+  assert.deepEqual(m.device, {
+    airScore: 27,
+    airScoreDirection: "lower-is-cleaner",
+    oledDeviceScore: 73,
+    oledDeviceScoreDirection: "higher-is-cleaner",
+    smellTier: 2,
+    primary: "Laundry",
+    primaryConf: 63,
+  });
   const m2 = h.buildHomeMetrics({ ...hist(48, 1)[0], iaq: 40, co2: 600, co2True: 650, pm25: 80, hcho: 90 }, hist(48), { now });
   assert.equal(m2.gases.co2Source, "sensor");
   assert.equal(m2.particulate.measured, true);
@@ -190,8 +199,8 @@ test("e2e: /api/home-stats against fake Redis + stubbed network", async () => {
     return { ok: true, json: async () => String(u).includes("air-quality") ? { current: { pm2_5: 6, pm10: 11, us_aqi: 25, ozone: 40, uv_index: 2, grass_pollen: null } } : { current: { temperature_2m: 12, relative_humidity_2m: 60, dew_point_2m: 4, rain: 0 } } };
   };
   const { putSnapshot, getHomeSeries, incrCounter } = await import("../lib/store.js");
-  await putSnapshot({ voc: 0.5, iaq: 55, co2: 700, tempF: 72, humidity: 52, pressHpa: 1013, lat: 34.05, lon: -118.24, city: "LA", pm25: 12, pm10: 20 });
-  await putSnapshot({ voc: 0.5, iaq: 55, co2: 700, tempF: 72, humidity: 53, pressHpa: 1013, lat: 34.05, lon: -118.24, city: "LA", pm25: 12, pm10: 20 });
+  await putSnapshot({ voc: 0.5, iaq: 55, co2: 700, tempF: 72, humidity: 52, pressHpa: 1013, lat: 34.05, lon: -118.24, city: "LA", pm25: 12, pm10: 20, airScore: 24, tier: 1, primary: "Clean Air", primaryConf: 0 });
+  await putSnapshot({ voc: 0.5, iaq: 55, co2: 700, tempF: 72, humidity: 53, pressHpa: 1013, lat: 34.05, lon: -118.24, city: "LA", pm25: 12, pm10: 20, airScore: 31, tier: 2, primary: "Laundry", primaryConf: 22 });
   const series = await getHomeSeries();
   assert.equal(series.fine.length, 2);
   assert.equal(series.coarse.length, 1);
@@ -212,6 +221,15 @@ test("e2e: /api/home-stats against fake Redis + stubbed network", async () => {
   assert.equal(payload.mode, "home");
   assert.equal(payload.particulate.measured, true);
   assert.equal(payload.outdoor.pm25, 6);
+  assert.deepEqual(payload.device, {
+    airScore: 31,
+    airScoreDirection: "lower-is-cleaner",
+    oledDeviceScore: 69,
+    oledDeviceScoreDirection: "higher-is-cleaner",
+    smellTier: 2,
+    primary: "Laundry",
+    primaryConf: 22,
+  });
   assert.equal(payload.pollen.ok, false);               // no key set => honest "unavailable", no Google call
   assert.ok(!urls.some((u) => u.includes("googleapis")));
   assert.ok(payload.score.value > 0 && Array.isArray(payload.series.t));

@@ -107,6 +107,8 @@ test("OLED feed fits 21-column lines and stays small", () => {
     outdoor: { usAqi: 42, uvIndex: 6.2, tempC: 24 }, ventilation: { action: "open", text: "Open windows for 10 minutes: indoor air is stale and outdoor air is fine." },
   });
   assert.equal(view.sm, "SMELLY");
+  assert.equal(toOledView({ smell: { state: "unclassified", level: "Unclassified gas change" } }).sm, "GAS SHIFT");
+  assert.equal("GAS SHIFT".length, 9);
   assert.equal(view.ca, "LITTER / PET AREA");
   assert.equal(view.an, "CAT DANDER");
   assert.equal(view.al, "HIGH");

@@ -901,10 +901,12 @@ export async function buildHomePayload(triggersInput) {
       location: haveLoc ? { lat: Math.round(lat * 1e4) / 1e4, lon: Math.round(lon * 1e4) / 1e4 } : null,
       airSample: latest.airSampleState ? {
         state: latest.airSampleState,
+        startedAt: Number(latest.airSampleStartedAt) || null,
         progress: Number.isFinite(Number(latest.airSampleProgress)) ? Number(latest.airSampleProgress) : null,
         baselineVoc: Number.isFinite(Number(latest.airSampleBaselineVoc)) ? Number(latest.airSampleBaselineVoc) : null,
         deltaVoc: Number.isFinite(Number(latest.airSampleDeltaVoc)) ? Number(latest.airSampleDeltaVoc) : null,
         result: latest.airSampleResult || "",
+        completedAt: Number(latest.airSampleCompletedAt) || null,
       } : null,
       ...metrics,
       pollen,

@@ -98,7 +98,7 @@ export function decideGuestAlerts(view, state = {}, now = Date.now()) {
     sm.safety ? 5 : 3
   );
   const score = view?.score?.value;
-  consider("air", Number.isFinite(score) && score < 50, "Air quality is poor", `Home air score is ${score}. Open the guest page for what is affecting it.`, 3);
+  consider("air", Number.isFinite(score) && score < 50, "Air quality is poor", `Home health score is ${score}. Open the guest page for what is affecting it.`, 3);
   return { messages, state: next };
 }
 
