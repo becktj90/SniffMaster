@@ -1399,9 +1399,9 @@ static void cardOdors() {
   uint8_t dominant, runnerUp;
   topTwo(ss_scores, dominant, runnerUp);
   char buf[24];
-  if (!bsecCalibrationReady(ss_iaqAcc)) {
-    strlcpy(buf, "Dominant: warming", sizeof(buf));
-  } else if (ss_scores[dominant] < ODOR_MIN_CONF) {
+  // Keep this exactly in step with the `primary` value sent to the dashboard.
+  // The card already shows calibration state above the footer.
+  if (ss_scores[dominant] < ODOR_MIN_CONF) {
     strlcpy(buf, "Dominant: clean air", sizeof(buf));
   } else {
     snprintf(buf, sizeof(buf), "Dominant: %s", odorShort[dominant]);
