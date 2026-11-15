@@ -29,6 +29,9 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <esp_idf_version.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <math.h>
 #include "bsec2.h"
 #include "bme68xLibrary.h"
@@ -71,10 +74,76 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 100000UL, 100000UL);
 
 #define PAGE_CYCLE_MS       5000UL    // metric cards auto-advance
+#define UI_TASK_WDT_TIMEOUT_MS 8000UL  // reset if the UI task stops making progress
 
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) (sizeof(a) / sizeof(a[0]))
 #endif
+
+enum UiLoopStage : uint8_t {
+  UI_STAGE_BOOT,
+  UI_STAGE_BUTTON,
+  UI_STAGE_GAS_SCAN,
+  UI_STAGE_HOME_SENSORS,
+  UI_STAGE_SENSOR,
+  UI_STAGE_PROCESS_SAMPLE,
+  UI_STAGE_ALARM,
+  UI_STAGE_DISPLAY,
+  UI_STAGE_OLED_HEALTH,
+  UI_STAGE_IDLE,
+};
+
+// This survives a task-watchdog restart and tells us which UI operation was
+// in flight. The network task is deliberately not watched here: it must never
+// be able to take the button, display, or sensor loop down with it.
+RTC_DATA_ATTR static uint8_t lastUiLoopStage = UI_STAGE_BOOT;
+static bool uiTaskWdtActive = false;
+
+static const char* uiLoopStageName(uint8_t stage) {
+  switch (stage) {
+    case UI_STAGE_BUTTON:         return "button";
+    case UI_STAGE_GAS_SCAN:       return "gas scan";
+    case UI_STAGE_HOME_SENSORS:   return "home sensors";
+    case UI_STAGE_SENSOR:         return "sensor";
+    case UI_STAGE_PROCESS_SAMPLE: return "sample processing";
+    case UI_STAGE_ALARM:          return "alarm";
+    case UI_STAGE_DISPLAY:        return "display";
+    case UI_STAGE_OLED_HEALTH:    return "OLED health";
+    case UI_STAGE_IDLE:           return "idle";
+    default:                      return "startup";
+  }
+}
+
+static void resetUiTaskWatchdog() {
+  if (uiTaskWdtActive) esp_task_wdt_reset();
+}
+
+static void startUiTaskWatchdog() {
+#if ESP_IDF_VERSION_MAJOR >= 5
+  esp_task_wdt_config_t config = {};
+  config.timeout_ms = UI_TASK_WDT_TIMEOUT_MS;
+  config.idle_core_mask = 0;
+  config.trigger_panic = true;
+  const esp_err_t initResult = esp_task_wdt_init(&config);
+#else
+  const esp_err_t initResult = esp_task_wdt_init(UI_TASK_WDT_TIMEOUT_MS / 1000UL, true);
+#endif
+
+  if (initResult != ESP_OK && initResult != ESP_ERR_INVALID_STATE) {
+    Serial.printf("[WDT] UI watchdog init failed: %d\n", (int)initResult);
+    return;
+  }
+  const esp_err_t addResult = esp_task_wdt_add(nullptr);
+  if (addResult != ESP_OK) {
+    Serial.printf("[WDT] UI watchdog add failed: %d\n", (int)addResult);
+    return;
+  }
+  uiTaskWdtActive = true;
+  if (esp_reset_reason() == ESP_RST_TASK_WDT)
+    Serial.printf("[WDT] Recovered stalled UI at %s\n", uiLoopStageName(lastUiLoopStage));
+  lastUiLoopStage = UI_STAGE_IDLE;
+  Serial.printf("[WDT] UI recovery armed (%lus)\n", UI_TASK_WDT_TIMEOUT_MS / 1000UL);
+}
 
 // ══════════════════════════════════════════════════════════════
 // BSEC2 configuration
@@ -1327,8 +1396,16 @@ static void cardOdors() {
       drawMiniBar(12 + r * 10, label, ss_scores[idx[r]], pct);
     }
   }
+  uint8_t dominant, runnerUp;
+  topTwo(ss_scores, dominant, runnerUp);
   char buf[24];
-  snprintf(buf, sizeof(buf), "Farts today: %d", fartCount);
+  if (!bsecCalibrationReady(ss_iaqAcc)) {
+    strlcpy(buf, "Dominant: warming", sizeof(buf));
+  } else if (ss_scores[dominant] < ODOR_MIN_CONF) {
+    strlcpy(buf, "Dominant: clean air", sizeof(buf));
+  } else {
+    snprintf(buf, sizeof(buf), "Dominant: %s", odorShort[dominant]);
+  }
   display.setCursor(0, 55);
   display.print(buf);
 }
@@ -3244,6 +3321,8 @@ static void runGasScan() {
   uint8_t nSeen = 0;
   const unsigned long deadline = millis() + 15000UL;
   while (programmed && nSeen < HEATER_STEP_COUNT && (long)(deadline - millis()) > 0) {
+    lastUiLoopStage = UI_STAGE_GAS_SCAN;
+    resetUiTaskWatchdog();
     handleButton(millis());
     alarmTick(millis());
     if (!bme.fetchData()) { delay(20); continue; }
@@ -3335,6 +3414,7 @@ void setup() {
   bsecInitMillis = millis();
 
   smellnet_init();
+  startUiTaskWatchdog();
   Serial.println(F("SniffMaster Pro v5.0 ready"));
 }
 
@@ -3490,25 +3570,39 @@ static void serviceHomeSensors(unsigned long now) {
 
 void loop() {
   const unsigned long now = millis();
+  lastUiLoopStage = UI_STAGE_BUTTON;
   handleButton(now);
   if (gGasScanRequest && !gScanBusy) {
     gGasScanRequest = false;
+    lastUiLoopStage = UI_STAGE_GAS_SCAN;
     runGasScan();
   }
   if (gScanBusy) {
+    lastUiLoopStage = UI_STAGE_ALARM;
     alarmTick(millis());
+    lastUiLoopStage = UI_STAGE_IDLE;
+    resetUiTaskWatchdog();
     delay(5);
     return;
   }
 #if SM_HOME_SENSORS
+  lastUiLoopStage = UI_STAGE_HOME_SENSORS;
   serviceHomeSensors(now);
 #endif
+  lastUiLoopStage = UI_STAGE_SENSOR;
   const bool ran = envSensor.run();
   bsecWatchdog(now, ran);
-  if (newDataReady) processSample(now);
+  if (newDataReady) {
+    lastUiLoopStage = UI_STAGE_PROCESS_SAMPLE;
+    processSample(now);
+  }
+  lastUiLoopStage = UI_STAGE_ALARM;
   alarmTick(millis());
+  lastUiLoopStage = UI_STAGE_DISPLAY;
   updateDisplay(millis());
+  lastUiLoopStage = UI_STAGE_BUTTON;
   handleButton(millis());   // catch a tap that landed during the OLED transfer
+  lastUiLoopStage = UI_STAGE_OLED_HEALTH;
   oledHealthCheck(millis());
 
   const unsigned long took = millis() - now;
@@ -3521,5 +3615,7 @@ void loop() {
     loopMaxMs = 0;
     lastLoopLogMs = now;
   }
+  lastUiLoopStage = UI_STAGE_IDLE;
+  resetUiTaskWatchdog();
   delay(5);   // let the network + idle tasks run
 }
