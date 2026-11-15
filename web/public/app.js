@@ -603,7 +603,10 @@
     var cov = function (r) { return r && r.windowComplete === false ? '<p class="note">Based on ' + fmt(r.coverageHours, 1) + " of " + r.windowHours + " hours so far.</p>" : ""; };
     var pollen = home.pollen && home.pollen.ok ? [].concat(home.pollen.types || [], home.pollen.plants || []) : [];
     window.__sensorData = sens;
+    var catCount = (window.SniffCats && window.SniffCats.catCountForPetIndex) ? window.SniffCats.catCountForPetIndex(idx) : 2;
+    var cats = (window.SniffCats && window.SniffCats.catsStripHtml) ? window.SniffCats.catsStripHtml(catCount) : "";
     return head("Pet meter", "A precise read on pet dander and the other things that set off allergies, and how much to trust it.") +
+      cats +
       '<div class="grid g-2"><div class="card"><div class="card-head"><h3>Pet dander index</h3><span class="sub">0–100 estimate</span></div>' + meter + '<p class="note">' + esc(pet.note || "") + "</p></div>" +
       '<div class="card"><h3 style="margin-bottom:12px">What goes into it</h3><div class="hbars">' + (basis || '<p class="muted">No pet-related signals yet.</p>') + "</div>" +
       '<p class="note">With a particulate sensor fitted, coarse dust in the 2.5–10 µm range (where dander lives) joins the index and confidence goes up to medium.</p></div></div>' +
