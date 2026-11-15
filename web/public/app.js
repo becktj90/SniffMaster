@@ -351,6 +351,9 @@
     var S = d.series || {};
     var seg = '<div class="seg" role="group" aria-label="Time range">' + ["1h", "6h", "24h", "7d"].map(function (r) { return '<button type="button" data-range="' + r + '" aria-pressed="' + (r === sensorRange) + '">' + r + "</button>"; }).join("") + "</div>";
     var cards = CHANNELS.map(function (c) {
+      if (c.key === "gasPct" && L.gasPctValid === false) {
+        return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + '</p></div><div class="now"><span class="num">n/a</span><br><small>not measured</small></div></div><p class="muted small">This BSEC bundle does not produce gas percentage. A zero here would be a fake reading.</p></div>';
+      }
       var vals = (S[c.key] || []).map(function (v) { return isNum(v) && c.scale ? v * c.scale : v; });
       var st = stats(vals);
       var nowV = isNum(L[c.key]) ? L[c.key] * (c.scale || 1) : null;
@@ -375,6 +378,10 @@
       "<dt>VOC change (dVOC)</dt><dd>" + fmt(L.dVoc, 2) + " ppm</dd>" +
       "<dt>Raw temp / humidity</dt><dd>" + (isNum(L.tempRawC) ? fmt(cToF(L.tempRawC), 1) + " °F" : "—") + " / " + (isNum(L.humRaw) ? fmt(L.humRaw, 1) + " %" : "—") + "</dd>" +
       "<dt>IAQ trend / VOC trend</dt><dd>" + esc(L.iaqTrend || "—") + " / " + esc(L.vocTrend || "—") + "</dd>" +
+      "<dt>Room score</dt><dd>" + (isNum(L.roomScore) ? fmt(L.roomScore, 0) : "—") + "</dd>" +
+      "<dt>Ventilation</dt><dd>" + esc(L.vent || "—") + "</dd>" +
+      "<dt>Dew point</dt><dd>" + (isNum(L.dewF) ? fmt(L.dewF, 1) + " °F" : "—") + "</dd>" +
+      "<dt>Pressure trend</dt><dd>" + esc(L.pressTrend || "—") + (L.pressDisagree ? " (disagrees with forecast)" : "") + "</dd>" +
       "<dt>Wi-Fi signal</dt><dd>" + fmt(L.wifiRssi) + " dBm</dd>" +
       "<dt>Uptime</dt><dd>" + (isNum(L.uptime) ? fmt(L.uptime / 3600, 1) + " h" : "—") + "</dd>" +
       "<dt>Last reading</dt><dd>" + esc(L.receivedAt ? clock(L.receivedAt) + " (" + ago(L.receivedAt) + ")" : "—") + "</dd></dl>" +

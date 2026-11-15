@@ -2904,11 +2904,16 @@ function renderTelemetry(d) {
   vGasR.textContent = `${fmtGasR(d.gasR)}Ω`;
   vGasR.style.color = gasRColor;
 
-  $("v-compgas").textContent = `${fmtGasR(d.compGas)}Ω`;
-
   const vGasPct = $("v-gaspct");
-  vGasPct.textContent = `${gasPct.toFixed(1)}%`;
-  vGasPct.style.color = gasPctColor;
+  if (d.gasPctValid === false) {
+    $("v-compgas").textContent = "n/a";
+    vGasPct.textContent = "n/a";
+    vGasPct.style.color = "";
+  } else {
+    $("v-compgas").textContent = `${fmtGasR(d.compGas)}Ω`;
+    vGasPct.textContent = `${gasPct.toFixed(1)}%`;
+    vGasPct.style.color = gasPctColor;
+  }
 
   $("v-local-time-card").textContent = fmtLocationTime(d.receivedAt, d.utcOffsetSec);
   $("v-uptime-card").textContent = fmtUptime(d.uptime).replace(/^Up /, "");

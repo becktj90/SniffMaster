@@ -8,6 +8,7 @@
     { "source": "/api/oled", "destination": "/api/extras?fn=oled" },
     { "source": "/api/apod", "destination": "/api/extras?fn=apod" },
     { "source": "/api/command", "destination": "/api/extras?fn=command" },
+    { "source": "/api/environment", "destination": "/api/extras?fn=environment" },
     { "source": "/api/launches", "destination": "/api/extras?fn=launches" },
     { "source": "/api/occupancy-briefing", "destination": "/api/extras?fn=occupancy-briefing" },
     { "source": "/api/office-stats", "destination": "/api/extras?fn=office-stats" },

@@ -11,11 +11,12 @@
     tap   = next page (or dismiss an alert / mute a hazard alarm)
     hold  = push a fresh snapshot to the web portal
 
-  Pages auto-cycle every 5 s (see the C_* card list).
+  The wall deck (four retro cards) auto-cycles every 10 s. Tap walks the
+  detail cards too; after a minute with no tap the deck returns.
 
   Architecture:
-    loop()   — sensor, button, buzzer, OLED. Never touches the network.
-    netTask  — Wi-Fi, portal posts/commands, weather + outdoor AQI.
+    loop()   — sensor, button, buzzer, OLED, on-demand gas scan. Never touches the network.
+    netTask  — Wi-Fi, portal posts/commands, /api/environment.
                Runs at lower priority so slow HTTPS can't freeze the UI.
     Shared state crosses tasks only via short copies under gLock.
 ***********************************************************/
@@ -30,8 +31,11 @@
 #include <Preferences.h>
 #include <math.h>
 #include "bsec2.h"
+#include "bme68xLibrary.h"
 #include "secrets.h"               // WIFI_CREDS, OPENAI_API_KEY, OPENAI_MODEL
 #include "web_dashboard_config.h"  // WEB_DASHBOARD_URL, WEB_DASHBOARD_KEY
+#include "heater_profile.h"        // Bosch sequential profile, copied not invented
+#include "env_fusion.h"            // dew point, pressure trend, ventilation
 #define USE_ML_SCORING
 #include "smellnet_model_data.h"
 #include "smellnet_inference.h"
@@ -48,11 +52,11 @@
   #define I2C_BEGIN() Wire.begin()
 #endif
 
-// Page / long-press button is D0 (GPIO2). D1 and the XIAO BOOT button (GPIO9)
-// also work. Each input arms only after it has read "released", so a pin
-// that is held low (or wired to something else) can never jam the button.
-#define BTN_PIN        D0
-static const uint8_t BTN_PINS[] = { D0, D1, 9 };
+// The expansion-board user button is D1 (GPIO3), active low. D0 is the
+// Grove A0 pin, not that button. The BOOT button on the XIAO module is
+// GPIO9. Each pin is tracked on its own: one stuck-low pin must not hold
+// the others in the "already pressed" state.
+#define BTN_PIN        D1
 #define BTN_LONG_MS    700
 #define BTN_DEBOUNCE_MS 25
 #define BUZZER_PIN     D3
@@ -253,6 +257,14 @@ static uint8_t ss_iaqAcc = 0;
 static uint8_t ss_scores[ODOR_COUNT] = {0};
 static uint8_t ss_tier = 0;
 static int     ss_airScore = 0;
+static int     ss_roomScore = 0;
+static float   ss_dewF = NAN;
+static char    ss_vent[8] = "open";
+static char    ss_prevVent[8] = "";
+static char    ss_pressTrend[8] = "";
+static bool    ss_pressDisagree = false;
+static EnvPressureTrend gPressTrend;
+static unsigned long lastPressSampleMs = 0;
 static bool    ss_valid = false;
 static float   ss_prevVoc = 0;
 static uint8_t ss_prevTier = 0xFF;
@@ -286,6 +298,7 @@ static unsigned long lastFartMs = 0;
 
 // Display
 static uint8_t       displayPage = 0;
+static unsigned long lastDeckTapMs = 0;   // last tap; detail pages return to the deck
 static bool          forceRedraw = true;
 static unsigned long lastPageAdvanceMs = 0;
 static unsigned long lastBootRenderMs = 0;
@@ -317,6 +330,7 @@ static unsigned long alarmPhaseEndMs = 0;
 static Preferences   bsecPrefs;
 static unsigned long lastBsecSaveMs = 0;
 static bool          bsecAcc3Saved = false;
+static bool          bsecEverSaved = false;   // a good blob exists in NVS (this boot or earlier)
 static unsigned long bsecInitMillis = 0;
 static unsigned long lastBsecWaitLogMs = 0;
 static bool          bsecFirstPacketRetryDone = false;
@@ -351,6 +365,16 @@ struct Telemetry {
   int     fartCount;
   bool    fullBundle, gasValid, runIn, stab, bsecRestored;
   float   rawTempC, rawHum;       // NAN when not subscribed
+  float   dewF;                   // indoor Magnus dew point, Fahrenheit
+  int     roomScore;              // air score with static IAQ
+  char    vent[8];                // open | brief | shut
+  char    pressTrend[8];          // "" until 90 minutes, then rising|steady|falling
+  bool    pressDisagree;
+  bool    gasScanPost;
+  uint32_t gasScanGen;
+  char    gasScanProfile[28];
+  uint32_t gasScanOhms[HEATER_STEP_COUNT];
+  uint8_t gasScanCount;
 #if SM_HOME_SENSORS
   HomeAirReading home;
 #endif
@@ -373,6 +397,8 @@ static SniffEvent gSniff = {};
 static bool       gSniffPending = false;
 static uint32_t   gSniffGen = 0;        // bumped per queued event; guards clear-after-send
 static bool       gPushRequested = false;
+static volatile bool gScanBusy = false;          // loop owns the BME688; net skips TLS
+static volatile bool gGasScanRequest = false;    // net asks, loop runs the scan
 
 // net → main: connection info + outdoor data
 struct WeatherData {
@@ -389,6 +415,17 @@ struct OutdoorAQI {
   char  level[16];
   char  advisory[200];
   unsigned long fetchedMs;
+  unsigned long ttlMs;          // server ttlSec; 0 → OUTDOOR_TTL_MS
+  bool  pollenValid;
+  int   pollenTree, pollenGrass, pollenWeed;
+  char  pollenTop[17];
+  float outdoorDewF;            // forecast dew point °F; NAN if absent
+  float googlePress;            // forecast hPa
+  bool  googlePressValid;
+  bool  uaqiValid;
+  int   uaqi;
+  int   heatF, uv, precipPct;
+  char  source[12];             // google | open-meteo
 };
 // Server-computed Home mode metrics (GET /api/home-stats)
 struct HomeStats {
@@ -441,11 +478,45 @@ static void requestPortalPush() { LockGuard g; gPushRequested = true; }
 static NetStatus copyNetStatus() { LockGuard g; return gNet; }
 
 #define OUTDOOR_TTL_MS (30UL * 60UL * 1000UL)
+static unsigned long outdoorTtlMs(const OutdoorAQI& a) {
+  return a.ttlMs ? a.ttlMs : OUTDOOR_TTL_MS;
+}
+static bool outdoorFresh(const OutdoorAQI& a) {
+  return a.valid && (millis() - a.fetchedMs) <= outdoorTtlMs(a);
+}
 // Outdoor AQI for scoring/alerts; stale (> TTL) counts as missing
 static int sharedOutdoorAqi() {
   LockGuard g;
-  if (!gNet.aqi.valid || millis() - gNet.aqi.fetchedMs > OUTDOOR_TTL_MS) return 0;
+  if (!outdoorFresh(gNet.aqi)) return 0;
   return gNet.aqi.aqi;
+}
+
+struct OutdoorSnap {
+  bool  fresh;
+  int   usAqi;
+  float pm25;
+  int   tree, grass, weed;
+  float dewF;
+  float pressHpa;
+  bool  pressValid;
+};
+static OutdoorSnap copyOutdoorSnap() {
+  LockGuard g;
+  OutdoorSnap s = {};
+  s.dewF = NAN;
+  s.fresh = outdoorFresh(gNet.aqi);
+  if (!s.fresh) return s;
+  s.usAqi = gNet.aqi.aqi;
+  s.pm25 = gNet.aqi.pm25;
+  if (gNet.aqi.pollenValid) {
+    s.tree = gNet.aqi.pollenTree;
+    s.grass = gNet.aqi.pollenGrass;
+    s.weed = gNet.aqi.pollenWeed;
+  }
+  s.dewF = gNet.aqi.outdoorDewF;
+  s.pressHpa = gNet.aqi.googlePress;
+  s.pressValid = gNet.aqi.googlePressValid;
+  return s;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -500,9 +571,8 @@ static int computeAirScore(float iaq, float voc, float co2, float hum,
   for (int i = 0; i < ODOR_COUNT; i++) if (scores[i] > peak) peak = scores[i];
   float odorPts = constrain(peak * 0.15f, 0.0f, 15.0f);
 
-  // Outdoor US EPA AQI (0-500) only; 0 = missing/stale
-  float outdoorPts = (outdoorAqi > 200) ? 10 : (outdoorAqi > 150) ? 7 :
-                     (outdoorAqi > 100) ? 4 : (outdoorAqi > 50) ? 2 : 0;
+  // Outdoor US EPA AQI (0-500) only; 0 = missing/stale. Pollen is not a term.
+  float outdoorPts = (float)envOutdoorPoints(outdoorAqi);
 
   int total = (int)(iaqPts + vocPts + co2Pts + humPts + odorPts + outdoorPts + 0.5f);
   return constrain(total, 0, 100);
@@ -1195,7 +1265,9 @@ static void cardTemp(const NetStatus& n) {
 }
 
 static void cardHumidity() {
-  drawHeader("Humidity");
+  const char* badge = !strcmp(ss_vent, "shut") ? "Vent shut" :
+                      !strcmp(ss_vent, "brief") ? "Vent brief" : "Vent open";
+  drawHeader("Humidity", badge);
   char buf[12];
   snprintf(buf, sizeof(buf), "%.0f", ss_hum);
   drawBigValue(buf, "%RH", (ss_hum < 30) ? "dry" : (ss_hum <= 60) ? "ideal" : (ss_hum <= 70) ? "damp" : "MOLDY");
@@ -1204,7 +1276,7 @@ static void cardHumidity() {
 }
 
 static void cardPressure() {
-  drawHeader("Pressure");
+  drawHeader("Pressure", ss_pressTrend[0] ? ss_pressTrend : nullptr);
   char buf[12], st[12];
   const float hpa = pressToHpa(ss_pressure);
   snprintf(buf, sizeof(buf), "%.0f", hpa);
@@ -1286,23 +1358,50 @@ static void cardAllergens(const NetStatus& n) {
 
 static void cardOutdoor(const NetStatus& n) {
   char city[13];
-  strlcpy(city, n.city, sizeof(city));   // header fits ~12 chars beside the title
-  drawHeader("Outdoor", city[0] ? city : nullptr);
-  char buf[24];
+  strlcpy(city, n.city, sizeof(city));
+  const bool trend = ss_pressTrend[0] != '\0';
+  drawHeader("Outdoor", trend ? ss_pressTrend : (city[0] ? city : nullptr));
   if (!n.aqi.valid) {
     display.setCursor(0, 24);
     display.print(n.connected ? F("Fetching outdoor air") : F("WiFi offline"));
     return;
   }
-  snprintf(buf, sizeof(buf), "%d", n.aqi.aqi);
-  drawBigValue(buf, "AQI", n.aqi.level);
-  drawRangeBar(32, pctOf(n.aqi.aqi, 0, 200), "0", "200");
-  snprintf(buf, sizeof(buf), "PM2.5 %.0f  PM10 %.0f", n.aqi.pm25, n.aqi.pm10);
-  display.setCursor(0, 42); display.print(buf);
-  if (n.weather.valid) {
-    snprintf(buf, sizeof(buf), "%dF %s", n.weather.tempF, n.weather.condition);
-    display.setCursor(0, 52); display.print(buf);
+  const bool fresh = outdoorFresh(n.aqi);
+  char buf[24];
+  if (n.weather.valid)
+    snprintf(buf, sizeof(buf), "%dF feel %d", n.weather.tempF, n.weather.feelsLikeF);
+  else
+    strlcpy(buf, "--", sizeof(buf));
+  display.setCursor(0, 12);
+  display.print(buf);
+
+  display.setCursor(0, 21);
+  if (!fresh || !n.weather.valid) display.print(F("Env data stale"));
+  else display.print(n.weather.condition);
+
+  int wind = 0;
+  if (n.weather.valid) sscanf(n.weather.windSpeed, "%d", &wind);
+  snprintf(buf, sizeof(buf), "%.3s %d  AQI %d",
+           n.weather.windDir[0] ? n.weather.windDir : "--", wind, n.aqi.aqi);
+  display.setCursor(0, 30);
+  display.print(buf);
+
+  char cat[9];
+  strlcpy(cat, n.aqi.level, sizeof(cat));
+  if (isfinite(n.aqi.pm25)) snprintf(buf, sizeof(buf), "PM2.5 %.0f %.8s", n.aqi.pm25, cat);
+  else snprintf(buf, sizeof(buf), "PM2.5 -- %.8s", cat);
+  display.setCursor(0, 39);
+  display.print(buf);
+
+  if (fresh && n.aqi.pollenValid) {
+    snprintf(buf, sizeof(buf), "Pol T%d G%d W%d %.6s",
+             n.aqi.pollenTree, n.aqi.pollenGrass, n.aqi.pollenWeed, n.aqi.pollenTop);
+    if (strlen(buf) > 21) buf[21] = '\0';
+  } else {
+    strlcpy(buf, "Pollen --", sizeof(buf));
   }
+  display.setCursor(0, 48);
+  display.print(buf);
 }
 
 // Word-wrap plain ASCII text into 21-column lines starting at y (9 px pitch).
@@ -1371,50 +1470,15 @@ static void cardNetwork(const NetStatus& n) {
 }
 
 
-// ── Retro-future wall cards ────────────────────────────────────
-// Glanceable cards for a wall near the cat area. 1-bit CRT look: chevron
-// title bar, corner brackets, a dotted scan line and a radar sweep. They
-// redraw ~2.5x/s (see updateDisplay) so the animation runs.
+// ── Retro wall deck ────────────────────────────────────────────
+// Four glanceable cards for a wall. Outline ticks and a dotted rule only:
+// a solid white header ghosts on this SSD1306. A blinking lamp and one
+// blinking tick are the animation, redrawn twice a second (updateDisplay).
+// The inverse "CRT scan line" was removed because it punched holes in text.
 static bool wallFresh(const NetStatus& n) {
   return n.wall.valid && millis() - n.wall.fetchedMs < 5UL * 60UL * 1000UL;
 }
-static inline bool wallBlink() { return (millis() / 400UL) & 1UL; }
-
-static uint8_t levelSegs(const char* lv) {
-  if (!strcmp(lv, "LOW"))      return 1;
-  if (!strcmp(lv, "MODERATE")) return 3;
-  if (!strcmp(lv, "HIGH"))     return 4;
-  if (!strcmp(lv, "SEVERE"))   return 5;
-  return 0;                                   // CLEAR or N/A
-}
-
-static void drawSegBar(int y, uint8_t segs) {
-  for (uint8_t i = 0; i < 5; i++) {
-    const int x = 2 + i * 25;
-    display.drawRect(x, y, 23, 6, SSD1306_WHITE);
-    if (i < segs) display.fillRect(x + 1, y + 1, 21, 4, SSD1306_WHITE);
-  }
-}
-
-static void retroHeader(const char* title, bool alert, bool live) {
-  const bool inv = alert && wallBlink();      // header flashes on an alert
-  display.fillRect(0, 0, SCREEN_WIDTH, 10, inv ? SSD1306_BLACK : SSD1306_WHITE);
-  display.drawRect(0, 0, SCREEN_WIDTH, 10, SSD1306_WHITE);
-  const uint16_t fg = inv ? SSD1306_WHITE : SSD1306_BLACK;
-  display.setTextColor(fg);
-  display.setTextSize(1);
-  display.setCursor(3, 1);
-  display.print(F(">> "));
-  display.print(title);
-  if (live) {                                  // pulsing link lamp
-    if (wallBlink()) display.fillRect(SCREEN_WIDTH - 9, 2, 5, 5, fg);
-    else             display.drawRect(SCREEN_WIDTH - 9, 2, 5, 5, fg);
-  } else {
-    display.setCursor(SCREEN_WIDTH - 22, 1);
-    display.print(F("N/C"));
-  }
-  display.setTextColor(SSD1306_WHITE);
-}
+static inline bool wallBlink() { return (millis() / 500UL) & 1UL; }
 
 static void retroCorners() {
   const int x1 = SCREEN_WIDTH - 1, y0 = 12, y1 = SCREEN_HEIGHT - 1;
@@ -1424,145 +1488,233 @@ static void retroCorners() {
   display.drawFastHLine(x1 - 3, y1, 4, SSD1306_WHITE); display.drawFastVLine(x1, y1 - 3, 4, SSD1306_WHITE);
 }
 
-// A dotted line that drifts down the screen, like a CRT refresh bar.
-static void retroScan() {
-  const int y = 13 + (int)((millis() / 110UL) % 50UL);
-  for (int x = (y & 1) * 2; x < SCREEN_WIDTH; x += 4) display.drawPixel(x, y, SSD1306_INVERSE);
+static const char* aqiWord(int a) {
+  return a <= 50 ? "GOOD" : a <= 100 ? "MODERATE" : a <= 150 ? "SENSITIVE" :
+         a <= 200 ? "UNHEALTHY" : a <= 300 ? "VERY UNHEALTHY" : "HAZARDOUS";
 }
 
-static void drawRadar(int cx, int cy, int r, bool blip) {
-  display.drawCircle(cx, cy, r, SSD1306_WHITE);
-  display.drawCircle(cx, cy, r / 2, SSD1306_WHITE);
-  const float a = (millis() % 3000UL) * (6.2832f / 3000.0f);
-  display.drawLine(cx, cy, cx + (int)(cosf(a) * r), cy + (int)(sinf(a) * r), SSD1306_WHITE);
-  if (blip) display.fillCircle(cx + r / 3, cy - r / 3, 1, SSD1306_WHITE);
-}
-
-// "GRASS: HIGH" (type shortened by the server so this always fits 21 columns)
 static void pollenLine(char* out, size_t n, const WallStatus& w) {
   if (w.pn[0]) snprintf(out, n, "%.9s: %.8s", w.pn, w.pl);
   else         snprintf(out, n, "POLLEN: %.8s", w.pl);
 }
 
-static const char* aqiWord(int a) {
-  return a <= 50 ? "GOOD" : a <= 100 ? "MODERATE" : a <= 150 ? "SENSITIVE GRPS" :
-         a <= 200 ? "UNHEALTHY" : a <= 300 ? "VERY UNHEALTHY" : "HAZARDOUS";
-}
-
-static void cardWallSmell(const NetStatus& n) {
-  const WallStatus& w = n.wall;
-  char b[28];
-  if (!wallFresh(n)) {
-    retroHeader("ENV-OS//SMELL", false, false);
-    retroCorners();
-    display.setCursor(2, 22); display.print(n.connected ? F("> LINKING TO CORE...") : F("> WIFI OFFLINE"));
-    display.setCursor(2, 34); display.print(F("> LOCAL SENSOR ONLY"));
-    snprintf(b, sizeof(b), "> AIR SCORE %d", 100 - ss_airScore);
-    display.setCursor(2, 46); display.print(b);
-    retroScan();
-    return;
-  }
-  const bool danger = !strcmp(w.sm, "DANGER");
-  const bool bad    = danger || !strcmp(w.sm, "SMELLY");
-  retroHeader(danger ? "!! DANGER !!" : "ENV-OS//SMELL", bad, true);
-  retroCorners();
-
-  display.setTextSize(2);
-  display.setCursor(2, 14);
-  display.print(w.sm);
+static void wallChrome(const char* tag, bool alert, bool live) {
   display.setTextSize(1);
-  drawRadar(112, 22, 10, bad);
-
-  if (bad) {
-    if (w.sl > 0) snprintf(b, sizeof(b), "SINCE %dM  %.9s", w.sl, w.tr);
-    else          snprintf(b, sizeof(b), "%.9s", w.tr);
-    display.setCursor(2, 31); display.print(b);
-    snprintf(b, sizeof(b), "> %.19s", w.ca[0] ? w.ca : "UNKNOWN SOURCE");
-    display.setCursor(2, 40); display.print(b);
-    display.setCursor(2, 49); display.print(w.ac[0]);
-    display.setCursor(2, 57); display.print(w.ac[1]);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(F("SNIFF//"));
+  display.print(tag);
+  if (!live) {
+    printRight(0, "N/C");
+  } else if (wallBlink()) {
+    display.fillRect(123, 1, 4, 4, SSD1306_WHITE);
   } else {
-    snprintf(b, sizeof(b), "AIR SCORE %d/100", w.sc < 0 ? 0 : w.sc);
-    display.setCursor(2, 31); display.print(b);
-    display.setCursor(2, 40);
-    display.print(!strcmp(w.sm, "LEARNING") ? F("> LEARNING YOUR ROOM") :
-                  !strcmp(w.sm, "SLIGHT")   ? F("> SLIGHT ODOR NOTED") : F("> NO ODOR DETECTED"));
-    snprintf(b, sizeof(b), "> ALLERGENS %.9s", w.al);
-    display.setCursor(2, 49); display.print(b);
-    drawSegBar(57, levelSegs(w.al));
+    display.drawRect(123, 1, 4, 4, SSD1306_WHITE);
   }
-  retroScan();
+  if (alert && wallBlink()) display.drawFastHLine(0, 8, SCREEN_WIDTH, SSD1306_WHITE);
+  else for (int x = 0; x < SCREEN_WIDTH; x += 2) display.drawPixel(x, 8, SSD1306_WHITE);
+  retroCorners();
 }
 
-static void cardWallAllergen(const NetStatus& n) {
-  const WallStatus& w = n.wall;
-  char b[28];
-  if (!wallFresh(n)) {
-    retroHeader("ENV-OS//ALLERGEN", false, false);
-    retroCorners();
-    display.setCursor(2, 28); display.print(F("> AWAITING DATA LINK"));
-    retroScan();
+// One blinking tick marks the current value. The rest stay hollow so the
+// panel is not a slab of white (that ghosts on this OLED).
+static void tickGauge(int y, int lit, int n = 20) {
+  lit = constrain(lit, 0, n);
+  for (int i = 0; i < n; i++) {
+    const int x = 4 + i * 6;
+    const bool on = i < lit || (i == lit && wallBlink());
+    if (on) display.fillRect(x, y, 3, 5, SSD1306_WHITE);
+    else    display.drawRect(x, y, 3, 5, SSD1306_WHITE);
+  }
+}
+
+static void drawSpark(HistId id, int x, int y, int w, int h, float minSpan) {
+  if (histFilled < 2) {
+    const int mid = y + h / 2;
+    for (int i = 0; i < w; i += 3) display.drawPixel(x + i, mid, SSD1306_WHITE);
+    display.fillRect(x + (int)((millis() / 80UL) % (unsigned)w), mid - 1, 2, 3, SSD1306_WHITE);
     return;
   }
-  const uint8_t segs = levelSegs(w.al);
-  retroHeader("ENV-OS//ALLERGEN", segs >= 4, true);
-  retroCorners();
+  float lo = 1e9f, hi = -1e9f;
+  for (uint8_t i = 0; i < histFilled; i++) {
+    float v = histBuf[id][(histHead - histFilled + i + HIST_LEN) % HIST_LEN];
+    lo = min(lo, v); hi = max(hi, v);
+  }
+  if (hi - lo < minSpan) { float mid = (hi + lo) / 2; lo = mid - minSpan / 2; hi = mid + minSpan / 2; }
+  int px = 0, py = 0;
+  for (uint8_t i = 0; i < histFilled; i++) {
+    float v = histBuf[id][(histHead - histFilled + i + HIST_LEN) % HIST_LEN];
+    int cx = x + (histFilled == 1 ? 0 : i * (w - 1) / (histFilled - 1));
+    int cy = y + h - 1 - (int)((v - lo) / (hi - lo) * (h - 1));
+    if (i) display.drawLine(px, py, cx, cy, SSD1306_WHITE);
+    px = cx; py = cy;
+  }
+}
+
+static int deckScore(const NetStatus& n) {
+  if (homeFresh(n)) return constrain(n.home.score, 0, 100);
+  return constrain(100 - ss_airScore, 0, 100);
+}
+
+// Short lines for a clean room. ASCII, <= 20 columns. Rotates every 8 s.
+static const char* const FINE_LINES[] = {
+  "AIR: BORING. GOOD.",
+  "NOSE REPORTS CLEAR",
+  "CATS UNBOTHERED",
+  "FILTERS CAN NAP",
+  "ROOM SMELLS LIKE ROOM",
+  "SCIENCE SAYS: FINE",
+  "ODOR LEVEL: NONE",
+  "BREATHE EASY, HUMAN",
+};
+static const char* fineLine() {
+  return FINE_LINES[(millis() / 8000UL) % ARRAY_LEN(FINE_LINES)];
+}
+
+static void deckFooter(const NetStatus& n, bool bad) {
+  char b[22];
+  const char* msg = fineLine();
+  if (bad) {
+    if (n.wall.ac[0][0]) msg = n.wall.ac[0];
+    else if (n.wall.ca[0]) msg = n.wall.ca;
+    else msg = "OPEN A WINDOW";
+  } else if (n.snark[0]) {
+    msg = n.snark;
+  }
+  snprintf(b, sizeof(b), "> %.18s", msg);
+  display.setCursor(0, 55);
+  display.print(b);
+}
+
+static void cardWallBridge(const NetStatus& n) {
+  const bool bad = wallFresh(n) && (!strcmp(n.wall.sm, "SMELLY") || !strcmp(n.wall.sm, "DANGER"));
+  wallChrome("BRIDGE", bad || hazardActive, n.connected);
+  char b[16];
+  snprintf(b, sizeof(b), "%d", deckScore(n));
   display.setTextSize(2);
-  display.setCursor(2, 14);
-  display.print(w.al);
+  display.setCursor(2, 12);
+  display.print(b);
   display.setTextSize(1);
-  snprintf(b, sizeof(b), "> %.19s", w.an[0] ? w.an : "NO ACTIVE DRIVER");
-  display.setCursor(2, 31); display.print(b);
-  pollenLine(b, sizeof(b), w);
-  display.setCursor(2, 40); display.print(b);
-  display.setCursor(2, 49); display.print(w.wn[0] ? w.wn : "WINDOWS: NO ACTION");
-  drawSegBar(57, segs);
-  retroScan();
+  const char* mood = wallFresh(n) && n.wall.sm[0] ? n.wall.sm : iaqQuality(ss_iaq);
+  display.setCursor(44, 16);
+  display.print(mood);
+  tickGauge(32, deckScore(n) / 5);
+  snprintf(b, sizeof(b), "%dF", (int)(ss_tempF + 0.5f));
+  display.setCursor(2, 42); display.print(b);
+  snprintf(b, sizeof(b), "%d%%", (int)(ss_hum + 0.5f));
+  display.setCursor(40, 42); display.print(b);
+  snprintf(b, sizeof(b), "IAQ %.0f", ss_iaq);
+  printRight(42, b);
+  deckFooter(n, bad);
 }
 
-static void cardWallOutdoor(const NetStatus& n) {
-  const WallStatus& w = n.wall;
-  char b[28];
-  if (!wallFresh(n) || w.aq < 0) {
-    retroHeader("ENV-OS//OUTSIDE", false, wallFresh(n));
-    retroCorners();
-    display.setCursor(2, 28); display.print(wallFresh(n) ? F("> NO OUTDOOR FEED") : F("> AWAITING DATA LINK"));
-    retroScan();
+static void traceRow(const char* name, const char* value, HistId id, float span, int y) {
+  display.setCursor(0, y);
+  display.print(name);
+  drawSpark(id, 32, y, 62, 8, span);
+  printRight(y, value);
+}
+
+static void cardWallTrace(const NetStatus& n) {
+  const bool bad = ss_iaq >= 150 || ss_co2 >= 1500;
+  wallChrome("TRACE", bad, n.connected);
+  char b[12];
+  snprintf(b, sizeof(b), "%.0f", ss_iaq);          traceRow("IAQ", b, H_IAQ, 20, 12);
+  snprintf(b, sizeof(b), ss_voc < 10 ? "%.1f" : "%.0f", ss_voc);
+  traceRow("VOC", b, H_VOC, 0.4f, 26);
+  snprintf(b, sizeof(b), "%.0f", ss_co2);          traceRow("CO2", b, H_CO2, 80, 40);
+  display.setCursor(0, 55);
+  if (!bsecCalibrationReady(ss_iaqAcc)) display.print(F("> SENSOR WARMING"));
+  else if (bad)                         display.print(F("> TRACE IS HIGH"));
+  else                                  display.print(F("> TRACE IS STEADY"));
+}
+
+static void cardWallOdor(const NetStatus& n) {
+  wallChrome("ODOR", hazardActive, n.connected);
+  if (!bsecCalibrationReady(ss_iaqAcc)) {
+    display.setTextSize(2);
+    display.setCursor(2, 14); display.print(F("WARM"));
+    display.setTextSize(1);
+    display.setCursor(2, 36); display.print(F("> NOSE IS LEARNING"));
+    display.setCursor(2, 46); display.print(F("> ODORS IN A BIT"));
     return;
   }
-  retroHeader("ENV-OS//OUTSIDE", w.aq > 150, true);
-  retroCorners();
+  uint8_t idx[ODOR_COUNT];
+  for (uint8_t i = 0; i < ODOR_COUNT; i++) idx[i] = i;
+  for (uint8_t i = 0; i < 3; i++)
+    for (uint8_t j = i + 1; j < ODOR_COUNT; j++)
+      if (ss_scores[idx[j]] > ss_scores[idx[i]]) { uint8_t t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+  display.setTextSize(2);
+  display.setCursor(2, 11);
+  display.print(odorShort[idx[0]]);
+  display.setTextSize(1);
+  char b[8];
+  snprintf(b, sizeof(b), "%u%%", ss_scores[idx[0]]);
+  printRight(14, b);
+  tickGauge(30, ss_scores[idx[0]] / 5);
+  for (uint8_t r = 1; r < 3; r++) {
+    snprintf(b, sizeof(b), "%u%%", ss_scores[idx[r]]);
+    display.setCursor(r == 1 ? 2 : 66, 42);
+    display.print(odorShort[idx[r]]);
+    display.print(' ');
+    display.print(b);
+  }
+  const bool bad = wallFresh(n) && (!strcmp(n.wall.sm, "SMELLY") || !strcmp(n.wall.sm, "DANGER"));
+  deckFooter(n, bad);
+}
+
+static void cardWallSky(const NetStatus& n) {
+  const WallStatus& w = n.wall;
+  const bool bad = wallFresh(n) && w.aq > 100;
+  wallChrome("SKY", bad, n.connected);
+  char b[20];
+  if (!wallFresh(n) || w.aq < 0) {
+    snprintf(b, sizeof(b), "%d", (int)(ss_tempF + 0.5f));
+    display.setTextSize(2);
+    display.setCursor(2, 12); display.print(b);
+    display.setTextSize(1);
+    display.setCursor(2 + (int)strlen(b) * 12 + 2, 18); display.print(F("F LOCAL"));
+    snprintf(b, sizeof(b), "RH %d%%", (int)(ss_hum + 0.5f));
+    display.setCursor(2, 34); display.print(b);
+    snprintf(b, sizeof(b), "%.0f hPa", pressToHpa(ss_pressure));
+    printRight(34, b);
+    display.setCursor(0, 55);
+    display.print(n.connected ? F("> SKY NET LINKING") : F("> SKY NET OFFLINE"));
+    return;
+  }
   snprintf(b, sizeof(b), "%d", w.aq);
   display.setTextSize(2);
-  display.setCursor(2, 14); display.print(b);
+  display.setCursor(2, 12); display.print(b);
   display.setTextSize(1);
-  display.setCursor(2 + (int)strlen(b) * 12 + 3, 21); display.print(F("AQI"));
+  display.setCursor(2 + (int)strlen(b) * 12 + 3, 14); display.print(F("AQI"));
+  display.setCursor(2 + (int)strlen(b) * 12 + 3, 23); display.print(aqiWord(w.aq));
   if (w.ot > -900) { snprintf(b, sizeof(b), "%dF", w.ot); printRight(14, b); }
   if (isnan(w.uv)) strlcpy(b, "UV --", sizeof(b)); else snprintf(b, sizeof(b), "UV %.1f", w.uv);
-  display.setCursor(2, 31); display.print(b);
-  snprintf(b, sizeof(b), "> %.18s", aqiWord(w.aq));
-  display.setCursor(2, 40); display.print(b);
+  display.setCursor(2, 36); display.print(b);
   pollenLine(b, sizeof(b), w);
-  display.setCursor(2, 49); display.print(b);
-  drawSegBar(57, levelSegs(w.pl));
-  retroScan();
+  display.setCursor(2, 46); display.print(b);
+  display.setCursor(0, 55);
+  if (w.wn[0]) { snprintf(b, sizeof(b), "> %.18s", w.wn); display.print(b); }
+  else         display.print(F("> WINDOWS: NO NOTE"));
 }
 
 enum CardId : uint8_t {
-  C_WALL_SMELL, C_WALL_ALLERGEN, C_WALL_OUTDOOR,
+  C_WALL_BRIDGE, C_WALL_TRACE, C_WALL_ODOR, C_WALL_SKY,
   C_HOME, C_IAQ, C_VOC, C_CO2, C_TEMP, C_HUM, C_PRESS, C_ODORS,
   C_ALLERGEN, C_OUTDOOR, C_SNARK, C_NETWORK, C_COUNT
 };
 #define NUM_PAGES C_COUNT
+static bool isWallPage(uint8_t page) { return page <= C_WALL_SKY; }
 
 static void renderCurrentPage() {
   const NetStatus n = copyNetStatus();
   display.clearDisplay();
   display.setTextSize(1);
   switch (displayPage) {
-    case C_WALL_SMELL:    cardWallSmell(n);    break;
-    case C_WALL_ALLERGEN: cardWallAllergen(n); break;
-    case C_WALL_OUTDOOR:  cardWallOutdoor(n);  break;
+    case C_WALL_BRIDGE: cardWallBridge(n); break;
+    case C_WALL_TRACE:  cardWallTrace(n);  break;
+    case C_WALL_ODOR:   cardWallOdor(n);   break;
+    case C_WALL_SKY:    cardWallSky(n);    break;
     case C_HOME:     cardHomeScore(n); break;
     case C_IAQ:      cardIaq();        break;
     case C_VOC:      cardVoc();        break;
@@ -1581,14 +1733,13 @@ static void renderCurrentPage() {
 
 static void drawSplash() {
   display.clearDisplay();
-  // Simple nose logo
-  display.fillRoundRect(50, 6, 28, 20, 10, SSD1306_WHITE);
-  display.fillCircle(57, 20, 5, SSD1306_BLACK);
-  display.fillCircle(71, 20, 5, SSD1306_BLACK);
+  display.drawCircle(64, 16, 12, SSD1306_WHITE);
+  display.drawCircle(64, 16, 4, SSD1306_WHITE);
+  display.drawLine(64, 16, 74, 8, SSD1306_WHITE);
   display.setTextSize(1);
-  display.setCursor(19, 34); display.print(F("SniffMaster Pro"));
-  display.setCursor(4, 47);  display.print(F("Tap: page"));
-  display.setCursor(4, 56);  display.print(F("Hold: sync portal"));
+  display.setCursor(28, 34); display.print(F("SNIFFMASTER"));
+  display.setCursor(16, 46); display.print(F("WALL DECK ARMED"));
+  display.setCursor(4, 56);  display.print(F("Tap page  Hold sync"));
   display.display();
 }
 
@@ -1597,7 +1748,8 @@ static void drawSplash() {
 // ══════════════════════════════════════════════════════════════
 
 static void checkAirAlerts(float iaq, float voc, float co2, float hum,
-                           const uint8_t scores[], uint8_t iaqAcc, int outdoorAqi) {
+                           const uint8_t scores[], uint8_t iaqAcc, int outdoorAqi,
+                           bool ventShutEdge, bool windowsShut) {
   if (!bsecCalibrationReady(iaqAcc)) return;   // warm-up transients false-trigger
   const unsigned long now = millis();
 
@@ -1639,10 +1791,11 @@ static void checkAirAlerts(float iaq, float voc, float co2, float hum,
   if (advisoryEverShown && now - lastAdvisoryMs < ADVISORY_COOLDOWN_MS) return;
   const char* title = nullptr;
   const char* msg = nullptr;
-  if (co2 > 1500)          { title = "HIGH CO2";     msg = "CO2 elevated.\nOpen a window."; }
-  else if (iaq > 150)      { title = "STALE AIR";    msg = "Air quality declining\nConsider opening\na window."; }
-  else if (voc > 5.0f)     { title = "ELEVATED VOC"; msg = "Volatile compounds\nrising. Ventilate."; }
-  else if (hum > 75)       { title = "HIGH HUMIDITY"; msg = "Humidity is high.\nDehumidify or vent."; }
+  if (ventShutEdge)        { title = "WINDOWS SHUT"; msg = "Outdoor air or pollen\nis high. Keep windows\nclosed."; }
+  else if (co2 > 1500)     { title = "HIGH CO2";     msg = windowsShut ? "CO2 elevated.\nKeep windows closed." : "CO2 elevated.\nOpen a window."; }
+  else if (iaq > 150)      { title = "STALE AIR";    msg = windowsShut ? "Indoor air is stale.\nKeep windows closed." : "Air quality declining\nConsider opening\na window."; }
+  else if (voc > 5.0f)     { title = "ELEVATED VOC"; msg = windowsShut ? "Volatile compounds\nrising. Filter the air." : "Volatile compounds\nrising. Ventilate."; }
+  else if (hum > 75)       { title = "HIGH HUMIDITY"; msg = windowsShut ? "Humidity is high.\nDehumidify the room." : "Humidity is high.\nDehumidify or vent."; }
   else if (outdoorAqi > 150) {
     title = "OUTDOOR AQI"; msg = "Outdoor air unhealthy\nKeep windows closed.";
   }
@@ -1689,6 +1842,7 @@ static void loadBsecState() {
       bsecPrefs.putBool(BSEC_GUARD_KEY, true);
       calState.bsecStateLoaded = envSensor.setState(st.blob);
       if (calState.bsecStateLoaded) {
+        bsecEverSaved = true;
         Serial.printf("[BSEC] Saved state loaded (%s) — warm resume\n", bsecCfgId);
       } else {
         bsecPrefs.remove(BSEC_STATE_KEY);
@@ -1750,6 +1904,7 @@ static void saveBsecState() {
   }
   bsecPrefs.end();
   lastBsecSaveMs = millis();
+  bsecEverSaved = true;
   Serial.printf("[BSEC] State saved (%s, acc=%u)\n", bsecCfgId, latestIAQAccuracy);
 }
 
@@ -1759,6 +1914,7 @@ static void eraseBsecState(const char* why) {
   bsecPrefs.remove(BSEC_GUARD_KEY);
   bsecPrefs.end();
   calState.bsecStateLoaded = false;
+  bsecEverSaved = false;
   Serial.printf("[BSEC] Saved state erased (%s)\n", why);
 }
 
@@ -1869,13 +2025,48 @@ static void processSample(unsigned long now) {
   deriveExpandedOdors(scores, voc, iaq, co2, gasR, dVoc, hum, iaqAcc);
   stabilizePrimaryOdor(scores, iaqAcc);
 
-  const int outdoorAqi = sharedOutdoorAqi();
+  const OutdoorSnap outdoor = copyOutdoorSnap();
+  const int outdoorAqi = outdoor.fresh ? outdoor.usAqi : 0;
   const int airScore = computeAirScore(iaq, voc, co2, hum, scores, outdoorAqi);
+  const int roomScore = computeAirScore(latestStaticIAQ, voc, co2, hum, scores, outdoorAqi);
+  const float dewF = envDewPointF(latestTemp, hum);
+  if (!lastPressSampleMs || now - lastPressSampleMs >= 15UL * 60UL * 1000UL) {
+    gPressTrend.push(hpa);
+    lastPressSampleMs = now;
+  }
+  strlcpy(ss_pressTrend, gPressTrend.label(), sizeof(ss_pressTrend));
+
+  EnvVentInput vin = {};
+  vin.outdoorFresh = outdoor.fresh;
+  vin.staticIaq = latestStaticIAQ;
+  vin.co2eq = co2;
+  vin.voc = voc;
+  vin.indoorRh = hum;
+  vin.indoorTempF = tempF;
+  vin.outdoorDewF = outdoor.dewF;
+  vin.usAqi = outdoor.usAqi;
+  vin.pm25 = outdoor.pm25;
+  vin.pollenTree = outdoor.tree;
+  vin.pollenGrass = outdoor.grass;
+  vin.pollenWeed = outdoor.weed;
+  const EnvVentDecision vent = envVentilation(vin);
+  const bool ventShutEdge = vent.reason == VENT_OUTDOOR &&
+                            strcmp(ss_prevVent, "shut") != 0;
+
+  bool disagree = false;
+  if (outdoor.fresh && outdoor.pressValid && fabsf(hpa - outdoor.pressHpa) > 8.0f) {
+    disagree = true;
+    if (!ss_pressDisagree)
+      Serial.printf("[PRESS] BME %.1f hPa vs forecast %.1f hPa\n", hpa, outdoor.pressHpa);
+  }
+  ss_pressDisagree = disagree;
 
   ss_voc = voc; ss_iaq = iaq; ss_co2 = co2; ss_tempF = tempF; ss_hum = hum;
   ss_pressure = pressure; ss_gasR = gasR; ss_dvoc = vocDelta;
   ss_stabStatus = latestStabStatus; ss_runInStatus = latestRunInStatus;
-  ss_iaqAcc = iaqAcc; ss_tier = tier; ss_airScore = airScore;
+  ss_iaqAcc = iaqAcc; ss_tier = tier; ss_airScore = airScore; ss_roomScore = roomScore;
+  ss_dewF = dewF;
+  strlcpy(ss_vent, vent.vent, sizeof(ss_vent));
   memcpy(ss_scores, scores, sizeof(ss_scores));
   ss_valid = true;
   if (!hadValid) {
@@ -1932,7 +2123,10 @@ static void processSample(unsigned long now) {
   ss_prevAirScore = airScore;
 
   histPush(now);
-  checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi);
+  const bool advisoryCooling = advisoryEverShown && now - lastAdvisoryMs < ADVISORY_COOLDOWN_MS;
+  checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi, ventShutEdge,
+                 strcmp(vent.vent, "shut") == 0);
+  if (calReady && !hazardActive && !advisoryCooling) strlcpy(ss_prevVent, vent.vent, sizeof(ss_prevVent));
 
   // ── Telemetry snapshot for the network task ────────────────
   {
@@ -1945,7 +2139,11 @@ static void processSample(unsigned long now) {
     t.compGas = latestCompGas; t.gasPct = latestGasPct; t.dVoc = vocDelta;
     t.iaqAcc = iaqAcc; t.calReady = calReady;
     strlcpy(t.calText, calibrationStatusText(iaqAcc, latestStabStatus, latestRunInStatus), sizeof(t.calText));
-    t.airScore = airScore; t.tier = tier;
+    t.airScore = airScore; t.roomScore = roomScore; t.tier = tier;
+    t.dewF = dewF;
+    strlcpy(t.vent, vent.vent, sizeof(t.vent));
+    strlcpy(t.pressTrend, ss_pressTrend, sizeof(t.pressTrend));
+    t.pressDisagree = disagree;
     memcpy(t.odors, scores, sizeof(t.odors));
     t.primaryIdx = scores[i1] >= ODOR_MIN_CONF ? i1 : ODOR_COUNT;
     t.primaryConf = scores[i1];
@@ -1989,12 +2187,28 @@ static void processSample(unsigned long now) {
 // Button (loop task)
 // ══════════════════════════════════════════════════════════════
 
-static bool          btnArmed = false;       // wait for release after boot
-static bool          btnStable = false;      // debounced "down" state
-static bool          btnLastRaw = false;
-static unsigned long btnRawChangeMs = 0;
-static unsigned long btnDownMs = 0;
-static bool          btnLongFired = false;
+struct BtnTrack {
+  uint8_t gpio;
+  bool    armed;       // has been seen released since boot
+  bool    stable;      // debounced "down"
+  bool    lastRaw;
+  unsigned long changeMs;
+  unsigned long downMs;
+  bool    longFired;
+};
+static BtnTrack btnTrack[] = {
+  { D1, false, false, false, 0, 0, false },
+  { D0, false, false, false, 0, 0, false },
+  { 9,  false, false, false, 0, 0, false },
+};
+// Set from a falling-edge interrupt. display() blocks for ~160 ms while the
+// OLED frame is sent, which is long enough to miss a whole tap if we only
+// poll in loop().
+static volatile bool btnFell[3] = {};
+static void IRAM_ATTR btnIsr0() { btnFell[0] = true; }
+static void IRAM_ATTR btnIsr1() { btnFell[1] = true; }
+static void IRAM_ATTR btnIsr2() { btnFell[2] = true; }
+static void (*const btnIsr[3])() = { btnIsr0, btnIsr1, btnIsr2 };
 
 static void onShortPress() {
   if (alarmStepsLeft) alarmStop();
@@ -2011,6 +2225,7 @@ static void onShortPress() {
   }
   displayPage = (displayPage + 1) % NUM_PAGES;
   lastPageAdvanceMs = millis();
+  lastDeckTapMs = lastPageAdvanceMs;
   forceRedraw = true;
 }
 
@@ -2026,35 +2241,63 @@ static void onLongPress() {
   showOverlay("Portal Sync", "Fresh snapshot\nqueued for upload.", 1500, false);
 }
 
+static void armButtonPins() {
+  for (uint8_t i = 0; i < 3; i++) {
+    BtnTrack& b = btnTrack[i];
+    pinMode(b.gpio, INPUT_PULLUP);
+    gpio_pullup_en((gpio_num_t)b.gpio);
+    gpio_pulldown_dis((gpio_num_t)b.gpio);
+    attachInterrupt(digitalPinToInterrupt(b.gpio), btnIsr[i], FALLING);
+  }
+}
+
 static void handleButton(unsigned long now) {
-  static bool pinArmed[sizeof(BTN_PINS)] = {};
-  bool raw = false;
-  for (uint8_t i = 0; i < sizeof(BTN_PINS); i++) {
-    const bool low = digitalRead(BTN_PINS[i]) == LOW;
-    if (!pinArmed[i]) { if (!low) pinArmed[i] = true; continue; }
-    raw |= low;
-  }
-  if (raw != btnLastRaw) { btnLastRaw = raw; btnRawChangeMs = now; }
-  if (now - btnRawChangeMs < BTN_DEBOUNCE_MS) return;
-
-  if (!btnArmed) {           // ignore a button held/floating through boot
-    if (!raw) btnArmed = true;
-    btnStable = raw;
-    return;
+  static unsigned long lastPullMs = 0;
+  // Wi-Fi bring-up can clear the pull-ups on these pins. Put them back
+  // without detaching the edge interrupt (gpio pull only, no pinMode).
+  if (lastPullMs && now - lastPullMs >= 2000UL) {
+    for (BtnTrack& b : btnTrack) gpio_pullup_en((gpio_num_t)b.gpio);
+    lastPullMs = now;
+  } else if (!lastPullMs) {
+    lastPullMs = now;
   }
 
-  if (raw && !btnStable) {                 // pressed
-    btnStable = true;
-    btnDownMs = now;
-    btnLongFired = false;
-  } else if (raw && btnStable) {           // held
-    if (!btnLongFired && now - btnDownMs >= BTN_LONG_MS) {
-      btnLongFired = true;
-      onLongPress();
+  for (uint8_t i = 0; i < 3; i++) {
+    BtnTrack& b = btnTrack[i];
+    const bool fell = btnFell[i];
+    if (fell) btnFell[i] = false;
+    const bool low = digitalRead(b.gpio) == LOW || fell;
+    if (!b.armed) {
+      if (digitalRead(b.gpio) == HIGH) b.armed = true;
+      continue;
     }
-  } else if (!raw && btnStable) {          // released
-    btnStable = false;
-    if (!btnLongFired) onShortPress();
+    if (low != b.lastRaw) { b.lastRaw = low; b.changeMs = now; }
+    if (!fell && now - b.changeMs < BTN_DEBOUNCE_MS) continue;
+
+    if (low && !b.stable) {
+      b.stable = true;
+      b.downMs = now;
+      b.longFired = false;
+      // Tap completed entirely during an OLED transfer: the pin is already up.
+      if (fell && digitalRead(b.gpio) == HIGH) {
+        b.stable = false;
+        b.lastRaw = false;
+        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        onShortPress();
+      }
+    } else if (low && b.stable) {
+      if (!b.longFired && now - b.downMs >= BTN_LONG_MS) {
+        b.longFired = true;
+        Serial.printf("[BTN] hold gpio=%u\n", b.gpio);
+        onLongPress();
+      }
+    } else if (!low && b.stable) {
+      b.stable = false;
+      if (!b.longFired) {
+        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        onShortPress();
+      }
+    }
   }
 }
 
@@ -2103,8 +2346,7 @@ static bool          locationOk = false;
 static float         lat = 0, lon = 0;
 static int32_t       utcOffsetSec = 0;
 static unsigned long lastLocationTryMs = 0;
-static unsigned long weatherOkMs = 0, weatherTryMs = 0;
-static unsigned long aqiOkMs = 0, aqiTryMs = 0;
+static unsigned long envOkMs = 0, envTryMs = 0;
 static unsigned long homeOkMs = 0, homeTryMs = 0;
 static unsigned long wallOkMs = 0, wallTryMs = 0;
 static unsigned long snarkOkMs = 0, snarkTryMs = 0;
@@ -2257,64 +2499,6 @@ static bool fetchLocation() {
   return true;
 }
 
-// WMO weather code → short text (Open-Meteo `weather_code`)
-static const char* wmoText(int c) {
-  switch (c) {
-    case 0: return "Clear";
-    case 1: return "Mostly clear";
-    case 2: return "Partly cloudy";
-    case 3: return "Overcast";
-    case 45: case 48: return "Fog";
-    case 51: case 53: case 55: return "Drizzle";
-    case 56: case 57: return "Freezing drizzle";
-    case 61: return "Light rain";
-    case 63: return "Rain";
-    case 65: return "Heavy rain";
-    case 66: case 67: return "Freezing rain";
-    case 71: case 73: case 75: case 77: return "Snow";
-    case 80: case 81: case 82: return "Rain showers";
-    case 85: case 86: return "Snow showers";
-    case 95: return "Thunderstorm";
-    case 96: case 99: return "T-storm + hail";
-    default: return "Unknown";
-  }
-}
-
-static const char* compass(float deg) {
-  static const char* DIRS[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
-  int i = (int)lroundf(fmodf(deg + 360.0f, 360.0f) / 45.0f) % 8;
-  return DIRS[i];
-}
-
-// Current weather from Open-Meteo (free, no key, HTTPS JSON)
-static bool fetchWeather() {
-  if (!locationOk) return false;
-  char url[256];
-  snprintf(url, sizeof(url),
-           "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-           "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,"
-           "wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph",
-           lat, lon);
-  String body;
-  if (request(url, nullptr, &body, false, 8000) != 200) return false;
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) return false;
-  JsonObject c = doc["current"];
-  if (c.isNull()) return false;
-
-  WeatherData w = {};
-  w.tempF = lroundf(c["temperature_2m"] | 0.0f);
-  w.feelsLikeF = lroundf(c["apparent_temperature"] | 0.0f);
-  w.humidity = lroundf(c["relative_humidity_2m"] | 0.0f);
-  strlcpy(w.condition, wmoText(c["weather_code"] | -1), sizeof(w.condition));
-  strlcpy(w.windDir, compass(c["wind_direction_10m"] | 0.0f), sizeof(w.windDir));
-  snprintf(w.windSpeed, sizeof(w.windSpeed), "%ld mph", lroundf(c["wind_speed_10m"] | 0.0f));
-  w.valid = true;
-  LockGuard g;
-  gNet.weather = w;
-  return true;
-}
-
 static const char* epaCategory(int aqi) {
   return aqi <= 50 ? "Good" : aqi <= 100 ? "Moderate" : aqi <= 150 ? "Sensitive" :
          aqi <= 200 ? "Unhealthy" : aqi <= 300 ? "Very Bad" : "Hazardous";
@@ -2334,42 +2518,156 @@ static void buildAqiAdvisory(OutdoorAQI& a) {
   else if (a.aqi > 100)                 { cause = "Multiple pollutants";  advice = "Keep windows closed"; }
   else if (a.aqi <= 50)                 { cause = "All clear";            advice = "Great day for open windows"; }
   else                                  { cause = "Mild pollution";       advice = "Sensitive groups be cautious"; }
+  char pm25[8], pm10[8], co[8], no2[8], o3[8], so2[8];
+  auto conc = [](char* out, size_t n, float v) {
+    if (isfinite(v)) snprintf(out, n, "%.0f", v);
+    else strlcpy(out, "--", n);
+  };
+  conc(pm25, sizeof(pm25), a.pm25); conc(pm10, sizeof(pm10), a.pm10);
+  conc(co, sizeof(co), a.co);       conc(no2, sizeof(no2), a.no2);
+  conc(o3, sizeof(o3), a.o3);       conc(so2, sizeof(so2), a.so2);
   snprintf(a.advisory, sizeof(a.advisory),
-           "AQI: %d  %s\nPM2.5: %.0f  PM10: %.0f\nCO: %.0f  NO2: %.0f  O3: %.0f  SO2: %.0f\n%s\n%s",
-           a.aqi, a.level, a.pm25, a.pm10, a.co, a.no2, a.o3, a.so2, cause, advice);
+           "AQI: %d  %s\nPM2.5: %s  PM10: %s\nCO: %s  NO2: %s  O3: %s  SO2: %s\n%s\n%s",
+           a.aqi, a.level, pm25, pm10, co, no2, o3, so2, cause, advice);
 }
 
-// Outdoor air from Open-Meteo: US EPA AQI (0-500) + concentrations in µg/m³
-static bool fetchOutdoorAQI() {
-  if (!locationOk) return false;
-  char url[256];
-  snprintf(url, sizeof(url),
-           "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=%.4f&longitude=%.4f"
-           "&current=us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,ozone,sulphur_dioxide",
-           lat, lon);
+// Async BSSID scan for the server-side geolocation call. At most every 15 min.
+// A pass that only starts the scan returns false so the next retry can read it.
+static const unsigned long ENV_WIFI_SCAN_MS = 15UL * 60UL * 1000UL;
+static unsigned long lastEnvScanMs = 0;
+struct EnvAp { char mac[18]; int8_t rssi; uint8_t channel; };
+static EnvAp envAps[8];
+static uint8_t envApCount = 0;
+
+static void harvestEnvScan(int found) {
+  envApCount = 0;
+  const int n = found > 8 ? 8 : found;
+  for (int i = 0; i < n; i++) {
+    const uint8_t* b = WiFi.BSSID(i);
+    if (!b) continue;
+    snprintf(envAps[envApCount].mac, sizeof(envAps[envApCount].mac),
+             "%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5]);
+    envAps[envApCount].rssi = (int8_t)WiFi.RSSI(i);
+    envAps[envApCount].channel = (uint8_t)WiFi.channel(i);
+    envApCount++;
+  }
+  WiFi.scanDelete();
+}
+
+static bool envScanReady() {
+  const int st = WiFi.scanComplete();
+  if (st == WIFI_SCAN_RUNNING) return false;
+  if (st >= 0) {
+    harvestEnvScan(st);
+    lastEnvScanMs = millis();
+    return true;
+  }
+  if (st == WIFI_SCAN_FAILED) WiFi.scanDelete();
+  const unsigned long now = millis();
+  if (!lastEnvScanMs || now - lastEnvScanMs >= ENV_WIFI_SCAN_MS) {
+    WiFi.scanNetworks(true);
+    lastEnvScanMs = now;
+    return false;
+  }
+  return true;
+}
+
+// One server call replaces the old weather and outdoor-AQI fetches.
+// Google is called only by the server. This function never sees the API key.
+static bool fetchGoogleEnv() {
+  if (!envScanReady()) return false;
+
+  JsonDocument req;
+  if (locationOk) {
+    req["lat"] = roundf(lat * 10000.0f) / 10000.0f;
+    req["lon"] = roundf(lon * 10000.0f) / 10000.0f;
+  }
+  if (envApCount >= 2) {
+    JsonArray wifi = req["wifi"].to<JsonArray>();
+    for (uint8_t i = 0; i < envApCount; i++) {
+      JsonObject ap = wifi.add<JsonObject>();
+      ap["mac"] = envAps[i].mac;
+      ap["rssi"] = envAps[i].rssi;
+      ap["channel"] = envAps[i].channel;
+    }
+  }
+  String payload;
+  serializeJson(req, payload);
   String body;
-  if (request(url, nullptr, &body, false, 8000) != 200) return false;
+  const int code = request(dashboardUrl("/api/environment"), payload.c_str(), &body, true, 12000);
+  if (code != 200) {
+    Serial.printf("[NET] environment HTTP %d\n", code);
+    return false;
+  }
+  if (body.length() > 1100) {
+    Serial.printf("[NET] environment body %u bytes rejected\n", (unsigned)body.length());
+    return false;
+  }
   JsonDocument doc;
   if (deserializeJson(doc, body)) return false;
-  JsonObject c = doc["current"];
-  if (c.isNull() || c["us_aqi"].isNull()) return false;
+  if (!(doc["ok"] | false)) return false;
+  JsonObject wx = doc["wx"];
+  JsonObject aq = doc["aq"];
+  if (wx.isNull() || aq.isNull() || aq["usAqi"].isNull()) return false;
+
+  WeatherData w = {};
+  w.tempF = wx["tempF"] | 0;
+  w.feelsLikeF = wx["feelsF"] | w.tempF;
+  w.humidity = wx["rh"] | 0;
+  strlcpy(w.condition, wx["cond"] | "", sizeof(w.condition));
+  strlcpy(w.windDir, wx["windDir"] | "", sizeof(w.windDir));
+  snprintf(w.windSpeed, sizeof(w.windSpeed), "%d mph", (int)(wx["windMph"] | 0));
+  w.valid = true;
 
   OutdoorAQI a = {};
-  a.aqi  = c["us_aqi"] | 0;
-  a.pm25 = c["pm2_5"] | 0.0f;
-  a.pm10 = c["pm10"] | 0.0f;
-  a.co   = c["carbon_monoxide"] | 0.0f;
-  a.no2  = c["nitrogen_dioxide"] | 0.0f;
-  a.o3   = c["ozone"] | 0.0f;
-  a.so2  = c["sulphur_dioxide"] | 0.0f;
-  strlcpy(a.level, epaCategory(a.aqi), sizeof(a.level));
+  a.outdoorDewF = NAN;
+  a.uv = -1;
+  a.precipPct = -1;
+  a.aqi = aq["usAqi"] | 0;
+  a.pm25 = a.pm10 = a.co = a.no2 = a.o3 = a.so2 = NAN;
+  if (!aq["pm25"].isNull()) a.pm25 = aq["pm25"] | 0.0f;
+  if (!aq["pm10"].isNull()) a.pm10 = aq["pm10"] | 0.0f;
+  if (!aq["co"].isNull()) a.co = aq["co"] | 0.0f;
+  if (!aq["no2"].isNull()) a.no2 = aq["no2"] | 0.0f;
+  if (!aq["o3"].isNull()) a.o3 = aq["o3"] | 0.0f;
+  if (!aq["so2"].isNull()) a.so2 = aq["so2"] | 0.0f;
+  strlcpy(a.level, aq["cat"] | epaCategory(a.aqi), sizeof(a.level));
+  if (!aq["uaqi"].isNull()) { a.uaqiValid = true; a.uaqi = aq["uaqi"] | 0; }
   buildAqiAdvisory(a);
   a.valid = true;
   a.fetchedMs = millis();
+  a.ttlMs = (unsigned long)(doc["ttlSec"] | 1800) * 1000UL;
+  strlcpy(a.source, doc["source"] | "", sizeof(a.source));
+  if (!wx["dewF"].isNull()) a.outdoorDewF = wx["dewF"] | 0.0f;
+  if (!wx["pressHpa"].isNull()) { a.googlePress = wx["pressHpa"] | 0.0f; a.googlePressValid = true; }
+  a.heatF = wx["heatF"] | 0;
+  if (!wx["uv"].isNull()) a.uv = wx["uv"] | 0;
+  if (!wx["precipPct"].isNull()) a.precipPct = wx["precipPct"] | 0;
+  JsonObject pol = doc["pollen"];
+  if (!pol.isNull()) {
+    a.pollenValid = true;
+    a.pollenTree = pol["tree"] | 0;
+    a.pollenGrass = pol["grass"] | 0;
+    a.pollenWeed = pol["weed"] | 0;
+    strlcpy(a.pollenTop, pol["top"] | "", sizeof(a.pollenTop));
+  }
 
-  Serial.printf("[NET] Outdoor US AQI=%d PM2.5=%.1f %s\n", a.aqi, a.pm25, a.level);
+  const char* locSource = doc["loc"]["source"] | "";
+  const bool wifiFix = strcmp(locSource, "wifi") == 0;
+  if (wifiFix) {
+    lat = doc["loc"]["lat"] | lat;
+    lon = doc["loc"]["lon"] | lon;
+    locationOk = true;
+  }
+  Serial.printf("[NET] Env %s AQI=%d PM2.5=%.1f pollen=%s\n",
+                a.source, a.aqi, a.pm25, a.pollenValid ? "yes" : "no");
   LockGuard g;
+  gNet.weather = w;
   gNet.aqi = a;
+  if (wifiFix) {
+    const char* label = doc["loc"]["label"] | "";
+    if (label[0]) strlcpy(gNet.city, label, sizeof(gNet.city));
+  }
   return true;
 }
 
@@ -2624,6 +2922,16 @@ static bool sendSnapshot(const Telemetry& t) {
   doc["vtrLabel"]   = vtrLabelForLevel(t.vtrLevel);
   doc["vtrAdvice"]  = vtrAdviceForLevel(t.vtrLevel);
   doc["airScore"]   = t.airScore;
+  doc["roomScore"]  = t.roomScore;
+  if (isfinite(t.dewF)) doc["dewF"] = roundf(t.dewF * 10.0f) / 10.0f;
+  if (t.vent[0]) doc["vent"] = t.vent;
+  if (t.pressTrend[0]) doc["pressTrend"] = t.pressTrend;
+  if (t.pressDisagree) doc["pressDisagree"] = true;
+  if (t.gasScanPost && t.gasScanCount) {
+    doc["gasScanProfile"] = t.gasScanProfile;
+    JsonArray scan = doc["gasScan"].to<JsonArray>();
+    for (uint8_t i = 0; i < t.gasScanCount && i < HEATER_STEP_COUNT; i++) scan.add(t.gasScanOhms[i]);
+  }
   doc["tier"]       = t.tier;
   doc["fartCount"]  = t.fartCount;
   doc["iaqTrend"]   = t.iaqTrend;
@@ -2666,12 +2974,20 @@ static bool sendSnapshot(const Telemetry& t) {
     doc["outdoorAqi"]   = ns.aqi.aqi;
     doc["outdoorLevel"] = ns.aqi.level;
     doc["aqiAdvisory"]  = ns.aqi.advisory;
-    doc["outdoorPm25"]  = roundf(ns.aqi.pm25 * 10) / 10.0f;
-    doc["outdoorPm10"]  = roundf(ns.aqi.pm10 * 10) / 10.0f;
-    doc["outdoorCo"]    = lroundf(ns.aqi.co);
-    doc["outdoorNo2"]   = roundf(ns.aqi.no2 * 10) / 10.0f;
-    doc["outdoorO3"]    = roundf(ns.aqi.o3 * 10) / 10.0f;
-    doc["outdoorSo2"]   = roundf(ns.aqi.so2 * 10) / 10.0f;
+    if (isfinite(ns.aqi.pm25)) doc["outdoorPm25"] = roundf(ns.aqi.pm25 * 10) / 10.0f;
+    if (isfinite(ns.aqi.pm10)) doc["outdoorPm10"] = roundf(ns.aqi.pm10 * 10) / 10.0f;
+    if (isfinite(ns.aqi.co))   doc["outdoorCo"]   = lroundf(ns.aqi.co);
+    if (isfinite(ns.aqi.no2))  doc["outdoorNo2"]  = roundf(ns.aqi.no2 * 10) / 10.0f;
+    if (isfinite(ns.aqi.o3))   doc["outdoorO3"]   = roundf(ns.aqi.o3 * 10) / 10.0f;
+    if (isfinite(ns.aqi.so2))  doc["outdoorSo2"]  = roundf(ns.aqi.so2 * 10) / 10.0f;
+    if (ns.aqi.uaqiValid) doc["outdoorUaqi"] = ns.aqi.uaqi;
+    if (ns.aqi.pollenValid) {
+      doc["pollenTree"] = ns.aqi.pollenTree;
+      doc["pollenGrass"] = ns.aqi.pollenGrass;
+      doc["pollenWeed"] = ns.aqi.pollenWeed;
+      if (ns.aqi.pollenTop[0]) doc["pollenTop"] = ns.aqi.pollenTop;
+    }
+    if (ns.aqi.source[0]) doc["envSource"] = ns.aqi.source;
   }
 
   String payload;
@@ -2679,6 +2995,10 @@ static bool sendSnapshot(const Telemetry& t) {
   String resp;
   int code = request(dashboardUrl("/api/update"), payload.c_str(), &resp);
   if (code == 200) {
+    if (t.gasScanPost) {
+      LockGuard g;
+      if (gTelem.gasScanGen == t.gasScanGen) gTelem.gasScanPost = false;
+    }
     Serial.println(F("[WEB] Dashboard updated"));
     return true;
   }
@@ -2704,6 +3024,13 @@ static void pollCommand() {
     Serial.println(F("[WEB] Remote command: refresh"));
     pushPending = true;
     lastPostAttemptMs = 0;
+  } else if (strcmp(action, "gas_scan") == 0) {
+    if (gScanBusy || gGasScanRequest) {
+      Serial.println(F("[GAS] scan busy — command dropped"));
+    } else {
+      gGasScanRequest = true;
+      Serial.println(F("[WEB] Remote command: gas_scan"));
+    }
   } else {
     Serial.printf("[WEB] Remote command '%s' not supported in this build\n", action);
   }
@@ -2733,7 +3060,7 @@ static void task(void*) {
     const bool connected = maintainWiFi();
     publishStatus(connected);
 
-    if (connected) {
+    if (connected && !gScanBusy) {
       // Pull requests from the main task
       Telemetry t;
       SniffEvent sniff;
@@ -2777,14 +3104,10 @@ static void task(void*) {
       } else if (!locationOk && (!lastLocationTryMs || now - lastLocationTryMs >= OPTIONAL_RETRY_MS)) {
         lastLocationTryMs = now;
         fetchLocation();
-      } else if ((!weatherOkMs || now - weatherOkMs >= WEATHER_REFRESH_MS) &&
-                 (!weatherTryMs || now - weatherTryMs >= OPTIONAL_RETRY_MS)) {
-        weatherTryMs = now;
-        if (fetchWeather()) weatherOkMs = millis();
-      } else if (locationOk && (!aqiOkMs || now - aqiOkMs >= WEATHER_REFRESH_MS) &&
-                 (!aqiTryMs || now - aqiTryMs >= OPTIONAL_RETRY_MS)) {
-        aqiTryMs = now;
-        if (fetchOutdoorAQI()) aqiOkMs = millis();
+      } else if ((!envOkMs || now - envOkMs >= WEATHER_REFRESH_MS) &&
+                 (!envTryMs || now - envTryMs >= OPTIONAL_RETRY_MS)) {
+        envTryMs = now;
+        if (fetchGoogleEnv()) envOkMs = millis();
       } else if (lastPostOkMs && (!homeOkMs || now - homeOkMs >= HOME_STATS_MS) &&
                  (!homeTryMs || now - homeTryMs >= OPTIONAL_RETRY_MS)) {
         homeTryMs = now;
@@ -2812,13 +3135,160 @@ static void task(void*) {
 }  // namespace net
 
 // ══════════════════════════════════════════════════════════════
+// On-demand heater scan (loop task — it owns I2C)
+// ══════════════════════════════════════════════════════════════
+
+static void rebootSensorFail() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println(F("BME688 INIT FAIL"));
+  display.println(F("Check sensor wiring"));
+  display.println();
+  display.println(F("Rebooting in 10s..."));
+  display.display();
+  delay(10000);
+  ESP.restart();
+}
+
+static bool restoreBsecBlob() {
+  if (!bsecPrefs.begin(BSEC_NVS_NS, true)) return false;
+  bool ok = false;
+  if (bsecPrefs.getBytesLength(BSEC_STATE_KEY) == sizeof(PersistedBsecState)) {
+    static PersistedBsecState st;
+    bsecPrefs.getBytes(BSEC_STATE_KEY, &st, sizeof(st));
+    if (st.magic == BSEC_STATE_MAGIC && st.version == BSEC_STATE_VER &&
+        st.blobLen == BSEC_MAX_STATE_BLOB_SIZE && strncmp(st.cfgId, bsecCfgId, sizeof(st.cfgId)) == 0) {
+      ok = envSensor.setState(st.blob);
+    }
+  }
+  bsecPrefs.end();
+  calState.bsecStateLoaded = ok;
+  if (ok) bsecEverSaved = true;
+  return ok;
+}
+
+static bool restartBsec(const char* why) {
+  Serial.printf("[BSEC] Restarting after %s\n", why);
+  if (!envSensor.begin(bmeI2cAddr, Wire, safeBmeDelayUs)) return false;
+  if (!envSensor.setConfig(bsecIaqLpConfig))
+    Serial.printf("[BSEC] Config reload failed: %d\n", (int)envSensor.status);
+  if (!restoreBsecBlob()) Serial.println(F("[BSEC] No blob restored after scan"));
+  if (!subscribeBsecOutputs("scan")) return false;
+  envSensor.attachCallback(onSensorData);
+  bsecInitMillis = millis();
+  return true;
+}
+
+static void emitLabelData(const uint32_t* ohms, uint8_t count) {
+  Serial.printf("SMELLNET_DATA,%.2f,%.0f,%.0f,%.1f,%.1f,%.1f,%.0f,%.2f,%s",
+                ss_voc, ss_iaq, ss_co2, ss_tempF, ss_hum, pressToHpa(ss_pressure),
+                ss_gasR, ss_dvoc, HEATER_PROFILE_ID);
+  for (uint8_t i = 0; i < count; i++) Serial.printf(",%lu", (unsigned long)ohms[i]);
+  Serial.println();
+}
+
+static void showGasScan(uint8_t step, uint8_t total) {
+  display.clearDisplay();
+  drawHeader("Gas scan");
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%u/%u", step, total);
+  display.setTextSize(2);
+  display.setCursor(0, 28);
+  display.print(buf);
+  display.setTextSize(1);
+  display.display();
+}
+
+static void runGasScan() {
+  if (gScanBusy) {
+    Serial.println(F("[GAS] scan already running — dropped"));
+    return;
+  }
+  if (latestIAQAccuracy == 0 && !bsecEverSaved) {
+    Serial.println(F("[GAS] refused: accuracy 0 and no saved BSEC state"));
+    return;
+  }
+  if (latestIAQAccuracy > 0) {
+    const bool hadBlob = bsecEverSaved;
+    saveBsecState();
+    if (!bsecEverSaved && !hadBlob) {
+      Serial.println(F("[GAS] refused: could not save BSEC state"));
+      return;
+    }
+  }
+  gScanBusy = true;
+  showGasScan(0, HEATER_STEP_COUNT);
+
+  Bme68x bme;
+  bme.begin(bmeI2cAddr, Wire);
+  uint16_t temp[HEATER_STEP_COUNT];
+  uint16_t dur[HEATER_STEP_COUNT];
+  for (uint8_t i = 0; i < HEATER_STEP_COUNT; i++) {
+    temp[i] = HEATER_TEMP_C[i];
+    dur[i] = HEATER_DUR_MS[i];
+  }
+  bool programmed = bme.checkStatus() != BME68X_ERROR;
+  if (programmed) {
+    bme.setTPH();
+    bme.setSeqSleep(BME68X_ODR_250_MS);
+    bme.setHeaterProf(temp, dur, HEATER_STEP_COUNT);
+    bme.setOpMode(BME68X_SEQUENTIAL_MODE);
+    programmed = bme.checkStatus() != BME68X_ERROR;
+  }
+
+  uint32_t ohms[HEATER_STEP_COUNT] = {};
+  uint8_t valid[HEATER_STEP_COUNT] = {};
+  uint8_t seen[HEATER_STEP_COUNT] = {};
+  uint8_t nSeen = 0;
+  const unsigned long deadline = millis() + 15000UL;
+  while (programmed && nSeen < HEATER_STEP_COUNT && (long)(deadline - millis()) > 0) {
+    handleButton(millis());
+    alarmTick(millis());
+    if (!bme.fetchData()) { delay(20); continue; }
+    bme68xData data;
+    uint8_t left;
+    do {
+      left = bme.getData(data);
+      if (data.gas_index >= HEATER_STEP_COUNT) continue;
+      const uint8_t step = data.gas_index;
+      if (!seen[step]) { seen[step] = 1; nSeen++; showGasScan(nSeen, HEATER_STEP_COUNT); }
+      const bool ok = (data.status & BME68X_GASM_VALID_MSK) && (data.status & BME68X_HEAT_STAB_MSK);
+      if (ok) {
+        ohms[step] = (uint32_t)lroundf(data.gas_resistance);
+        valid[step] = 1;
+      }
+    } while (left);
+  }
+  if (programmed) bme.setOpMode(BME68X_SLEEP_MODE);
+
+  for (uint8_t i = 0; i < HEATER_STEP_COUNT; i++) {
+    Serial.printf("GASSCAN,%s,%u,%u,%u,%lu,%u\n",
+                  HEATER_PROFILE_ID, i, HEATER_TEMP_C[i], HEATER_DUR_MS[i],
+                  (unsigned long)(valid[i] ? ohms[i] : 0), valid[i]);
+  }
+  {
+    LockGuard g;
+    strlcpy(gTelem.gasScanProfile, HEATER_PROFILE_ID, sizeof(gTelem.gasScanProfile));
+    memcpy(gTelem.gasScanOhms, ohms, sizeof(ohms));
+    gTelem.gasScanCount = HEATER_STEP_COUNT;
+    gTelem.gasScanGen++;
+    gTelem.gasScanPost = true;
+  }
+  emitLabelData(ohms, HEATER_STEP_COUNT);
+
+  if (!restartBsec("gas scan")) rebootSensorFail();
+  gScanBusy = false;
+  forceRedraw = true;
+}
+
+// ══════════════════════════════════════════════════════════════
 // setup() / loop()
 // ══════════════════════════════════════════════════════════════
 
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  for (uint8_t p : BTN_PINS) pinMode(p, INPUT_PULLUP);
+  armButtonPins();
 
   Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
@@ -2846,17 +3316,7 @@ void setup() {
     Serial.println(F("[BSEC] init failed at 0x76 — trying 0x77"));
     delay(200);
     bmeI2cAddr = BME68X_I2C_ADDR_HIGH;
-    if (!envSensor.begin(BME68X_I2C_ADDR_HIGH, Wire, safeBmeDelayUs)) {
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println(F("BME688 INIT FAIL"));
-      display.println(F("Check sensor wiring"));
-      display.println();
-      display.println(F("Rebooting in 10s..."));
-      display.display();
-      delay(10000);
-      ESP.restart();
-    }
+    if (!envSensor.begin(BME68X_I2C_ADDR_HIGH, Wire, safeBmeDelayUs)) rebootSensorFail();
   }
 
   Serial.printf("[BSEC] BME688 at 0x%02X\n", bmeI2cAddr);
@@ -2935,16 +3395,25 @@ static void updateDisplay(unsigned long now) {
     }
   }
 
-  // Wall cards are the glanceable ones: hold them longer than the sensor
-  // cards, and redraw them ~2.5x/s so the radar and scan line animate.
-  const bool wallPage = displayPage <= C_WALL_OUTDOOR;
-  if (now - lastPageAdvanceMs >= (wallPage ? 8000UL : PAGE_CYCLE_MS)) {
-    displayPage = (displayPage + 1) % NUM_PAGES;
+  // Wall deck cycles on its own. Detail cards keep cycling only while
+  // someone is tapping; a quiet minute returns to the bridge card.
+  const bool wallPage = isWallPage(displayPage);
+  if (!wallPage && lastDeckTapMs && now - lastDeckTapMs >= 60000UL) {
+    displayPage = C_WALL_BRIDGE;
+    lastPageAdvanceMs = now;
+    forceRedraw = true;
+  } else if (wallPage && now - lastPageAdvanceMs >= 10000UL) {
+    displayPage = (displayPage + 1) % 4;   // C_WALL_BRIDGE .. C_WALL_SKY are 0..3
+    lastPageAdvanceMs = now;
+    forceRedraw = true;
+  } else if (!wallPage && now - lastPageAdvanceMs >= PAGE_CYCLE_MS) {
+    displayPage++;
+    if (displayPage >= NUM_PAGES) displayPage = C_HOME;
     lastPageAdvanceMs = now;
     forceRedraw = true;
   }
   static unsigned long lastWallAnimMs = 0;
-  if (wallPage && now - lastWallAnimMs >= 400UL) {
+  if (wallPage && now - lastWallAnimMs >= 500UL) {
     lastWallAnimMs = now;
     forceRedraw = true;
   }
@@ -3020,6 +3489,15 @@ static void serviceHomeSensors(unsigned long now) {
 void loop() {
   const unsigned long now = millis();
   handleButton(now);
+  if (gGasScanRequest && !gScanBusy) {
+    gGasScanRequest = false;
+    runGasScan();
+  }
+  if (gScanBusy) {
+    alarmTick(millis());
+    delay(5);
+    return;
+  }
 #if SM_HOME_SENSORS
   serviceHomeSensors(now);
 #endif
@@ -3028,15 +3506,15 @@ void loop() {
   if (newDataReady) processSample(now);
   alarmTick(millis());
   updateDisplay(millis());
+  handleButton(millis());   // catch a tap that landed during the OLED transfer
   oledHealthCheck(millis());
 
   const unsigned long took = millis() - now;
   if (took > loopMaxMs) loopMaxMs = took;
   if (now - lastLoopLogMs >= 10000UL) {
-    Serial.printf("[LOOP] max=%lums heap=%u minHeap=%u oledRecov=%u bsecFail=%u timing=%u last=%d acc=%u runIn=%.0f stab=%.0f\n",
-                  loopMaxMs, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(), oledRecoveries,
-                  bsecRunFail, bsecTimingViol, bsecLastFailStatus, latestIAQAccuracy,
-                  latestRunInStatus, latestStabStatus);
+    Serial.printf("[LOOP] max=%lums heap=%u page=%u d0=%d d1=%d boot=%d\n",
+                  loopMaxMs, (unsigned)ESP.getFreeHeap(), displayPage,
+                  digitalRead(D0), digitalRead(D1), digitalRead(9));
     bsecRunFail = bsecTimingViol = 0;
     loopMaxMs = 0;
     lastLoopLogMs = now;
