@@ -123,6 +123,62 @@ export function detectBreaches(t, values, badRanges) {
   return out;
 }
 
+// Split a merged event list into feed gaps and breaches. The two kinds
+// are rendered by different rules: a gap is data integrity, so its band
+// and label stay visible even when the Events toggle is off; a breach is
+// an event, so the toggle hides it.
+export function partitionEvents(events) {
+  const gaps = [];
+  const breaches = [];
+  for (const e of events || []) (e.kind === "gap" ? gaps : breaches).push(e);
+  return { gaps, breaches };
+}
+
+// Which events belong in a visible [t0, t1] window. A breach is a point:
+// it counts when it falls inside. A gap is an interval: it counts when
+// it overlaps the window at all, even when it started before the window
+// opened (e.g. a zoom or range change that lands mid-outage) — otherwise
+// the label vanishes exactly when the range changes, the v0 Charts Lab
+// bug.
+export function eventsInWindow(events, t0, t1) {
+  return (events || []).filter((e) => {
+    if (e.kind === "gap") {
+      const g0 = e.t0 ?? e.t;
+      const g1 = e.t1 ?? e.t;
+      return g1 >= t0 && g0 <= t1;
+    }
+    return e.t >= t0 && e.t <= t1;
+  });
+}
+
+// Notable smell events in a visible window, from the real heatmap data:
+// one event per run of consecutive columns where a class scores at or
+// above the "strong" bar (65, the same cutoff the smell bars use).
+// The event time is the peak column of its run, so a pill's time always
+// matches the heatmap cell it names — the times come from the same
+// arrays the cells are drawn from. Returns earliest first.
+export function smellEvents(t, odors, names, opts = {}) {
+  const strong = opts.strong ?? 65;
+  const out = [];
+  const cols = Math.min(t.length, odors.length);
+  for (let oi = 0; oi < (names || []).length; oi++) {
+    let run = null;
+    for (let c = 0; c < cols; c++) {
+      const v = odors[c] ? odors[c][oi] : 0;
+      if (v >= strong) {
+        if (!run) run = { start: c, peak: c, score: v };
+        else if (v > run.score) { run.peak = c; run.score = v; }
+      } else if (run) {
+        out.push({ classIndex: oi, name: names[oi], t: t[run.peak], score: run.score, start: t[run.start], end: t[c - 1] });
+        run = null;
+      }
+    }
+    if (run) out.push({ classIndex: oi, name: names[oi], t: t[run.peak], score: run.score, start: t[run.start], end: t[cols - 1] });
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
 // All events for a chart, earliest first: feed gaps from the timestamps
 // plus breaches from the values against the channel's "bad" zones.
 export function buildEvents(t, values, zones) {
@@ -205,6 +261,7 @@ export function svgToPng(svgEl, scale = 2) {
       `.grid-line{stroke:${v("--viz-grid")};stroke-width:1}` +
       `.crosshair{stroke:${v("--ink-3")};stroke-width:1;stroke-dasharray:3 3}` +
       `.event-label{fill:${v("--ink-2")};font-size:10.5px;font-family:${v("--sans")}}` +
+      `.gap-label{fill:${v("--fair")};font-size:10.5px;font-weight:600;font-family:${v("--sans")}}` +
       `.event-line{stroke:${v("--bad")};stroke-width:1.5;stroke-dasharray:4 3}` +
       `.event-gap{fill:${v("--fair-bg")};stroke:${v("--fair")};stroke-width:1;stroke-dasharray:4 3}` +
       `.heat .axis-text{fill:${v("--ink-2")};font-size:11px}`;
@@ -246,6 +303,9 @@ if (typeof window !== "undefined") {
   window.SniffCharts = {
     medianInterval,
     findGaps,
+    partitionEvents,
+    eventsInWindow,
+    smellEvents,
     sliceWindow,
     timeAtPixel,
     pixelAtTime,

@@ -532,7 +532,20 @@ label.choice.off { opacity: .72; }
 .event-line { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 4 3; }
 .event-dot { fill: var(--bad); stroke: var(--card); stroke-width: 1.5; }
 .event-gap { fill: var(--fair-bg); stroke: var(--fair); stroke-width: 1; stroke-dasharray: 4 3; }
+/* Feed-gap labels are amber and semibold, distinct from event labels:
+   a gap is data integrity, not an event, and it stays when the Events
+   toggle hides the rest. */
+.gap-label { fill: var(--fair); font-size: 10.5px; font-weight: 600; font-family: var(--sans); }
 .heat { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+/* Smell heatmap legend: a low→strong intensity ramp plus the amber
+   dashed-line key for feed gaps. Pills list the strong smells in the
+   visible window; the row is empty (and hidden) when there are none. */
+.heat-legend { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--ink-3); }
+.heat-grad { width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--good), var(--fair), var(--poor)); }
+.heat-gap-key { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.heat-gap-key i { width: 2px; height: 14px; background: var(--fair); display: inline-block; }
+.heat-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.heat-pills:empty { display: none; }
 
 /* ── AI insight card (Overview) ─────────────────────────────────────── */
 /* Full-width card under the hero. The text is interpretation, so it reads

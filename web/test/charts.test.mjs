@@ -9,6 +9,9 @@ import path from "node:path";
 import {
   medianInterval,
   findGaps,
+  partitionEvents,
+  eventsInWindow,
+  smellEvents,
   sliceWindow,
   timeAtPixel,
   pixelAtTime,
@@ -195,6 +198,70 @@ test("wiring: charts module is loaded and lineChart takes zoom/events/tools", ()
   assert.ok(jsText.includes("clearAllZoom"), "range change clears zoom state");
 });
 
+test("partitionEvents splits gaps from breaches", () => {
+  const t = outageSeries();
+  const co2 = t.map((ts, i) => (i > 100 && i < 110 ? 1400 : 700));
+  const zones = [
+    { lo: 0, hi: 800, tone: "good", label: "Fresh, under 800" },
+    { lo: 1200, hi: 5000, tone: "bad", label: "Stuffy, above 1,200" },
+  ];
+  const parts = partitionEvents(buildEvents(t, co2, zones));
+  assert.equal(parts.gaps.length, 1);
+  assert.equal(parts.gaps[0].kind, "gap");
+  assert.equal(parts.breaches.length, 1);
+  assert.equal(parts.breaches[0].kind, "breach");
+  assert.deepEqual(partitionEvents([]), { gaps: [], breaches: [] });
+});
+
+test("eventsInWindow keeps a gap that only overlaps the window", () => {
+  const events = [
+    { kind: "gap", t: 1000, t0: 1000, t1: 5000, label: "Feed gap · 4 min" },
+    { kind: "breach", t: 3000, label: "Stuffy, above 1,200" },
+    { kind: "gap", t: 9000, t0: 9000, t1: 12000, label: "Feed gap · 3 min" },
+    { kind: "breach", t: 20000, label: "Stuffy, above 1,200" },
+  ];
+  // Window opens mid-first-gap and closes mid-second: both gaps count,
+  // the breach before the window does not.
+  assert.deepEqual(eventsInWindow(events, 4000, 10000).map((e) => e.kind), ["gap", "gap"]);
+  // A window between the two gaps sees nothing.
+  assert.deepEqual(eventsInWindow(events, 6000, 8000), []);
+  // A breach exactly on the window counts, and so does the gap it sits in.
+  assert.deepEqual(eventsInWindow(events, 3000, 3000).map((e) => e.kind), ["gap", "breach"]);
+  assert.deepEqual(eventsInWindow(events, 5001, 8000), []);
+});
+
+test("smellEvents: one event per strong run, timed at its peak column", () => {
+  const base = Date.UTC(2026, 10, 15, 12, 0, 0);
+  const t = Array.from({ length: 10 }, (_, c) => base + c * 60000);
+  const names = ["Cooking", "Sulfur", "Coffee"];
+  const col = (cooking, sulfur = 0, coffee = 0) => [cooking, sulfur, coffee];
+  const odors = [
+    col(0), col(0), col(70), col(80), col(75),
+    col(0), col(0), col(66), col(0), col(72),
+  ];
+  const ev = smellEvents(t, odors, names);
+  assert.equal(ev.length, 3);
+  // Run cols 2–4 peaks at col 3 (score 80); single-column runs at 7 and 9.
+  assert.equal(ev[0].name, "Cooking");
+  assert.equal(ev[0].t, t[3]);
+  assert.equal(ev[0].score, 80);
+  assert.equal(ev[1].t, t[7]);
+  assert.equal(ev[1].score, 66);
+  assert.equal(ev[2].t, t[9]);
+  assert.equal(ev[2].score, 72);
+  // Every pill time is a heatmap cell timestamp — never invented.
+  ev.forEach((e) => assert.ok(t.includes(e.t), "pill time is a cell time"));
+  // Nothing below the strong bar: max 50 scores nothing.
+  const mild = Array.from({ length: 10 }, () => col(0, 0, 50));
+  assert.deepEqual(smellEvents(t, mild, names), []);
+  // A second class in the same window is its own event, sorted by time.
+  const mixed = odors.map((c, i) => [c[0], i === 1 ? 90 : 0, c[2]]);
+  const ev2 = smellEvents(t, mixed, names);
+  assert.equal(ev2[0].name, "Sulfur");
+  assert.equal(ev2[0].t, t[1]);
+  assert.equal(ev2.length, 4);
+});
+
 test("wiring: data-vs-interpretation classes exist and sparklines use series colors", () => {
   assert.ok(cssText.includes(".interp"), ".interp rule in style.css");
   assert.ok(cssText.includes(".chart-tools"), ".chart-tools rule in style.css");
@@ -208,4 +275,28 @@ test("wiring: data-vs-interpretation classes exist and sparklines use series col
   assert.ok(!jsText.includes("co2Tone"), "no state-colored CO2 spark left");
   // Plain-English captions carry .interp.
   assert.ok(jsText.includes('class="line interp"'), "overview captions marked interp");
+});
+
+test("wiring: v0 polish — gap labels survive the toggle, heat legend + pills, pet tile summary", () => {
+  // Gap band + amber label render outside the events toggle, breaches inside it.
+  assert.ok(cssText.includes(".gap-label"), ".gap-label rule in style.css");
+  assert.ok(jsText.includes('class="gap-label"'), "gap labels use .gap-label in app.js");
+  assert.ok(jsText.includes("evParts.gaps"), "lineChart renders gaps separately from breaches");
+  assert.ok(jsText.includes("opts.showEvents !== false && evParts.breaches.length"), "breaches stay behind the toggle");
+  assert.ok(jsText.includes("eventsInWindow"), "gap visibility uses window overlap, not point-in-window");
+  // The Events toggle counts what it hides: breaches only.
+  assert.ok(jsText.includes("breachCount"), "toolbar count is the breach count");
+  assert.ok(jsText.includes("Ch.partitionEvents(events).breaches.length"), "count comes from partitionEvents");
+  // Smell heatmap: intensity legend, gap key, event pills from real data.
+  assert.ok(cssText.includes(".heat-legend"), ".heat-legend rule in style.css");
+  assert.ok(cssText.includes(".heat-grad"), ".heat-grad rule in style.css");
+  assert.ok(cssText.includes(".heat-pills"), ".heat-pills rule in style.css");
+  assert.ok(jsText.includes('id="heat-events"'), "pills container in the Smell timeline card");
+  assert.ok(jsText.includes("smellEvents(t, odors, ODORS)"), "pills come from the same arrays as the heatmap cells");
+  assert.ok(jsText.includes("Strong smell: "), "pill text names the class and its peak time");
+  assert.ok(jsText.includes("heatGaps"), "heatmap marks feed-gap boundaries");
+  // Overview Pet meter tile: one plain-English line from the server's
+  // existing pet.note (first sentence), in the .interp style.
+  assert.ok(jsText.includes("pet.note"), "pet tile reuses the server pet.note text");
+  assert.ok(jsText.includes("petNote"), "pet tile takes the first sentence only");
 });
