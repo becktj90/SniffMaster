@@ -2269,6 +2269,7 @@ struct BtnTrack {
   gpio_num_t gpio;
   volatile uint8_t level;   // 1 = released, sampled by the timer
   volatile bool    fell;    // latched press, survives an OLED transfer
+  uint8_t lowSamples;       // consecutive low timer ticks, for debounce
   bool    armed;            // has been seen released since boot
   bool    stable;           // debounced "down"
   bool    lastRaw;
@@ -2277,9 +2278,9 @@ struct BtnTrack {
   bool    longFired;
 };
 static BtnTrack btnTrack[] = {
-  { GPIO_NUM_3, 1, false, false, false, false, 0, 0, false },  // D1, user button
-  { GPIO_NUM_2, 1, false, false, false, false, 0, 0, false },  // D0
-  { GPIO_NUM_9, 1, false, false, false, false, 0, 0, false },  // BOOT
+  { GPIO_NUM_3, 1, false, 0, false, false, false, 0, 0, false },  // D1, user button
+  { GPIO_NUM_2, 1, false, 0, false, false, false, 0, 0, false },  // D0
+  { GPIO_NUM_9, 1, false, 0, false, false, false, 0, 0, false },  // BOOT
 };
 // display() blocks the loop for ~95–160 ms, and Wi-Fi can clear a GPIO
 // interrupt. A 10 ms timer keeps sampling and re-arms the pull-ups, and the
@@ -2291,7 +2292,13 @@ static void buttonSample(void*) {
     gpio_set_direction(b.gpio, GPIO_MODE_INPUT);
     gpio_set_pull_mode(b.gpio, GPIO_PULLUP_ONLY);
     const uint8_t level = gpio_get_level(b.gpio) ? 1 : 0;
-    if (btnTimerOn && b.level == 1 && level == 0) b.fell = true;
+    if (level == 0) {
+      if (b.lowSamples < 255) b.lowSamples++;
+      // 30 ms low before the edge counts, so a one-sample glitch is ignored.
+      if (btnTimerOn && b.lowSamples == 3) b.fell = true;
+    } else {
+      b.lowSamples = 0;
+    }
     b.level = level;
   }
 }
@@ -3382,13 +3389,13 @@ static void runGasScan() {
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  armButtonPins();
 
   Serial.begin(115200);
   // Always. Gating this on the USB-CDC build flags left Arduino builds
   // blocking in Serial.printf when nothing was reading the port, which froze
   // the loop and dropped every button press.
   Serial.setTxTimeoutMs(0);
+  armButtonPins();
 
   I2C_BEGIN();
   Wire.setClock(100000);
