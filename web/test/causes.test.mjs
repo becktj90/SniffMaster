@@ -111,7 +111,9 @@ test("OLED feed fits 21-column lines and stays small", () => {
   assert.equal(view.an, "CAT DANDER");
   assert.equal(view.al, "HIGH");
   assert.equal(view.pl, "HIGH");
-  for (const l of [view.ca, ...view.ac, ...view.wn]) assert.ok(l.length <= 21, l);
+  for (const l of [view.ca, ...view.ac, view.wn]) assert.ok(l.length <= 21, l);
+  assert.equal(view.wn, "OPEN WINDOWS 10 MIN");
+  assert.ok(view.pn.length <= 9);
   assert.ok(JSON.stringify(view).length < 700, String(JSON.stringify(view).length));
 });
 

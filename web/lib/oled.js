@@ -53,6 +53,13 @@ const SHORT_ACTION = {
   unexplained: "OPEN WINDOW, WATCH TREND.",
 };
 
+const SHORT_VENT = {
+  "keep-closed": "KEEP WINDOWS CLOSED",
+  open: "OPEN WINDOWS 10 MIN",
+  fan: "USE EXHAUST FAN",
+  filter: "HEPA ON, WINDOWS SHUT",
+};
+
 const SHORT_CAUSE = {
   smoke: "SMOKE / BURNING", steam: "SHOWER / STEAM", cooking: "COOKING", occupancy: "PEOPLE / STALE AIR",
   litter: "LITTER / PET AREA", garbage: "TRASH / FOOD", product: "CLEANER / FRAGRANCE",
@@ -93,10 +100,10 @@ export function toOledView(p) {
     al: lvl(ol.level),                           // allergen level overall
     an: top && top.rank >= 2 ? NAMES[top.key] || "" : "",
     pl: pol.ok ? (polTop ? lvl(polTop.category) : "CLEAR") : "N/A", // outdoor pollen
-    pn: polTop ? ascii(polTop.name).toUpperCase().slice(0, 12) : "",
+    pn: polTop ? ascii(polTop.name).toUpperCase().slice(0, 9) : "",
     aq: Number.isFinite(od.usAqi) ? Math.round(od.usAqi) : null,    // outdoor US AQI
     uv: Number.isFinite(od.uvIndex) ? Math.round(od.uvIndex * 10) / 10 : null,
     ot: Number.isFinite(od.tempC) ? Math.round(od.tempC * 9 / 5 + 32) : null, // outdoor F
-    wn: wrap(p.ventilation?.action && p.ventilation.action !== "none" ? p.ventilation.text : "", W, 2).map((s) => s.toUpperCase()),
+    wn: SHORT_VENT[p.ventilation?.action] || "",     // window advice, one line
   };
 }
