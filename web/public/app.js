@@ -228,15 +228,49 @@
       if (si === 0 && area) html += '<path d="' + area + "L" + lastX + " " + (H - padB) + "L" + firstX + " " + (H - padB) + 'Z" fill="url(#' + id + ')"/>';
       html += '<path d="' + d + '" fill="none" stroke="' + s.color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' + (s.dash ? ' stroke-dasharray="4 4"' : "") + "/>";
     });
+    // Significant events, from the data only: feed gaps (the timestamps
+    // jump — a shaded region, no fabricated points) and threshold
+    // breaches (a dashed line + dot + short label at the entry point).
+    // Labels are capped so a busy window stays readable; the toolbar
+    // shows the full count. Hidden when the events toggle is off.
+    var evList = (opts.events || []).filter(function (e) { return e.t >= t0 && e.t <= t1; });
+    if (opts.showEvents !== false && evList.length) {
+      var labelShown = 0;
+      evList.forEach(function (e) {
+        if (e.kind === "gap") {
+          var gx0 = Math.max(padL, x(Math.max(e.t0 || e.t, t0))), gx1 = Math.min(W - padR, x(Math.min(e.t1 || e.t, t1)));
+          if (gx1 > gx0) {
+            html += '<rect class="event-gap" x="' + gx0.toFixed(1) + '" y="' + padT + '" width="' + (gx1 - gx0).toFixed(1) + '" height="' + (H - padT - padB) + '"/>';
+            if (labelShown < 5) {
+              var gcx = (gx0 + gx1) / 2;
+              html += '<text class="event-label" x="' + gcx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="middle">' + esc(e.label) + "</text>";
+              labelShown++;
+            }
+          }
+        } else {
+          var ex = x(e.t);
+          html += '<line class="event-line" x1="' + ex.toFixed(1) + '" x2="' + ex.toFixed(1) + '" y1="' + padT + '" y2="' + (H - padB) + '"/>';
+          if (isNum(e.value)) html += '<circle class="event-dot" cx="' + ex.toFixed(1) + '" cy="' + y(Number(e.value)).toFixed(1) + '" r="4.5"/>';
+          if (labelShown < 5) {
+            var anchor = ex < W / 2 ? "start" : "end";
+            var lx = anchor === "start" ? Math.min(ex + 6, W - padR - 4) : Math.max(ex - 6, padL + 4);
+            html += '<text class="event-label" x="' + lx.toFixed(1) + '" y="' + (padT + 13) + '" text-anchor="' + anchor + '">' + esc(e.label) + "</text>";
+            labelShown++;
+          }
+        }
+      });
+    }
     // "Now" dot on the latest reading, so the current value is visible at a glance — with a soft halo so it reads at small sizes.
     var s0 = series[0], lastJ = -1;
     for (var j = s0.values.length - 1; j >= 0; j--) { if (isNum(s0.values[j])) { lastJ = j; break; } }
     if (lastJ >= 0) html += '<circle cx="' + x(t[lastJ]).toFixed(1) + '" cy="' + y(Number(s0.values[lastJ])).toFixed(1) + '" r="7.5" fill="' + s0.color + '" fill-opacity="0.22"/>' + '<circle class="now-dot" cx="' + x(t[lastJ]).toFixed(1) + '" cy="' + y(Number(s0.values[lastJ])).toFixed(1) + '" r="4" fill="' + s0.color + '" stroke="' + css("--card") + '" stroke-width="2"/>';
     html += '<line class="crosshair" y1="' + padT + '" y2="' + (H - padB) + '" visibility="hidden"/>';
+    html += '<rect class="zoom-select" x="0" y="' + padT + '" width="0" height="' + (H - padT - padB) + '" visibility="hidden"/>';
     series.forEach(function (s) { html += '<circle class="dot" r="4.5" fill="' + s.color + '" visibility="hidden"/>'; });
     html += "</svg>";
     el.innerHTML = html;
     var svg = el.querySelector("svg"), cross = svg.querySelector(".crosshair"), dots = svg.querySelectorAll(".dot");
+    var selRect = svg.querySelector(".zoom-select");
     function move(ev) {
       var rect = svg.getBoundingClientRect();
       var px = ((ev.clientX - rect.left) / rect.width) * W;
@@ -259,9 +293,73 @@
       tooltip.style.top = Math.max(8, ev.clientY - tooltip.offsetHeight - 12) + "px";
     }
     function leave() { tooltip.hidden = true; cross.setAttribute("visibility", "hidden"); dots.forEach(function (d) { d.setAttribute("visibility", "hidden"); }); }
-    svg.addEventListener("pointermove", move);
-    svg.addEventListener("pointerdown", move);
+    // Zoom: drag to select a time window (mouse or one finger), pinch
+    // with two fingers, double-click to reset. Only active when the
+    // caller passed onZoom (i.e. the charts module loaded).
+    var Ch = window.SniffCharts;
+    var pointers = new Map();
+    var dragStart = null, dragging = false, pinchStart = null;
+    function svgX(ev) { var rect = svg.getBoundingClientRect(); return ((ev.clientX - rect.left) / rect.width) * W; }
+    function hideSel() { if (selRect) selRect.setAttribute("visibility", "hidden"); }
+    function onDown(ev) {
+      pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (pointers.size === 2 && Ch && opts.onZoom) {
+        var pts = Array.from(pointers.values());
+        var midX = (svgX({ clientX: pts[0].x }) + svgX({ clientX: pts[1].x })) / 2;
+        pinchStart = { dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y), midT: Ch.timeAtPixel(midX, W, padL, padR, t0, t1), win: [t0, t1] };
+        dragStart = null; dragging = false; hideSel(); leave();
+        return;
+      }
+      dragStart = svgX(ev); dragging = false;
+      move(ev);
+    }
+    function onMove(ev) {
+      if (pointers.has(ev.pointerId)) pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (pinchStart) return; // two fingers own the gesture until one lifts
+      if (dragStart === null) { move(ev); return; }
+      var curX = svgX(ev);
+      if (!dragging && Math.abs(curX - dragStart) > 8) { dragging = true; leave(); }
+      if (dragging && selRect) {
+        selRect.setAttribute("x", Math.min(dragStart, curX));
+        selRect.setAttribute("width", Math.abs(curX - dragStart));
+        selRect.setAttribute("visibility", "visible");
+      } else if (!dragging) move(ev);
+    }
+    function onUp(ev) {
+      pointers.delete(ev.pointerId);
+      if (pinchStart && pointers.size < 2) {
+        var ps = pinchStart; pinchStart = null; dragStart = null;
+        // The scale is tracked on every pinch move; apply it once, when
+        // a finger lifts, so the chart re-draws a single time.
+        var scale = ps.lastScale || 1;
+        if (Ch && opts.onZoom && (scale < 0.95 || scale > 1.05)) {
+          var full = opts.full || [t0, t1];
+          opts.onZoom(Ch.pinchWindow(ps.win, full, ps.midT, scale));
+        }
+        return;
+      }
+      if (dragging && Ch && opts.onZoom) {
+        var endX = svgX(ev);
+        if (Math.abs(endX - dragStart) > 20) {
+          var w0 = Ch.timeAtPixel(Math.min(dragStart, endX), W, padL, padR, t0, t1);
+          var w1 = Ch.timeAtPixel(Math.max(dragStart, endX), W, padL, padR, t0, t1);
+          if (w1 - w0 > 60000) opts.onZoom([w0, w1]);
+        }
+      }
+      dragStart = null; dragging = false; hideSel();
+    }
+    function onPinchMove(ev) {
+      if (!pinchStart || pointers.size !== 2) return;
+      var pts = Array.from(pointers.values());
+      var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (pinchStart.dist > 0) pinchStart.lastScale = dist / pinchStart.dist;
+    }
+    svg.addEventListener("pointermove", function (ev) { onPinchMove(ev); onMove(ev); });
+    svg.addEventListener("pointerdown", function (ev) { try { svg.setPointerCapture(ev.pointerId); } catch (e) {} onDown(ev); });
+    svg.addEventListener("pointerup", onUp);
+    svg.addEventListener("pointercancel", function (ev) { pointers.delete(ev.pointerId); pinchStart = null; dragStart = null; dragging = false; hideSel(); });
     svg.addEventListener("pointerleave", leave);
+    svg.addEventListener("dblclick", function () { if (Ch && opts.onZoom) opts.onZoom(null); });
   }
   function spark(values, color) {
     var v = (values || []).filter(isNum).map(Number);
@@ -345,15 +443,14 @@
     var out = home.outdoor || {};
     var cur = wx && wx.current;
     var vent = home.ventilation || {};
-    // Sparkline color means state, not series identity: green while the reading
-    // is in its good band, amber when it drifts, red/orange when it is bad.
-    var tempTone = !isNum(cl.tempF) ? "--ink-3" : cl.tempF >= 68 && cl.tempF <= 76 ? "--good" : cl.tempF >= 60 && cl.tempF <= 84 ? "--fair" : "--poor";
-    var co2Tone = !isNum(g.co2) ? "--ink-3" : g.co2 <= 800 ? "--good" : g.co2 <= 1200 ? "--fair" : "--bad";
+    // Sparklines are measurement traces, so they take the series color
+    // (blue/violet/cyan) like every other chart line — never a state
+    // color. The state still shows in the words and pills beside them.
 
     var tiles = [
-      '<a class="card stat" href="#/smell"><p class="kicker">Smell</p><div class="value value-md">' + esc(smell.level || "—") + '</div><div class="line">' + esc(smell.headline || "") + "</div>" + (smell.sinceMinutes ? '<div class="line muted small">For ' + smell.sinceMinutes + " min · " + esc(smell.trend || "") + "</div>" : "") + "</a>",
-      '<a class="card stat" href="#/sensors"><p class="kicker">Comfort</p><div class="value num">' + fmt(cl.tempF, 1) + "<small>°F</small> " + fmt(cl.humidity) + '<small>% RH</small></div><div class="line">' + esc(cl.comfort || "") + " · dew point " + fmt(cToF(cl.dewPointC)) + "°F</div>" + spark(s.tempC, css(tempTone)) + "</a>",
-      '<a class="card stat" href="#/sensors"><p class="kicker">' + (g.co2Source === "sensor" ? "CO₂ sensor" : g.co2Source === "estimated" ? "CO₂ estimate" : "CO₂") + '</p><div class="value num">' + fmt(g.co2) + '<small>ppm CO₂</small></div><div class="line">' + esc(vent.text || g.co2Category || "") + (g.co2Source === "estimated" ? " · same BSEC estimate as the OLED" : "") + "</div>" + spark(s.co2, css(co2Tone)) + "</a>",
+      '<a class="card stat" href="#/smell"><p class="kicker">Smell</p><div class="value value-md">' + esc(smell.level || "—") + '</div><div class="line interp">' + esc(smell.headline || "") + "</div>" + (smell.sinceMinutes ? '<div class="line muted small">For ' + smell.sinceMinutes + " min · " + esc(smell.trend || "") + "</div>" : "") + "</a>",
+      '<a class="card stat" href="#/sensors"><p class="kicker">Comfort</p><div class="value num">' + fmt(cl.tempF, 1) + "<small>°F</small> " + fmt(cl.humidity) + '<small>% RH</small></div><div class="line interp">' + esc(cl.comfort || "") + " · dew point " + fmt(cToF(cl.dewPointC)) + "°F</div>" + spark(s.tempC, css("--series-2")) + "</a>",
+      '<a class="card stat" href="#/sensors"><p class="kicker">' + (g.co2Source === "sensor" ? "CO₂ sensor" : g.co2Source === "estimated" ? "CO₂ estimate" : "CO₂") + '</p><div class="value num">' + fmt(g.co2) + '<small>ppm CO₂</small></div><div class="line interp">' + esc(vent.text || g.co2Category || "") + (g.co2Source === "estimated" ? " · same BSEC estimate as the OLED" : "") + "</div>" + spark(s.co2, css("--series-1")) + "</a>",
       '<a class="card stat" href="#/pets"><p class="kicker">Pet meter</p><div class="value num">' + fmt(pet.index) + '<small>/ 100</small></div><div class="line">' + pill(pet.level || "Unknown", levelTone(pet.level)) + ' <span class="muted small">' + esc(pet.confidence ? pet.confidence + " confidence" : "") + "</span></div></a>",
     ];
 
@@ -480,7 +577,7 @@
     var seg = '<div class="seg" role="group" aria-label="Time range">' + ["1h", "6h", "24h", "7d"].map(function (r) { return '<button type="button" data-range="' + r + '" aria-pressed="' + (r === sensorRange) + '">' + r + "</button>"; }).join("") + "</div>";
     var cards = CHANNELS.map(function (c) {
       if (c.key === "gasPct" && L.gasPctValid === false) {
-        return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + '</p></div><div class="now"><span class="num">n/a</span><br><small>not measured</small></div></div><p class="muted small">This BSEC bundle does not produce gas percentage. A zero here would be a fake reading.</p></div>';
+        return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small interp" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + '</p></div><div class="now"><span class="num">n/a</span><br><small>not measured</small></div></div><p class="muted small interp">This BSEC bundle does not produce gas percentage. A zero here would be a fake reading.</p></div>';
       }
       var vals = (S[c.key] || []).map(function (v) { return isNum(v) && c.scale ? v * c.scale : v; });
       var st = stats(vals);
@@ -489,11 +586,11 @@
       var zone = zoneFor(c, nowV);
       var unitSuffix = c.unit.trim() ? " " + c.unit.trim() : "";
       var legend = (c.zones || []).map(function (z) { return '<span><i class="swatch ' + z.tone + '"></i>' + esc(z.label) + "</span>"; }).join("");
-      return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + "</p>" +
+      return '<div class="card"><div class="metric-head"><div><h3>' + esc(c.title) + '</h3><p class="muted small interp" style="margin:4px 0 0;max-width:46ch">' + esc(c.note) + "</p>" +
         (zone ? '<p class="level-now">' + pill(zone.label.split(",")[0], zone.tone) + "</p>" : "") + '</div><div class="now"><span class="num">' + fmt(nowV, c.d) + "</span><br><small>" + esc(c.unit.trim() || "index") + " now</small></div></div>" +
         (legend ? '<div class="legend bands">' + legend + "</div>" : "") +
         (c.extra && S[c.extra.key] ? '<div class="legend"><span><i style="background:' + css(c.color) + '"></i>' + esc(c.title.split(" (")[0]) + '</span><span><i style="background:' + css("--series-2") + '"></i>' + esc(c.extra.name) + "</span></div>" : "") +
-        '<div class="chart" data-ch="' + c.key + '"></div>' +
+        '<div class="chart-box" data-ch="' + c.key + '"><div class="chart-tools"></div><div class="chart"></div></div>' +
         (st ? '<div class="mma"><span>Low <b>' + fmt(st.min, c.d) + unitSuffix + "</b></span><span>Avg <b>" + fmt(st.avg, c.d) + unitSuffix + "</b></span><span>High <b>" + fmt(st.max, c.d) + unitSuffix + "</b></span></div>" : "") + "</div>";
     }).join("");
 
@@ -524,18 +621,74 @@
       (sensorRange === "7d" ? '<div class="callout mb">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</div>' : "") +
       '<div class="grid g-2 wide3">' + cards + "</div>" + '<div class="grid g-2 top mt">' + cal + addon + "</div>";
   }
+  // Chart toolbar, rendered into the .chart-tools div above each chart:
+  // series legend (a data trace, in its series color), Reset zoom when
+  // zoomed, an Events toggle with the count, and CSV + PNG export of the
+  // visible window. Callbacks read live state at click time, so a poll
+  // re-render never leaves stale data in a button.
+  function chartTools(toolsEl, cfg) {
+    if (!toolsEl || !cfg) return;
+    toolsEl.innerHTML = '<span class="ct-series"><i style="background:' + cfg.color + '"></i>' + esc(cfg.seriesName) + '</span><span class="ct-spacer"></span>' +
+      (cfg.zoomed ? '<button type="button" class="ct-btn" data-act="reset">Reset zoom</button>' : "") +
+      (cfg.eventsCount ? '<button type="button" class="ct-btn" data-act="events" aria-pressed="' + cfg.eventsOn + '">Events (' + cfg.eventsCount + ')</button>' : "") +
+      '<button type="button" class="ct-btn" data-act="csv">CSV</button>' +
+      '<button type="button" class="ct-btn" data-act="png">PNG</button>';
+    toolsEl.querySelectorAll("[data-act]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var act = b.dataset.act;
+        if (act === "reset") cfg.onReset();
+        else if (act === "events") cfg.onToggleEvents();
+        else if (act === "csv") cfg.onCsv();
+        else if (act === "png") cfg.onPng();
+      });
+    });
+  }
+
   function drawSensorCharts() {
     var d = window.__sensorData;
     if (!d) return;
+    var Ch = window.SniffCharts;
     CHANNELS.forEach(function (c) {
-      var el = view.querySelector('[data-ch="' + c.key + '"]');
+      var box = view.querySelector('[data-ch="' + c.key + '"]');
+      if (!box) return;
+      var el = box.querySelector(".chart");
       if (!el) return;
       var vals = (d.series[c.key] || []).map(function (v) { return isNum(v) && c.scale ? v * c.scale : v; });
       var series = [{ name: c.title, values: vals, color: css(c.color) }];
       if (c.extra && d.series[c.extra.key]) series.push({ name: c.extra.name, values: d.series[c.extra.key], color: css("--series-2"), dash: true });
-      var allVals = vals.slice();
-      series.slice(1).forEach(function (s) { (s.values || []).forEach(function (v) { allVals.push(v); }); });
-      lineChart(el, { t: d.series.t, series: series, unit: c.unit, label: c.title, zones: c.zones, marks: c.marks, yRange: c.y || c.zones ? guideRange(allVals, c) : undefined, fmt: function (v) { return fmt(v, c.d); } });
+      // Zoom: slice the window out before drawing, so a zoomed chart is
+      // just a chart of fewer points — and the y-range fits what is shown.
+      var win = Ch ? Ch.store.getZoom(c.key) : null;
+      var shown = Ch && win ? Ch.sliceWindow(d.series.t, series, win) : { t: d.series.t, series: series };
+      var visVals = [];
+      shown.series.forEach(function (s) { (s.values || []).forEach(function (v) { visVals.push(v); }); });
+      var events = Ch ? Ch.buildEvents(d.series.t, vals, c.zones) : [];
+      lineChart(el, {
+        t: shown.t, series: shown.series, unit: c.unit, label: c.title,
+        zones: c.zones, marks: c.marks,
+        yRange: c.y || c.zones ? guideRange(visVals, c) : undefined,
+        fmt: function (v) { return fmt(v, c.d); },
+        events: events, showEvents: Ch ? Ch.store.eventsOn(c.key) : true,
+        full: d.series.t.length ? [d.series.t[0], d.series.t[d.series.t.length - 1]] : null,
+        onZoom: Ch ? function (w) { Ch.store.setZoom(c.key, w); drawSensorCharts(); } : null,
+      });
+      if (Ch) {
+        chartTools(box.querySelector(".chart-tools"), {
+          seriesName: c.title, color: css(c.color),
+          zoomed: Boolean(win), eventsCount: events.length, eventsOn: Ch.store.eventsOn(c.key),
+          onReset: function () { Ch.store.clearZoom(c.key); drawSensorCharts(); },
+          onToggleEvents: function () { Ch.store.setEventsOn(c.key, !Ch.store.eventsOn(c.key)); drawSensorCharts(); },
+          onCsv: function () {
+            var sl = Ch.sliceWindow(d.series.t, series, Ch.store.getZoom(c.key));
+            Ch.downloadText(Ch.csvFilename(c.key, sensorRange), Ch.toCsv(sl.t, sl.series));
+          },
+          onPng: function () {
+            var svg = box.querySelector(".chart svg");
+            if (!svg) return;
+            Ch.svgToPng(svg).then(function (blob) { Ch.downloadPng(Ch.pngFilename(c.key, sensorRange), blob); }).catch(function (err) { console.error(err); });
+          },
+        });
+      }
     });
   }
 
@@ -586,9 +739,9 @@
       '<p class="note">' + esc(sense.honesty || "Smell families are associations from indoor-air science, not a lab chemical ID.") + "</p></div>";
 
     var metrics = '<div class="grid g-3" style="margin-top:0">' +
-      '<div class="card stat"><p class="kicker">Sensory load</p><div class="value num">' + fmt(nose.value) + '<small>/100</small></div><div class="line">' + esc(nose.text || "How much a nose would notice.") + "</div></div>" +
-      '<div class="card stat"><p class="kicker">Freshness debt</p><div class="value num">' + fmt(debt.pct) + '<small>%</small></div><div class="line">' + esc(debt.text || "Distance below this room's clean baseline.") + "</div></div>" +
-      '<div class="card stat"><p class="kicker">Bouquet</p><div class="value value-md">' + esc((sense.odorComplexity && sense.odorComplexity.label) || "—") + '</div><div class="line">' + esc((sense.odorComplexity && sense.odorComplexity.text) || "") + "</div></div></div>";
+      '<div class="card stat"><p class="kicker">Sensory load</p><div class="value num">' + fmt(nose.value) + '<small>/100</small></div><div class="line interp">' + esc(nose.text || "How much a nose would notice.") + "</div></div>" +
+      '<div class="card stat"><p class="kicker">Freshness debt</p><div class="value num">' + fmt(debt.pct) + '<small>%</small></div><div class="line interp">' + esc(debt.text || "Distance below this room's clean baseline.") + "</div></div>" +
+      '<div class="card stat"><p class="kicker">Bouquet</p><div class="value value-md">' + esc((sense.odorComplexity && sense.odorComplexity.label) || "—") + '</div><div class="line interp">' + esc((sense.odorComplexity && sense.odorComplexity.text) || "") + "</div></div></div>";
 
     var bouquetCards = (sense.bouquets || []).map(function (b) {
       return '<div class="tip ' + (b.strength === "strong" ? "bad" : b.strength === "likely" ? "fair" : "good") + '"><b>' + esc(b.label) + " · " + esc(b.strength) + " · " + fmt(b.score) + '</b><p>' + esc(b.why) + (b.regions && b.regions.length ? " Common in: " + esc(b.regions.join(", ")) + "." : "") + "</p></div>";
@@ -637,16 +790,47 @@
       '<div class="grid g-2 mt">' + bouquetCard + familyCard + "</div>" +
       '<div class="mt">' + atlasCard + "</div>" +
       (derivedCard ? '<div class="mt">' + derivedCard + "</div>" : "") +
-      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div id="heat"></div><p class="note">Darker means a stronger smell (score 8–100). A row appears once a class rises above background.</p></div>' +
+      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Smell timeline</h3><span class="sub">strongest class per interval, last ' + esc(sensorRange === "7d" ? "24h" : sensorRange) + '</span></div><div class="chart-box"><div class="chart-tools" id="heat-tools"></div><div id="heat"></div></div><p class="note">Darker means a stronger smell (score 8–100). A row appears once a class rises above background.</p></div>' +
       '<div class="card"><h3 style="margin-bottom:8px">Recent sulfur events</h3>' + events + "</div></div>";
   }
   function drawHeat() {
     var el = $("#heat");
+    var toolsEl = $("#heat-tools");
     var d = window.__sensorData;
     if (!el || !d || !Array.isArray(d.odors) || !d.odors.length) { if (el) el.innerHTML = '<div class="chart-empty" style="height:80px">Not enough history yet</div>'; return; }
-    var rows = ODORS.map(function (_, i) { return d.odors.some(function (col) { return col && col[i] >= 20; }) ? i : -1; }).filter(function (i) { return i >= 0; });
-    if (!rows.length) { el.innerHTML = '<div class="chart-empty" style="height:80px">Quiet the whole window. Nothing above background.</div>'; return; }
-    var cols = d.odors.length, W = el.clientWidth || 800, labelW = 120, rowH = 18, H = rows.length * rowH + 20, cw = (W - labelW) / cols;
+    var Ch = window.SniffCharts;
+    // Zoom slices the timeline columns, like the line charts slice points.
+    // The heatmap's cells already are the events, and the sulfur list
+    // beside it labels them, so there are no in-chart event markers here.
+    var win = Ch ? Ch.store.getZoom("smell") : null;
+    var odors = d.odors, t = d.series.t;
+    if (Ch && win) {
+      var idx = [];
+      for (var i = 0; i < t.length; i++) if (t[i] >= win[0] && t[i] <= win[1]) idx.push(i);
+      odors = idx.map(function (k) { return d.odors[k]; });
+      t = idx.map(function (k) { return d.series.t[k]; });
+    }
+    var renderTools = function () {
+      if (!Ch) return;
+      chartTools(toolsEl, {
+        seriesName: "Smell timeline", color: css("--series-1"),
+        zoomed: Boolean(win), eventsCount: 0, eventsOn: true,
+        onReset: function () { Ch.store.clearZoom("smell"); drawHeat(); },
+        onToggleEvents: function () {},
+        onCsv: function () {
+          var series = rows.map(function (oi) { return { name: ODORS[oi], values: odors.map(function (col) { return col ? col[oi] : null; }) }; });
+          Ch.downloadText(Ch.csvFilename("smell", sensorRange), Ch.toCsv(t, series));
+        },
+        onPng: function () {
+          var svg = el.querySelector("svg");
+          if (!svg) return;
+          Ch.svgToPng(svg).then(function (blob) { Ch.downloadPng(Ch.pngFilename("smell", sensorRange), blob); }).catch(function (err) { console.error(err); });
+        },
+      });
+    };
+    var rows = ODORS.map(function (_, i) { return odors.some(function (col) { return col && col[i] >= 20; }) ? i : -1; }).filter(function (i) { return i >= 0; });
+    if (!rows.length) { el.innerHTML = '<div class="chart-empty" style="height:80px">Quiet the whole window. Nothing above background.</div>'; renderTools(); return; }
+    var cols = odors.length, W = el.clientWidth || 800, labelW = 120, rowH = 18, H = rows.length * rowH + 20, cw = (W - labelW) / cols;
     // Cell color means strength in the same state language as the smell
     // bars (mild / noticeable / strong): warmer and more opaque as the
     // score rises, instead of one flat blue ramp.
@@ -655,15 +839,38 @@
     var svg = '<svg class="heat" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Smell class strength over time">';
     rows.forEach(function (oi, r) {
       svg += '<text class="axis-text" x="0" y="' + (r * rowH + 13) + '" fill="currentColor" style="fill:var(--ink-2);font-size:11px">' + esc(ODORS[oi]) + "</text>";
-      d.odors.forEach(function (col, c) {
+      odors.forEach(function (col, c) {
         var v = col ? col[oi] : 0;
         if (!v || v < 8) return;
-        svg += '<rect x="' + (labelW + c * cw).toFixed(1) + '" y="' + (r * rowH + 2) + '" width="' + Math.max(1, cw - 0.5).toFixed(1) + '" height="' + (rowH - 4) + '" rx="2" fill="' + cellFill(v) + '" fill-opacity="' + cellOp(v) + '"><title>' + esc(ODORS[oi]) + " " + v + " · " + clock(d.series.t[c]) + "</title></rect>";
+        svg += '<rect x="' + (labelW + c * cw).toFixed(1) + '" y="' + (r * rowH + 2) + '" width="' + Math.max(1, cw - 0.5).toFixed(1) + '" height="' + (rowH - 4) + '" rx="2" fill="' + cellFill(v) + '" fill-opacity="' + cellOp(v) + '"><title>' + esc(ODORS[oi]) + " " + v + " · " + clock(t[c]) + "</title></rect>";
       });
     });
-    var t = d.series.t;
     svg += '<text class="axis-text" x="' + labelW + '" y="' + (H - 3) + '">' + esc(clock(t[0])) + '</text><text class="axis-text" x="' + W + '" y="' + (H - 3) + '" text-anchor="end">' + esc(clock(t[t.length - 1])) + "</text></svg>";
     el.innerHTML = svg;
+    // Drag across the timeline to zoom into those columns; double-click
+    // resets. The columns are discrete, so the window snaps to column
+    // edges rather than interpolating between readings.
+    if (Ch) {
+      var svgEl = el.querySelector("svg");
+      if (svgEl) {
+        var startCol = null;
+        var colAt = function (clientX) {
+          var r = svgEl.getBoundingClientRect();
+          var px = ((clientX - r.left) / r.width) * W;
+          return Math.max(0, Math.min(cols - 1, Math.floor((px - labelW) / cw)));
+        };
+        svgEl.addEventListener("pointerdown", function (ev) { startCol = colAt(ev.clientX); });
+        svgEl.addEventListener("pointerup", function (ev) {
+          if (startCol === null) return;
+          var endCol = colAt(ev.clientX);
+          var a = Math.min(startCol, endCol), b = Math.max(startCol, endCol);
+          startCol = null;
+          if (b - a >= 1) { Ch.store.setZoom("smell", [t[a], t[b]]); drawHeat(); }
+        });
+        svgEl.addEventListener("dblclick", function () { Ch.store.clearZoom("smell"); drawHeat(); });
+      }
+    }
+    renderTools();
   }
 
   // ── Pets ───────────────────────────────────────────────────────────
@@ -707,7 +914,7 @@
       '<div class="grid g-hero"><div class="card"><div class="card-head"><h3>Pet dander index</h3><span class="sub">0–100 estimate</span></div>' + meter + '<p class="note">' + esc(pet.note || "") + "</p></div>" +
       '<div class="card"><h3 style="margin-bottom:12px">What goes into it</h3><div class="hbars">' + (basis || '<p class="muted">No pet-related signals yet.</p>') + "</div>" +
       '<p class="note">With a particulate sensor fitted, coarse dust in the 2.5–10 µm range (where dander lives) joins the index and confidence goes up to medium.</p></div></div>' +
-      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Pet / litter smell over time</h3><span class="sub">smell-model class score</span></div><div class="chart" id="petchart"></div></div>' +
+      '<div class="grid g-2 top mt"><div class="card"><div class="card-head"><h3>Pet / litter smell over time</h3><span class="sub">smell-model class score</span></div><div class="chart-box"><div class="chart-tools" id="pet-tools"></div><div class="chart" id="petchart"></div></div></div>' +
       '<div class="card"><h3>Your personal outlook</h3><p class="muted" style="margin:4px 0 12px">Pick what you react to. It stays on this device.</p>' + chips +
       '<p style="margin:14px 0 10px;font-weight:600">' + esc(ol.headline || "") + "</p>" + (outlook ? '<div class="tips">' + outlook + "</div>" : "") + "</div></div>" +
       '<div class="grid g-3 mt">' +
@@ -716,11 +923,43 @@
       '<div class="card"><p class="kicker">Outdoor pollen</p>' + (pollen.length ? '<div class="hbars">' + pollen.map(function (p) { return '<div class="hbar"><span>' + esc(p.name) + '</span><span class="track"><i style="width:' + Math.min(100, (Number(p.value) || 0) * 20) + '%"></i></span><span class="v">' + esc(p.category || "") + "</span></div>"; }).join("") + "</div>" : '<p class="muted" style="margin:0">' + esc((home.pollen && home.pollen.reason) || "No pollen data for this location.") + "</p>") + "</div></div>";
   }
   function drawPetChart() {
+    var toolsEl = $("#pet-tools");
+    var box = toolsEl ? toolsEl.parentElement : null;
     var el = $("#petchart");
     var d = window.__sensorData;
     if (!el) return;
     if (!d || !Array.isArray(d.odors)) { el.innerHTML = '<div class="chart-empty">Not enough history yet</div>'; return; }
-    lineChart(el, { t: d.series.t, series: [{ name: "Pet / litter", values: d.odors.map(function (c) { return c ? c[16] : null; }), color: css("--series-1") }], yRange: [0, 100], label: "Pet smell score", fmt: function (v) { return fmt(v); } });
+    var Ch = window.SniffCharts;
+    var series = [{ name: "Pet / litter", values: d.odors.map(function (c) { return c ? c[16] : null; }), color: css("--series-1") }];
+    var win = Ch ? Ch.store.getZoom("pet") : null;
+    var shown = Ch && win ? Ch.sliceWindow(d.series.t, series, win) : { t: d.series.t, series: series };
+    // The pet alert rule fires above 50, so that is the breach line here.
+    var zones = [{ lo: 50, hi: 100, tone: "bad", label: "Pet smell high, above 50" }];
+    var events = Ch ? Ch.buildEvents(d.series.t, series[0].values, zones) : [];
+    lineChart(el, {
+      t: shown.t, series: shown.series, yRange: [0, 100], label: "Pet smell score",
+      fmt: function (v) { return fmt(v); },
+      events: events, showEvents: Ch ? Ch.store.eventsOn("pet") : true,
+      full: d.series.t.length ? [d.series.t[0], d.series.t[d.series.t.length - 1]] : null,
+      onZoom: Ch ? function (w) { Ch.store.setZoom("pet", w); drawPetChart(); } : null,
+    });
+    if (Ch && box) {
+      chartTools(toolsEl, {
+        seriesName: "Pet / litter", color: css("--series-1"),
+        zoomed: Boolean(win), eventsCount: events.length, eventsOn: Ch.store.eventsOn("pet"),
+        onReset: function () { Ch.store.clearZoom("pet"); drawPetChart(); },
+        onToggleEvents: function () { Ch.store.setEventsOn("pet", !Ch.store.eventsOn("pet")); drawPetChart(); },
+        onCsv: function () {
+          var sl = Ch.sliceWindow(d.series.t, series, Ch.store.getZoom("pet"));
+          Ch.downloadText(Ch.csvFilename("pet", sensorRange), Ch.toCsv(sl.t, sl.series));
+        },
+        onPng: function () {
+          var svg = box.querySelector(".chart svg");
+          if (!svg) return;
+          Ch.svgToPng(svg).then(function (blob) { Ch.downloadPng(Ch.pngFilename("pet", sensorRange), blob); }).catch(function (err) { console.error(err); });
+        },
+      });
+    }
   }
 
   // ── Outside ────────────────────────────────────────────────────────
@@ -1283,6 +1522,9 @@
     view.querySelectorAll("[data-range]").forEach(function (b) {
       b.addEventListener("click", function () {
         sensorRange = b.dataset.range; store("sm-range", sensorRange);
+        // A new range is a new data window, so any per-chart zoom no
+        // longer applies.
+        if (window.SniffCharts) window.SniffCharts.store.clearAllZoom();
         cache.sensors = null; rerender();
       });
     });
@@ -1321,6 +1563,10 @@
   // re-render if the user is already on the Outside page so the layers
   // control appears.
   window.addEventListener("sniff-map-layers-ready", function () { if (currentRoute === "outside") rerender(); });
+  // The charts helpers load async after this classic script;
+  // re-render if the user is already on a chart page so the toolbar,
+  // zoom, and event labels appear.
+  window.addEventListener("sniff-charts-ready", function () { if (currentRoute === "sensors" || currentRoute === "pets" || currentRoute === "smell") rerender(); });
   var resizeT;
   window.addEventListener("resize", function () {
     clearTimeout(resizeT);
