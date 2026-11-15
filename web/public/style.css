@@ -496,3 +496,27 @@ label.choice.off { opacity: .72; }
   .sev-row { flex-direction: column; align-items: stretch; }
   .sev-row .seg { align-self: flex-start; }
 }
+
+/* ── Chart viewing: data vs interpretation, zoom, events ───────────── */
+/* Plain-English interpretation reads differently from measurement data:
+   smaller, muted, italic — a glance separates what was measured from
+   what it means. Numbers and traces keep the series colors. */
+.interp { font-style: italic; color: var(--ink-3); }
+.stat .line.interp { font-size: 13px; }
+/* Toolbar above each chart: series legend, reset zoom, event toggle,
+   CSV + PNG export. Sits outside the .chart box so it never eats into
+   the plot height. */
+.chart-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; min-height: 26px; flex-wrap: wrap; }
+.ct-series { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); font-weight: 600; }
+.ct-series i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.ct-spacer { flex: 1; }
+.ct-btn { font: inherit; font-size: 12px; color: var(--ink-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.ct-btn:hover { color: var(--ink); border-color: var(--ink-3); }
+.ct-btn[aria-pressed="false"] { opacity: 0.55; }
+.chart svg { user-select: none; -webkit-user-select: none; }
+.zoom-select { fill: var(--series-1); fill-opacity: 0.14; stroke: var(--series-1); stroke-width: 1; }
+.event-label { fill: var(--ink-2); font-size: 10.5px; font-family: var(--sans); }
+.event-line { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.event-dot { fill: var(--bad); stroke: var(--card); stroke-width: 1.5; }
+.event-gap { fill: var(--fair-bg); stroke: var(--fair); stroke-width: 1; stroke-dasharray: 4 3; }
+.heat { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
