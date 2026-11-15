@@ -12,6 +12,16 @@
 (function () {
   "use strict";
 
+  // Gradient gauge module (public/gauge.js): pure ring math + markup.
+  // Loaded async; the Overview re-renders when it arrives (see the
+  // sniff-gauge-ready listener below). Until then scoreRing falls back
+  // to the flat single-color ring.
+  (function () {
+    var g = document.createElement("script");
+    g.type = "module"; g.src = "/gauge.js";
+    document.head.appendChild(g);
+  })();
+
   // ── tiny helpers ────────────────────────────────────────────────────
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $("#view");
@@ -266,6 +276,12 @@
     return '<div class="card"><h2>' + (err ? "Can't reach the sensor right now" : "Waiting for the first reading") + '</h2><p class="muted">' + (err ? "The dashboard will retry on its own." : "As soon as the SniffMaster posts its first reading, it shows up here.") + "</p></div>";
   }
   function scoreRing(score, grade) {
+    if (window.SniffGauge) {
+      return window.SniffGauge.scoreRingHtml(score, grade, {
+        good: css("--good"), fair: css("--fair"), poor: css("--poor"), bad: css("--bad")
+      });
+    }
+    // Fallback until /gauge.js loads: the old flat single-color ring.
     var tone = toneFor(score), color = css("--" + (tone === "na" ? "ink-3" : tone));
     var R = 84, C = 2 * Math.PI * R, arc = C * 0.75, pct = isNum(score) ? Math.max(0, Math.min(100, score)) / 100 : 0;
     return '<div class="ring"><svg viewBox="0 0 200 200" aria-hidden="true"><circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="12" stroke-linecap="round" stroke-dasharray="' + arc + " " + C + '"/>' +
@@ -281,9 +297,27 @@
     var wx = await load("weather").catch(function () { return null; });
     var s = home.series || {};
     var comps = (home.score && home.score.components) || [];
-    var compHtml = comps.filter(function (c) { return isNum(c.score); }).map(function (c) {
+    // Worst first: the list reads as "what to look at", not data order.
+    var scored = comps.filter(function (c) { return isNum(c.score); });
+    var sorted = scored.slice().sort(function (a, b) { return a.score - b.score; });
+    var compHtml = sorted.map(function (c) {
       return '<div class="comp"><span>' + esc(c.label) + '</span><span class="num">' + fmt(c.score) + '</span><span class="bar"><i style="width:' + c.score + "%;background:" + css("--" + toneFor(c.score)) + '"></i></span></div>';
     }).join("");
+    // Plain-language takeaway + what's driving the score, from the same
+    // data the bars show — nothing invented. Appears once /gauge.js
+    // loads (see the sniff-gauge-ready listener); the ring renders first.
+    var gauge = window.SniffGauge;
+    var noteHtml = "";
+    var driverHtml = "";
+    if (gauge) {
+      noteHtml = '<p class="gauge-note">' + esc(gauge.gaugeNote(toneFor(home.score && home.score.value))) + "</p>";
+      var low = gauge.lowestComponent(scored);
+      if (low) {
+        driverHtml = Number(low.score) < 80
+          ? '<p class="driver">Biggest drag right now: <b>' + esc(low.label) + "</b> · " + fmt(low.score) + "/100</p>"
+          : '<p class="driver">No single drag — every part is scoring well.</p>';
+      }
+    }
 
     var brief = ins
       ? '<p class="kicker"><span class="ai-tag">' + (ins.source === "claude" ? "Insight from Claude" : "Today's read") + "</span></p><h2>" + esc(ins.headline) + '</h2><p class="summary">' + esc(ins.summary) + '</p><div class="tips">' +
@@ -335,6 +369,7 @@
 
     return '<div class="grid g-hero">' +
       '<div class="card score-card"><p class="kicker">Home health score</p>' + scoreRing(home.score && home.score.value, home.score && home.score.grade) +
+      noteHtml + driverHtml +
       '<div class="where">Higher is healthier · this is the OLED Home Score · updated ' + esc(ago(home.receivedAt)) + "</div>" + deviceRows + (compHtml ? '<div class="components">' + compHtml + "</div>" : "") + "</div>" +
       '<div class="card brief">' + brief + "</div></div>" +
       '<div class="grid g-4" style="margin-top:16px">' + tiles.join("") + "</div>" +
@@ -1002,6 +1037,10 @@
   }
   function rerender() { if (currentRoute) render(currentRoute); }
   window.addEventListener("hashchange", function () { render(routeName()); view.focus({ preventScroll: true }); });
+  // The gauge module loads async; re-render once it arrives so the
+  // Overview swaps the flat fallback ring for the gradient one (and the
+  // plain-language note + driver line appear with it).
+  window.addEventListener("sniff-gauge-ready", function () { if (currentRoute) rerender(); });
   var resizeT;
   window.addEventListener("resize", function () {
     clearTimeout(resizeT);
