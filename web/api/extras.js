@@ -43,7 +43,6 @@ import { buildAirSense } from "../lib/airSense.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
 import { fetchGoogleAir } from "../lib/googleAir.js";
-import { fetchGoogleSolar } from "../lib/googleSolar.js";
 import { airTile } from "../lib/airTile.js";
 import { lookupEnvironment } from "../lib/googleEnv.js";
 import {
@@ -880,12 +879,6 @@ async function buildHomePayloadFresh(triggersInput, severitiesInput) {
       }
     }
 
-    let solar = { ok: false, reason: haveLoc ? "Google Solar unavailable" : "No device location yet" };
-    if (haveLoc) {
-      try { solar = await fetchGoogleSolar({ lat, lon }, { cacheGet: getJsonCache, cacheSet: setJsonCache, incr: incrCounter }); }
-      catch (err) { console.error("google solar:", err?.message || err); }
-    }
-
     const metrics = buildHomeMetrics(latest, history, { outdoor, pollen });
     
     const smell = analyzeSmell(latest, legacy);
@@ -939,7 +932,6 @@ async function buildHomePayloadFresh(triggersInput, severitiesInput) {
       ...metrics,
       pollen,
       googleAir,
-      solar,
       smell,
       cause,
       outlook,
