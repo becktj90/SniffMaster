@@ -5,11 +5,13 @@
     - BME688 on Grove I2C (addr 0x76)
     - Built-in SSD1306 128x64 OLED (addr 0x3C)
     - Passive buzzer on D3 (hazard alarm ONLY)
-    - USER button on D0 (D1 and the BOOT button also work)
+    - USER button on D1 / GPIO3 (active low). Left button is RESET.
+      D0 is the Grove port (logged only). GPIO9 is BOOT, not a control.
 
   Button:
     tap   = next page (or dismiss an alert / mute a hazard alarm)
-    hold  = push a fresh snapshot to the web portal
+    hold  = Air Sample, or cancel one already running
+            (a hazard alarm still mutes and does not start a sample)
 
   The wall deck (four retro cards) auto-cycles every 10 s. Tap walks the
   detail cards too; after a minute with no tap the deck returns.
@@ -30,7 +32,9 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
+#include <time.h>
 #include <esp_timer.h>
+#include <driver/gpio.h>
 #include "bsec2.h"
 #include "secrets.h"               // WIFI_CREDS, OPENAI_API_KEY, OPENAI_MODEL
 #include "web_dashboard_config.h"  // WEB_DASHBOARD_URL, WEB_DASHBOARD_KEY
@@ -50,10 +54,9 @@
   #define I2C_BEGIN() Wire.begin()
 #endif
 
-// The expansion-board user button is D1 (GPIO3), active low. D0 is the
-// Grove A0 pin, not that button. The BOOT button on the XIAO module is
-// GPIO9. Each pin is tracked on its own: one stuck-low pin must not hold
-// the others in the "already pressed" state.
+// Right-hand USER button is D1 (GPIO3), active low. Configured once as an
+// input with pull-up. D0 (GPIO2) is only logged. GPIO9 is a strapping pin
+// and is not watched. A stuck-low pin does not block the other.
 #define BTN_PIN        D1
 #define BTN_LONG_MS    700
 #define BTN_DEBOUNCE_MS 25
@@ -354,6 +357,16 @@ struct Telemetry {
   int     fartCount;
   bool    fullBundle, gasValid, runIn, stab, bsecRestored;
   float   rawTempC, rawHum;       // NAN when not subscribed
+  // Air Sample. Absent on the wire until a sample is attempted. Result fields
+  // keep the latest completed summary; they are not a session history.
+  bool    airSampleKnown;
+  char    airSampleState[12];
+  uint32_t airSampleStartedAt;
+  uint8_t airSampleProgress;
+  float   airSampleBaselineVoc;   // NAN when unknown
+  float   airSampleDeltaVoc;      // NAN when unknown
+  char    airSampleResult[12];
+  uint32_t airSampleCompletedAt;
 #if SM_HOME_SENSORS
   HomeAirReading home;
 #endif
@@ -1409,7 +1422,7 @@ static void wallChrome(const char* tag, bool alert, bool live) {
   display.print(F("SNIFF//"));
   display.print(tag);
   if (!live) {
-    printRight(0, "N/C");
+    printRight(0, "OFF");
   } else if (wallBlink()) {
     display.fillRect(123, 1, 4, 4, SSD1306_WHITE);
   } else {
@@ -1529,18 +1542,18 @@ static void cardWallTrace(const NetStatus& n) {
   snprintf(b, sizeof(b), "%.0f", ss_co2);          traceRow("CO2", b, H_CO2, 80, 40);
   display.setCursor(0, 55);
   if (!bsecCalibrationReady(ss_iaqAcc)) display.print(F("> SENSOR WARMING"));
-  else if (bad)                         display.print(F("> TRACE IS HIGH"));
-  else                                  display.print(F("> TRACE IS STEADY"));
+  else if (bad)                         display.print(F("> LEVEL IS HIGH"));
+  else                                  display.print(F("> LEVEL IS STEADY"));
 }
 
 static void cardWallOdor(const NetStatus& n) {
   wallChrome("ODOR", hazardActive, n.connected);
   if (!bsecCalibrationReady(ss_iaqAcc)) {
     display.setTextSize(2);
-    display.setCursor(2, 14); display.print(F("WARM"));
+    display.setCursor(6, 16); display.print(F("WARMING"));
     display.setTextSize(1);
-    display.setCursor(2, 36); display.print(F("> NOSE IS LEARNING"));
-    display.setCursor(2, 46); display.print(F("> ODORS IN A BIT"));
+    display.setCursor(2, 36); display.print(F("> SENSOR WARMING"));
+    display.setCursor(2, 46); display.print(F("> ODORS SOON"));
     return;
   }
   uint8_t idx[ODOR_COUNT];
@@ -1577,13 +1590,13 @@ static void cardWallSky(const NetStatus& n) {
     display.setTextSize(2);
     display.setCursor(2, 12); display.print(b);
     display.setTextSize(1);
-    display.setCursor(2 + (int)strlen(b) * 12 + 2, 18); display.print(F("F LOCAL"));
+    display.setCursor(2 + (int)strlen(b) * 12 + 2, 18); display.print(F("F INSIDE"));
     snprintf(b, sizeof(b), "RH %d%%", (int)(ss_hum + 0.5f));
     display.setCursor(2, 34); display.print(b);
     snprintf(b, sizeof(b), "%.0f hPa", pressToHpa(ss_pressure));
     printRight(34, b);
     display.setCursor(0, 55);
-    display.print(n.connected ? F("> SKY NET LINKING") : F("> SKY NET OFFLINE"));
+    display.print(n.connected ? F("> OUTSIDE LOADING") : F("> OUTSIDE LINK OFF"));
     return;
   }
   snprintf(b, sizeof(b), "%d", w.aq);
@@ -1635,15 +1648,28 @@ static void renderCurrentPage() {
   display.display();
 }
 
-static void drawSplash() {
+// Two beats, then the wall cards. Age is milliseconds since the splash
+// started in loop(), so a long setup() does not skip the second beat.
+// Size-1 lines are <= 21 characters. The sweep is the only animation.
+static void drawSplash(unsigned long age) {
   display.clearDisplay();
   display.drawCircle(64, 16, 12, SSD1306_WHITE);
   display.drawCircle(64, 16, 4, SSD1306_WHITE);
-  display.drawLine(64, 16, 74, 8, SSD1306_WHITE);
+  const float a = (age % 1200UL) * 0.00523599f; // 2*pi / 1200
+  display.drawLine(64, 16,
+                   64 + (int)(cosf(a) * 10.0f),
+                   16 + (int)(sinf(a) * 10.0f),
+                   SSD1306_WHITE);
   display.setTextSize(1);
-  display.setCursor(28, 34); display.print(F("SNIFFMASTER"));
-  display.setCursor(16, 46); display.print(F("WALL DECK ARMED"));
-  display.setCursor(4, 56);  display.print(F("Tap page  Hold sync"));
+  display.setTextColor(SSD1306_WHITE);
+  if (age < 2000UL) {
+    display.setCursor(31, 36); display.print(F("SNIFFMASTER"));       // 11
+    display.setCursor(16, 50); display.print(F("Watching the air"));  // 16
+  } else {
+    display.setCursor(28, 34); display.print(F("Right button"));       // 12
+    display.setCursor(22, 46); display.print(F("Tap: next card"));     // 14
+    display.setCursor(16, 56); display.print(F("Hold: air sample"));   // 16
+  }
   display.display();
 }
 
@@ -1894,6 +1920,9 @@ static void onSensorData(const bme68xData data, const bsecOutputs outputs, const
 // Sample processing (loop task)
 // ══════════════════════════════════════════════════════════════
 
+static void airSampleNote(unsigned long now);
+static void fillAirSampleTelem(Telemetry& t);
+
 static void processSample(unsigned long now) {
   newDataReady = false;
   const bool hadValid = ss_valid;
@@ -1988,6 +2017,7 @@ static void processSample(unsigned long now) {
 
   histPush(now);
   checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi);
+  airSampleNote(now);
 
   // ── Telemetry snapshot for the network task ────────────────
   {
@@ -2016,6 +2046,7 @@ static void processSample(unsigned long now) {
     t.rawHum = bsecRawExtras ? latestRawHum : NAN;
     t.iaqTrend = getIaqTrend(); t.vocTrend = getVocTrend();
     strlcpy(t.hazard, hazardLabel(airScore, hazardActive), sizeof(t.hazard));
+    fillAirSampleTelem(t);
   }
 
   // ── BSEC state persistence ────────────────────────────────
@@ -2041,33 +2072,402 @@ static void processSample(unsigned long now) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Button (loop task)
+// Air Sample — VOC response check, not a health or alcohol test
 // ══════════════════════════════════════════════════════════════
+// Uses the existing BSEC2 breath-VOC equivalent. No second sensor path.
+// Windows: 10 s baseline, then 25 s measure (inside the 20–30 s band).
+// The OLED preflight states that total (35 s). LP samples arrive about
+// every 3 s, so a window needs at least 3 gas-valid, heat-stable samples.
+//
+// Thresholds on the smoothed delta (measure mean − baseline mean), ppm:
+//   mild   >= 0.5
+//   strong >= 1.5
+//   else   no meaningful VOC shift
+// A negative or tiny rise stays "no meaningful shift".
 
-// Right-hand user button on the expansion board is D1 (GPIO3). D0 is the
-// Grove port beside it. GPIO9 is the BOOT button on the XIAO module.
-// display() blocks the loop for ~160 ms, so a 10 ms timer samples the pins.
-static const gpio_num_t BTN_WATCH[] = {
-  GPIO_NUM_3, GPIO_NUM_2, GPIO_NUM_9, GPIO_NUM_4, GPIO_NUM_10
+static constexpr unsigned long SAMPLE_BASE_MS    = 10000UL;
+static constexpr unsigned long SAMPLE_MEASURE_MS = 25000UL;
+static constexpr unsigned long SAMPLE_RESULT_MS  = 10000UL;
+static constexpr unsigned long SAMPLE_REJECT_MS  = 2500UL;
+static constexpr unsigned long SAMPLE_CANCEL_MS  = 1500UL;
+static constexpr unsigned long SAMPLE_GAP_MS     = 9000UL; // ~3 missed LP cycles
+static constexpr uint8_t SAMPLE_MIN_N            = 3;
+static constexpr float SAMPLE_MILD_PPM           = 0.5f;
+static constexpr float SAMPLE_STRONG_PPM         = 1.5f;
+static constexpr unsigned SAMPLE_TOTAL_S =
+    (unsigned)((SAMPLE_BASE_MS + SAMPLE_MEASURE_MS) / 1000UL);
+
+enum AirPhase : uint8_t { AP_IDLE, AP_BASE, AP_MEASURE, AP_RESULT, AP_REJECT, AP_CANCEL };
+
+struct SampleAcc {
+  float voc, iaq, co2, gasR, hum, tempF;
+  uint16_t n;
 };
-static constexpr uint8_t BTN_N = sizeof(BTN_WATCH) / sizeof(BTN_WATCH[0]);
-static uint8_t btnLevel[BTN_N] = {};
-static uint8_t btnLowMs[BTN_N] = {};
-static volatile uint8_t btnFellMask = 0;
-static bool btnTimerOn = false;
 
-static void buttonSample(void*) {
-  for (uint8_t i = 0; i < BTN_N; i++) {
-    const gpio_num_t pin = BTN_WATCH[i];
-    gpio_set_direction(pin, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
-    const uint8_t level = gpio_get_level(pin) ? 1 : 0;
-    if (btnTimerOn && btnLevel[i] == 1 && level == 0) btnFellMask |= (1u << i);
-    btnLevel[i] = level;
+static AirPhase apPhase = AP_IDLE;
+static unsigned long apPhaseMs = 0;
+static unsigned long apLastGoodMs = 0;
+static SampleAcc apBase = {};
+static SampleAcc apMeas = {};
+static float apBaselineVoc = NAN;
+static float apLiveDelta = NAN;
+static float apPrevVoc = NAN;
+static float apSavedBase = NAN;
+static float apSavedDelta = NAN;
+static char apStatus[16] = "sampling";
+static char apSavedResult[12] = "";
+static char apReject[32] = "";
+static uint32_t apStartedAt = 0;
+static uint32_t apCompletedAt = 0;
+static uint8_t apProgress = 0;
+static bool apHasResult = false;
+
+static uint32_t epochNow() {
+  const time_t t = time(nullptr);
+  return (t > 1600000000L) ? (uint32_t)t : 0;
+}
+
+static bool airSampleBusy() { return apPhase != AP_IDLE; }
+
+static const char* airSampleStateName() {
+  switch (apPhase) {
+    case AP_BASE:    return "baseline";
+    case AP_MEASURE: return "measure";
+    case AP_RESULT:  return "result";
+    case AP_REJECT:  return "rejected";
+    case AP_CANCEL:  return "cancelled";
+    default:         return "idle";
   }
 }
 
+static const char* sampleRejectReason() {
+  if (!ss_valid) return "no sensor data";
+  if (!latestGasValid) return "gas not valid";
+  if (!(ss_gasR > 0.0f)) return "no gas reading";
+  if (!bsecPhysicallySettled(ss_stabStatus, ss_runInStatus)) return "not stabilized";
+  return nullptr;
+}
+
+static void fillAirSampleTelem(Telemetry& t) {
+  t.airSampleKnown = (apPhase != AP_IDLE) || apHasResult || apStartedAt != 0;
+  strlcpy(t.airSampleState, airSampleStateName(), sizeof(t.airSampleState));
+  t.airSampleStartedAt = apStartedAt;
+  t.airSampleProgress = apProgress;
+  if (apPhase == AP_BASE && apBase.n) t.airSampleBaselineVoc = apBase.voc / apBase.n;
+  else if (isfinite(apBaselineVoc))   t.airSampleBaselineVoc = apBaselineVoc;
+  else                                t.airSampleBaselineVoc = apSavedBase;
+  if (apPhase == AP_MEASURE && isfinite(apLiveDelta)) t.airSampleDeltaVoc = apLiveDelta;
+  else if (apHasResult)                               t.airSampleDeltaVoc = apSavedDelta;
+  else                                                t.airSampleDeltaVoc = NAN;
+  strlcpy(t.airSampleResult, apSavedResult, sizeof(t.airSampleResult));
+  t.airSampleCompletedAt = apCompletedAt;
+}
+
+static void publishAirSampleTelem() {
+  if (!gLock) return;
+  LockGuard g;
+  fillAirSampleTelem(gTelem);
+}
+
+static void sampleAccAdd(SampleAcc& a) {
+  a.voc += ss_voc; a.iaq += ss_iaq; a.co2 += ss_co2;
+  a.gasR += ss_gasR; a.hum += ss_hum; a.tempF += ss_tempF;
+  a.n++;
+}
+
+static void airSampleNote(unsigned long now) {
+  if (apPhase != AP_BASE && apPhase != AP_MEASURE) return;
+  if (!ss_valid || !latestGasValid || !(ss_gasR > 0.0f)) return;
+  apLastGoodMs = now;
+  if (apPhase == AP_BASE) {
+    sampleAccAdd(apBase);
+    return;
+  }
+  sampleAccAdd(apMeas);
+  if (!apMeas.n || !isfinite(apBaselineVoc)) return;
+  apLiveDelta = (apMeas.voc / apMeas.n) - apBaselineVoc;
+  if (isfinite(apPrevVoc) && ss_voc > apPrevVoc + 0.05f && apLiveDelta > 0.15f)
+    strlcpy(apStatus, "signal rising", sizeof(apStatus));
+  else if (isfinite(apPrevVoc) && fabsf(ss_voc - apPrevVoc) <= 0.08f && apMeas.n >= 2)
+    strlcpy(apStatus, "stable", sizeof(apStatus));
+  else
+    strlcpy(apStatus, "sampling", sizeof(apStatus));
+  apPrevVoc = ss_voc;
+}
+
+static void airSampleFinish(const char* token) {
+  strlcpy(apSavedResult, token, sizeof(apSavedResult));
+  apSavedBase = apBaselineVoc;
+  apSavedDelta = apLiveDelta;
+  apHasResult = true;
+  apCompletedAt = epochNow();
+  apProgress = 100;
+  apPhase = AP_RESULT;
+  apPhaseMs = millis();
+  Serial.printf("[SAMPLE] complete %s dVOC=%.2f\n", token, apSavedDelta);
+  publishAirSampleTelem();
+  requestPortalPush();
+  forceRedraw = true;
+}
+
+static void airSampleLongPress() {
+  if (apPhase == AP_BASE || apPhase == AP_MEASURE) {
+    Serial.println(F("[SAMPLE] cancelled"));
+    apReject[0] = 0;
+    apPhase = AP_CANCEL;
+    apPhaseMs = millis();
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  if (apPhase != AP_IDLE) {
+    apPhase = AP_IDLE;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  const char* why = sampleRejectReason();
+  if (why) {
+    Serial.printf("[SAMPLE] rejected %s\n", why);
+    strlcpy(apReject, why, sizeof(apReject));
+    apPhase = AP_REJECT;
+    apPhaseMs = millis();
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  apBase = {};
+  apMeas = {};
+  apBaselineVoc = NAN;
+  apLiveDelta = NAN;
+  apPrevVoc = NAN;
+  apProgress = 0;
+  strlcpy(apStatus, "sampling", sizeof(apStatus));
+  apStartedAt = epochNow();
+  apPhase = AP_BASE;
+  apPhaseMs = millis();
+  apLastGoodMs = apPhaseMs;
+  Serial.println(F("[SAMPLE] start"));
+  publishAirSampleTelem();
+  requestPortalPush();
+  forceRedraw = true;
+}
+
+static void airSampleTick(unsigned long now) {
+  if (apPhase == AP_IDLE) return;
+  if (hazardActive && (apPhase == AP_BASE || apPhase == AP_MEASURE)) {
+    Serial.println(F("[SAMPLE] cancelled hazard"));
+    apPhase = AP_IDLE;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  if (apPhase == AP_REJECT) {
+    if (now - apPhaseMs >= SAMPLE_REJECT_MS) {
+      apPhase = AP_IDLE;
+      forceRedraw = true;
+      publishAirSampleTelem();
+    }
+    return;
+  }
+  if (apPhase == AP_CANCEL) {
+    if (now - apPhaseMs >= SAMPLE_CANCEL_MS) {
+      apPhase = AP_IDLE;
+      forceRedraw = true;
+      publishAirSampleTelem();
+    }
+    return;
+  }
+  if (apPhase == AP_RESULT) {
+    if (now - apPhaseMs >= SAMPLE_RESULT_MS) {
+      apPhase = AP_IDLE;
+      forceRedraw = true;
+      publishAirSampleTelem();
+    }
+    return;
+  }
+  if (now - apLastGoodMs >= SAMPLE_GAP_MS) {
+    Serial.println(F("[SAMPLE] cancelled sensor data unavailable"));
+    strlcpy(apReject, "Sensor data lost", sizeof(apReject));
+    apPhase = AP_CANCEL;
+    apPhaseMs = now;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  const unsigned long total = SAMPLE_BASE_MS + SAMPLE_MEASURE_MS;
+  if (apPhase == AP_BASE) {
+    const unsigned long elapsed = now - apPhaseMs;
+    apProgress = elapsed >= total ? 99 : (uint8_t)((elapsed * 100UL) / total);
+    if (elapsed < SAMPLE_BASE_MS) return;
+    if (apBase.n < SAMPLE_MIN_N) {
+      Serial.printf("[SAMPLE] rejected baseline too thin (%u)\n", apBase.n);
+      strlcpy(apReject, "Baseline too thin", sizeof(apReject));
+      apPhase = AP_REJECT;
+      apPhaseMs = now;
+      publishAirSampleTelem();
+      forceRedraw = true;
+      return;
+    }
+    apBaselineVoc = apBase.voc / apBase.n;
+    apPhase = AP_MEASURE;
+    apPhaseMs = now;
+    apLastGoodMs = now;
+    strlcpy(apStatus, "sampling", sizeof(apStatus));
+    Serial.printf("[SAMPLE] baseline-ready n=%u voc=%.2f iaq=%.0f co2=%.0f gas=%.0f rh=%.0f t=%.1f\n",
+                  apBase.n, apBaselineVoc, apBase.iaq / apBase.n, apBase.co2 / apBase.n,
+                  apBase.gasR / apBase.n, apBase.hum / apBase.n, apBase.tempF / apBase.n);
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  const unsigned long elapsed = now - apPhaseMs;
+  const unsigned long into = SAMPLE_BASE_MS + elapsed;
+  apProgress = into >= total ? 99 : (uint8_t)((into * 100UL) / total);
+  if (elapsed < SAMPLE_MEASURE_MS) return;
+  if (apMeas.n < SAMPLE_MIN_N || !isfinite(apBaselineVoc)) {
+    Serial.printf("[SAMPLE] cancelled measure too thin (%u)\n", apMeas.n);
+    strlcpy(apReject, "Measure too thin", sizeof(apReject));
+    apPhase = AP_CANCEL;
+    apPhaseMs = now;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  apLiveDelta = (apMeas.voc / apMeas.n) - apBaselineVoc;
+  const char* token = "no_shift";
+  if (apLiveDelta >= SAMPLE_STRONG_PPM) token = "strong";
+  else if (apLiveDelta >= SAMPLE_MILD_PPM) token = "mild";
+  airSampleFinish(token);
+}
+
+static void renderAirSample() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(F("AIR//SAMPLE"));
+  for (int x = 0; x < SCREEN_WIDTH; x += 2) display.drawPixel(x, 8, SSD1306_WHITE);
+
+  if (apPhase == AP_REJECT || apPhase == AP_CANCEL) {
+    display.setCursor(0, 16);
+    display.print(apPhase == AP_REJECT ? F("NOT READY") : F("CANCELLED"));
+    if (apReject[0]) { display.setCursor(0, 30); display.print(apReject); }
+    display.setCursor(0, 52);
+    display.print(apPhase == AP_REJECT ? F("Hold again to retry") : F("Sample stopped"));
+    display.display();
+    return;
+  }
+
+  if (apPhase == AP_RESULT) {
+    if (isfinite(apSavedDelta)) {
+      char b[12];
+      snprintf(b, sizeof(b), "%+.2f", apSavedDelta);
+      printRight(0, b);
+    }
+    display.setCursor(0, 14);
+    if (!strcmp(apSavedResult, "strong")) display.print(F("Strong VOC response"));
+    else if (!strcmp(apSavedResult, "mild")) display.print(F("Mild VOC response"));
+    else {
+      display.print(F("No meaningful"));
+      display.setCursor(0, 24);
+      display.print(F("VOC shift"));
+    }
+    display.setCursor(0, 38);
+    display.print(F("VOC response only -"));
+    display.setCursor(0, 48);
+    display.print(F("not a health or"));
+    display.setCursor(0, 56);
+    display.print(F("alcohol test."));
+    display.display();
+    return;
+  }
+
+  const unsigned long now = millis();
+  unsigned long remainMs = 0;
+  if (apPhase == AP_BASE) {
+    const unsigned long elapsed = now - apPhaseMs;
+    const unsigned long total = SAMPLE_BASE_MS + SAMPLE_MEASURE_MS;
+    remainMs = elapsed >= total ? 0 : total - elapsed;
+  } else if (now - apPhaseMs < SAMPLE_MEASURE_MS) {
+    remainMs = SAMPLE_MEASURE_MS - (now - apPhaseMs);
+  }
+  const unsigned sec = (unsigned)((remainMs + 999UL) / 1000UL);
+
+  if (apPhase == AP_BASE) {
+    char line[24];
+    snprintf(line, sizeof(line), "exhaled air - %u sec", SAMPLE_TOTAL_S);
+    display.setCursor(0, 12);
+    display.print(F("Hold near fresh/"));
+    display.setCursor(0, 22);
+    display.print(line);
+  } else {
+    display.setCursor(0, 12);
+    display.print(apStatus);
+    char b[20];
+    if (isfinite(apLiveDelta)) snprintf(b, sizeof(b), "dVOC %+.2f", apLiveDelta);
+    else strlcpy(b, "dVOC --", sizeof(b));
+    display.setCursor(0, 22);
+    display.print(b);
+  }
+  display.setTextSize(2);
+  char count[8];
+  snprintf(count, sizeof(count), "%us", sec);
+  display.setCursor(0, 34);
+  display.print(count);
+  display.setTextSize(1);
+  display.setCursor(78, 40);
+  display.print(apPhase == AP_BASE ? F("BASE") : F("MEAS"));
+  const int markTicks = 16;
+  const int mark = (apProgress * markTicks) / 100;
+  for (int i = 0; i < markTicks; i++) {
+    const int x = 4 + i * 7;
+    if (i == mark && wallBlink()) display.fillRect(x, 56, 4, 5, SSD1306_WHITE);
+    else display.drawRect(x, 56, 4, 5, SSD1306_WHITE);
+  }
+  display.display();
+}
+
+// ══════════════════════════════════════════════════════════════
+// Button (loop task)
+// ══════════════════════════════════════════════════════════════
+// D1/GPIO3 is the right-hand USER button. display() blocks ~160 ms, and
+// that transfer drops the pin's pull-up, so a 10 ms timer reasserts input
+// plus pull-up and latches the falling edge. A tap that starts and ends
+// inside one frame is still counted. D0 is the Grove port. GPIO9 is BOOT.
+
+static const gpio_num_t BTN_GPIO = GPIO_NUM_3;
+static volatile uint8_t btnLevel = 1;
+static volatile uint8_t btnGesture = 0;   // 1 = tap, 2 = hold
+static volatile uint16_t btnGestureMs = 0;
+static bool btnWakeDisplay = false;
+
+static void buttonSample(void*) {
+  static uint16_t lowMs = 0;
+  static uint8_t heldFired = 0;
+  gpio_set_direction(BTN_GPIO, GPIO_MODE_INPUT);
+  gpio_set_pull_mode(BTN_GPIO, GPIO_PULLUP_ONLY);
+  const uint8_t level = gpio_get_level(BTN_GPIO) ? 1 : 0;
+  if (level == 0) {
+    if (lowMs < 60000) lowMs = lowMs + 10;
+    if (!heldFired && lowMs >= BTN_LONG_MS) {
+      heldFired = 1;
+      btnGestureMs = lowMs;
+      btnGesture = 2;
+    }
+  } else if (btnLevel == 0) {
+    if (!heldFired && lowMs >= 10) {
+      btnGestureMs = lowMs;
+      btnGesture = 1;
+    }
+    lowMs = 0;
+    heldFired = 0;
+  }
+  btnLevel = level;
+}
+
 static void onShortPress() {
+  btnWakeDisplay = true;
   if (alarmStepsLeft) alarmStop();
   if (hazardActive && !hazardMuted) {
     hazardMuted = true;
@@ -2080,6 +2480,7 @@ static void onShortPress() {
     dismissOverlay();
     return;
   }
+  if (airSampleBusy()) return;   // a sample owns the screen until it finishes
   displayPage = (displayPage + 1) % NUM_PAGES;
   lastPageAdvanceMs = millis();
   lastDeckTapMs = lastPageAdvanceMs;
@@ -2087,54 +2488,42 @@ static void onShortPress() {
 }
 
 static void onLongPress() {
+  btnWakeDisplay = true;
   if (alarmStepsLeft || hazardActive) {
     alarmStop();
     hazardMuted = true;
     dismissOverlay();
+    Serial.println(F("[BTN] hold muted hazard"));
     return;
   }
-  Serial.println(F("[BTN] Hold → portal sync"));
-  requestPortalPush();
-  showOverlay("Portal Sync", "Fresh snapshot\nqueued for upload.", 1500, false);
+  airSampleLongPress();
 }
 
 static void armButtonPins() {
-  buttonSample(nullptr);                 // record the idle levels first
+  buttonSample(nullptr);                 // idle level first; the timer latches edges after this
   const esp_timer_create_args_t args = {
     .callback = buttonSample,
     .name = "btn",
   };
   esp_timer_handle_t timer = nullptr;
-  if (esp_timer_create(&args, &timer) == ESP_OK) {
+  if (esp_timer_create(&args, &timer) == ESP_OK)
     esp_timer_start_periodic(timer, 10000);   // 10 ms
-    btnTimerOn = true;
-  }
-  Serial.printf("[BTN] idle gpio3=%u gpio2=%u gpio9=%u gpio4=%u gpio10=%u\n",
-                btnLevel[0], btnLevel[1], btnLevel[2], btnLevel[3], btnLevel[4]);
+  Serial.printf("[BTN] idle gpio3=%u\n", btnLevel);
 }
 
 static void handleButton(unsigned long now) {
   static unsigned long lastActionMs = 0;
-  noInterrupts();
-  const uint8_t fell = btnFellMask;
-  btnFellMask = 0;
-  interrupts();
-
-  for (uint8_t i = 0; i < BTN_N; i++) {
-    if (btnLevel[i] == 0) {
-      if (btnLowMs[i] < 255) btnLowMs[i]++;
-    } else {
-      btnLowMs[i] = 0;
-    }
-    const bool pressed = (fell & (1u << i)) || (btnLowMs[i] == (BTN_LONG_MS / 10));
-    if (!pressed) continue;
-    if (now - lastActionMs < 200) continue;
-    lastActionMs = now;
-    Serial.printf("[BTN] gpio=%d lowMs=%u page=%u\n", (int)BTN_WATCH[i], btnLowMs[i], displayPage);
-    if (btnLowMs[i] >= (BTN_LONG_MS / 10)) onLongPress();
-    else onShortPress();
-  }
+  const uint8_t gesture = btnGesture;
+  if (!gesture) return;
+  const uint16_t ms = btnGestureMs;
+  btnGesture = 0;
+  if (now - lastActionMs < 200) return;
+  lastActionMs = now;
+  Serial.printf("[BTN] gpio=3 %s %u\n", gesture == 2 ? "hold" : "tap", ms);
+  if (gesture == 2) onLongPress();
+  else onShortPress();
 }
+
 
 // ══════════════════════════════════════════════════════════════
 // Network task — everything here may block; the UI never waits on it
@@ -2708,6 +3097,17 @@ static bool sendSnapshot(const Telemetry& t) {
   doc["vocTrend"]   = t.vocTrend;
   doc["calibration"] = t.calText;
   doc["hazard"]     = t.hazard;
+  if (t.airSampleKnown) {
+    doc["airSampleState"] = t.airSampleState;
+    if (t.airSampleStartedAt) doc["airSampleStartedAt"] = t.airSampleStartedAt;
+    doc["airSampleProgress"] = t.airSampleProgress;
+    if (isfinite(t.airSampleBaselineVoc))
+      doc["airSampleBaselineVoc"] = roundf(t.airSampleBaselineVoc * 100.0f) / 100.0f;
+    if (isfinite(t.airSampleDeltaVoc))
+      doc["airSampleDeltaVoc"] = roundf(t.airSampleDeltaVoc * 100.0f) / 100.0f;
+    if (t.airSampleResult[0]) doc["airSampleResult"] = t.airSampleResult;
+    if (t.airSampleCompletedAt) doc["airSampleCompletedAt"] = t.airSampleCompletedAt;
+  }
   doc["primary"]    = t.primaryIdx < ODOR_COUNT ? odorNames[t.primaryIdx] : "Clean Air";
   doc["primaryConf"] = t.primaryConf;
   JsonArray odors = doc["odors"].to<JsonArray>();
@@ -2912,7 +3312,7 @@ void setup() {
   }
   display.setTextColor(SSD1306_WHITE);
   display.setTextWrap(false);
-  drawSplash();
+  drawSplash(0);
 
   gLock = xSemaphoreCreateMutex();
 
@@ -2995,6 +3395,37 @@ static void bsecWatchdog(unsigned long now, bool ran) {
 }
 
 static void updateDisplay(unsigned long now) {
+  // Splash plays out even if the sensor is already up, so both beats
+  // can be read. A running Air Sample still takes the screen.
+  static bool splashOn = true;
+  static unsigned long splashStartMs = 0;
+  static unsigned long lastSplashDrawMs = 0;
+  if (btnWakeDisplay) {
+    btnWakeDisplay = false;
+    splashOn = false;
+  }
+  if (splashOn && !airSampleBusy()) {
+    if (!splashStartMs) splashStartMs = now ? now : 1;
+    const unsigned long age = now - splashStartMs;
+    if (age < 4200UL) {
+      if (now - lastSplashDrawMs >= 250UL) {
+        drawSplash(age);
+        lastSplashDrawMs = now;
+      }
+      return;
+    }
+    splashOn = false;
+  }
+
+  if (airSampleBusy()) {
+    if (forceRedraw || !lastBootRenderMs || now - lastBootRenderMs >= 500UL) {
+      renderAirSample();
+      lastBootRenderMs = now;
+      forceRedraw = false;
+    }
+    return;
+  }
+
   if (!ss_valid) {
     if (forceRedraw || !lastBootRenderMs || now - lastBootRenderMs >= 1000UL) {
       renderBootStatusPage();
@@ -3113,6 +3544,7 @@ void loop() {
   const bool ran = envSensor.run();
   bsecWatchdog(now, ran);
   if (newDataReady) processSample(now);
+  airSampleTick(millis());
   alarmTick(millis());
   updateDisplay(millis());
   handleButton(millis());   // catch a tap that landed during the OLED transfer
@@ -3121,9 +3553,9 @@ void loop() {
   const unsigned long took = millis() - now;
   if (took > loopMaxMs) loopMaxMs = took;
   if (now - lastLoopLogMs >= 10000UL) {
-    Serial.printf("[LOOP] max=%lums heap=%u page=%u d0=%d d1=%d boot=%d\n",
+    Serial.printf("[LOOP] max=%lums heap=%u page=%u d1=%d\n",
                   loopMaxMs, (unsigned)ESP.getFreeHeap(), displayPage,
-                  digitalRead(D0), digitalRead(D1), digitalRead(9));
+                  digitalRead(D1));
     bsecRunFail = bsecTimingViol = 0;
     loopMaxMs = 0;
     lastLoopLogMs = now;
