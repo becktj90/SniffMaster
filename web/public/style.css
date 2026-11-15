@@ -443,3 +443,14 @@ label.choice.off { opacity: .72; }
   .brand-cat .bc-ear-r, .brand-cat .bc-nose, .brand-cat .bc-tongue, .brand-cat .bc-paw { animation: none !important; }
   .brand-cat.licking .bc-eyes { transform: none; }
 }
+
+/* ── Sensor Health page: calibration stepper ──────────────────────── */
+.cal-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0 4px; }
+.cal-steps .step { text-align: center; font-size: 12px; color: var(--ink-3); }
+.cal-steps .step i { display: block; width: 12px; height: 12px; margin: 0 auto 6px; border-radius: 50%; background: var(--card-2); border: 2px solid var(--line); }
+.cal-steps .step.done { color: var(--ink-2); }
+.cal-steps .step.done i { background: var(--good); border-color: transparent; }
+.cal-steps .step.now { color: var(--ink); font-weight: 600; }
+.cal-steps .step.now.good i { background: var(--good); border-color: transparent; box-shadow: 0 0 0 4px var(--good-bg); }
+.cal-steps .step.now.fair i { background: var(--fair); border-color: transparent; box-shadow: 0 0 0 4px var(--fair-bg); }
+.cal-steps .step.now.poor i { background: var(--poor); border-color: transparent; box-shadow: 0 0 0 4px var(--poor-bg); }

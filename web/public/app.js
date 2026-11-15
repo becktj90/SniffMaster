@@ -1,6 +1,6 @@
 /* SniffMaster dashboard — vanilla JS, no build step.
  *
- * Routes (hash): #/ overview · #/sensors · #/smell · #/pets · #/outside · #/alerts · #/settings
+ * Routes (hash): #/ overview · #/sensors · #/smell · #/pets · #/outside · #/alerts · #/settings · #/sensor-health
  * Data: /api/home-stats (score, smell, pets, mold, outdoor, pollen),
  *       /api/insights (friendly briefing), /api/sensors?range= (BME688 series),
  *       /api/weather-briefing (forecast), /api/sniff-history, /api/alerts.
@@ -455,6 +455,20 @@
     if (c.floor !== undefined) y0 = Math.max(c.floor, y0);
     return [y0, y1];
   }
+  // Plain-language calibration note, shared by the Sensors card and the
+  // Sensor Health page — one source of truth for why accuracy is low.
+  function calibrationNote(L) {
+    var acc = Number(L.iaqAcc);
+    var settled = L.stab === 1 || L.stab === true || L.runIn === 1 || L.runIn === true;
+    var publishing = isNum(L.gasR) && Number(L.gasR) > 0 && isNum(L.iaq) && isNum(L.co2) && Number(L.co2) > 0;
+    var posted = /room air has not varied/i.test(L.calibration || "");
+    if ((acc >= 1 && acc < 2 && settled && publishing) || posted)
+      return '<p class="note">The sensor is running, and BSEC accuracy is still low because the room air has not varied. Accuracy rises when the air changes, not from uptime alone.</p>';
+    if (acc < 2)
+      return '<p class="note">The sensor is still warming up. This is a cold start, not a sensor that has already been publishing in still air.</p>';
+    return "";
+  }
+
   async function pageSensors() {
     var d = await load("sensors");
     if (!d) return noData();
@@ -497,22 +511,11 @@
       "<dt>Wi-Fi signal</dt><dd>" + fmt(L.wifiRssi) + " dBm</dd>" +
       "<dt>Uptime</dt><dd>" + (isNum(L.uptime) ? fmt(L.uptime / 3600, 1) + " h" : "—") + "</dd>" +
       "<dt>Last reading</dt><dd>" + esc(L.receivedAt ? clock(L.receivedAt) + " (" + ago(L.receivedAt) + ")" : "—") + "</dd></dl>" +
-      (sensorNote(L)) + "</div>";
+      (calibrationNote(L)) + '<p style="margin:12px 0 0"><a class="btn" href="#/sensor-health">Sensor Health page</a></p></div>';
 
     var addon = ["pm25", "pm10"].some(function (k) { return isNum(L[k]); }) ? "" :
       '<div class="card"><h3>Want particulate readings?</h3><p class="muted" style="margin:6px 0 0">The BME688 senses gases, not dust. Adding a Sensirion SEN5x (PM1–PM10) makes the pet dander meter far more precise, and the firmware already has a hook for it in <code>home_sensors.h</code>.</p></div>';
 
-    function sensorNote(L) {
-      var acc = Number(L.iaqAcc);
-      var settled = L.stab === 1 || L.stab === true || L.runIn === 1 || L.runIn === true;
-      var publishing = isNum(L.gasR) && Number(L.gasR) > 0 && isNum(L.iaq) && isNum(L.co2) && Number(L.co2) > 0;
-      var posted = /room air has not varied/i.test(L.calibration || "");
-      if ((acc >= 1 && acc < 2 && settled && publishing) || posted)
-        return '<p class="note">The sensor is running, and BSEC accuracy is still low because the room air has not varied. Accuracy rises when the air changes, not from uptime alone.</p>';
-      if (acc < 2)
-        return '<p class="note">The sensor is still warming up. This is a cold start, not a sensor that has already been publishing in still air.</p>';
-      return "";
-    }
     window.__sensorData = d;
     return head("Sensors", "Every channel from the BME688 and BSEC2, at full precision.", seg) +
       (sensorRange === "7d" ? '<div class="callout mb">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</div>' : "") +
@@ -998,6 +1001,90 @@
     bindPets(); // allergy trigger chips share the Pets page behavior
   }
 
+  // ── Sensor Health ──────────────────────────────────────────────────
+  // Calibration progress + system health, fed by the endpoints that
+  // already exist: /api/latest (device snapshot), /api/health (storage
+  // probe) and /api/version (deployed build). No new API. Version and
+  // health are fetched at most once a minute — they don't change
+  // between refreshes.
+  var healthMeta = { at: 0, version: null, health: null };
+  async function loadHealthMeta() {
+    if (healthMeta.at && Date.now() - healthMeta.at < 60000) return healthMeta;
+    healthMeta.at = Date.now();
+    try { healthMeta.version = await getJSON("/api/version"); } catch (e) { healthMeta.version = null; }
+    try {
+      // /api/health answers 503 with a JSON body when storage is down,
+      // so read the body regardless of status instead of using getJSON.
+      var r = await fetch("/api/health", { cache: "no-store" });
+      healthMeta.health = await r.json().catch(function () { return null; });
+    } catch (e) { healthMeta.health = null; }
+    return healthMeta;
+  }
+
+  async function pageSensorHealth() {
+    var L = null, loadErr = null;
+    try { L = await load("latest"); } catch (err) { loadErr = err; }
+    if (!L) return noData(loadErr);
+    var H = window.SniffHealth, C = window.SniffCal;
+    if (!H || !C || !C.calStage) {
+      // The helper modules load async after this classic script; the
+      // sniff-health-ready listener below re-renders once they arrive.
+      return head("Sensor health", "Calibration progress and the whole system's vital signs, live.") +
+        '<div class="card"><p class="muted">Loading sensor health…</p></div>';
+    }
+    var meta = await loadHealthMeta();
+    var stage = C.calStage(L.iaqAcc);
+    var feed = H.feedState(L.receivedAt, Date.now());
+    var wifi = H.wifiState(L.wifiRssi);
+    var checks = H.readingChecks(L);
+    var missing = checks.rows.filter(function (r) { return !r.ok; }).length;
+
+    var steps = ["Stabilizing", "Low", "Medium", "High"].map(function (label, i) {
+      var cls = "step" + (stage.known && i < stage.index ? " done" : "") + (stage.known && i === stage.index ? " now " + stage.tone : "");
+      return '<div class="' + cls + '"><i></i>' + label + "</div>";
+    }).join("");
+    var calCard = '<div class="card"><div class="card-head"><h3>Calibration</h3>' + pill(stage.known ? "Step " + (stage.index + 1) + " of 4 · " + stage.label : stage.label, stage.tone) + "</div>" +
+      '<div class="cal-steps" role="list" aria-label="Calibration stages">' + steps + "</div>" +
+      '<p style="margin:10px 0 0">' + esc(stage.detail) + "</p>" +
+      (stage.needs ? '<p class="note"><b>What it still needs. </b>' + esc(stage.needs) + "</p>" : "") +
+      '<dl class="kv" style="margin-top:14px">' +
+      "<dt>BSEC status</dt><dd>" + esc(L.calibration || "—") + "</dd>" +
+      "<dt>Stabilized / run-in</dt><dd>" + (L.stab ? "yes" : "no") + " / " + (L.runIn ? "done" : "running") + "</dd>" +
+      "<dt>Calibration restored from flash</dt><dd>" + (L.bsecRestored ? "yes" : "no") + "</dd>" +
+      "<dt>Configuration</dt><dd>" + esc(L.bsecCfg || "—") + " (" + esc(L.bsecBundle || "?") + ")</dd>" +
+      "<dt>Compensated gas</dt><dd>" + (L.gasPctValid ? fmt(L.compGas) + " Ω" : "—") + "</dd>" +
+      "<dt>VOC change (dVOC)</dt><dd>" + fmt(L.dVoc, 2) + " ppm</dd>" +
+      "<dt>Gas readings valid</dt><dd>" + (L.gasValid ? "yes" : "no") + "</dd></dl>" +
+      calibrationNote(L) + "</div>";
+
+    var feedPill = feed.state === "live" ? pill("Fresh", "good") : feed.state === "stale" ? pill("Stale", "poor") : pill("No readings", "na");
+    var feedRow = "<dt>Last reading</dt><dd>" + (L.receivedAt ? esc(clock(L.receivedAt) + " (" + ago(L.receivedAt) + ")") : "—") + " " + feedPill + "</dd>";
+    var healthRows = checks.rows.map(function (r) {
+      return "<dt>" + esc(r.label) + "</dt><dd>" + esc(r.text) + (r.ok ? "" : " " + pill("missing", "poor")) + "</dd>";
+    }).join("");
+    var storageRow = "<dt>Server storage</dt><dd>" + (meta.health
+      ? meta.health.reachable
+        ? "Reachable · " + fmt(meta.health.snapshotHistoryDepth) + " snapshots stored"
+        : "Unreachable" + (meta.health.error ? " — " + esc(meta.health.error) : "")
+      : "Couldn't check right now") + "</dd>";
+    var sysCard = '<div class="card"><div class="card-head"><h3>System health</h3>' + (missing ? pill(missing + " reading" + (missing > 1 ? "s" : "") + " missing", "poor") : pill("All readings present", "good")) + "</div>" +
+      '<dl class="kv">' + feedRow +
+      "<dt>Device uptime</dt><dd>" + esc(H.fmtUptime(L.uptime)) + "</dd>" +
+      "<dt>Wi-Fi signal</dt><dd>" + fmt(L.wifiRssi) + " dBm · " + esc(wifi.label) + "</dd>" +
+      healthRows + storageRow +
+      "<dt>Dashboard</dt><dd>" + (meta.version ? esc(meta.version.label) + (meta.version.environment ? " · " + esc(meta.version.environment) : "") : "Unavailable right now") + "</dd></dl>" +
+      (feed.state === "stale"
+        ? '<div class="callout fair" style="margin-top:12px">No new readings for a while. Check the device\u2019s power and Wi-Fi, and the router — a reboot of the device usually brings the feed back.</div>'
+        : "") +
+      (checks.publishing
+        ? '<p class="note">The device is publishing live readings.</p>'
+        : '<p class="note">The device is not publishing complete readings yet — check the calibration stage above.</p>') + "</div>";
+
+    return head("Sensor health", "Calibration progress and the whole system's vital signs, live.") +
+      '<div class="grid g-2 top">' + calCard + sysCard + "</div>" +
+      '<p style="margin:14px 0 0"><a href="#/sensors">Full channel charts on the Sensors page →</a></p>';
+  }
+
   // ── router ─────────────────────────────────────────────────────────
   var ROUTES = {
     home: { render: pageHome, poll: ["home", "insights", "weather"], title: "Overview" },
@@ -1007,6 +1094,7 @@
     outside: { render: pageOutside, poll: ["home", "weather"], title: "Outside", after: drawMap },
     alerts: { render: pageAlerts, poll: [], title: "Alerts", bind: bindAlerts },
     settings: { render: pageSettings, poll: [], title: "Settings", bind: bindSettings },
+    "sensor-health": { render: pageSensorHealth, poll: ["latest"], title: "Sensor health" },
   };
   var currentRoute = null;
   function routeName() { var h = location.hash.replace(/^#\/?/, "").split("?")[0]; return ROUTES[h] ? h : "home"; }
@@ -1055,13 +1143,23 @@
   // Overview swaps the flat fallback ring for the gradient one (and the
   // plain-language note + driver line appear with it).
   window.addEventListener("sniff-gauge-ready", function () { if (currentRoute) rerender(); });
+  // The sensor-health helpers load async after this classic script;
+  // re-render if the user is already on the Sensor Health page.
+  window.addEventListener("sniff-health-ready", function () { if (currentRoute === "sensor-health") rerender(); });
   var resizeT;
   window.addEventListener("resize", function () {
     clearTimeout(resizeT);
     resizeT = setTimeout(function () { var r = ROUTES[currentRoute]; if (r && r.after) r.after(); }, 150);
   });
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", rerender);
-  setInterval(function () { if (!document.hidden && cache.home) setStatus(cache.home.data); }, 30000);
+  setInterval(function () {
+    if (document.hidden) return;
+    if (cache.home) setStatus(cache.home.data);
+    // Keep the Sensor Health page ticking on the same 30s cycle as the
+    // header status (no force: it reuses the cached snapshot, and the
+    // route poll refetches on its own schedule).
+    if (currentRoute === "sensor-health") render("sensor-health");
+  }, 30000);
   render(routeName());
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
