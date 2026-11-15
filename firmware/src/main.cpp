@@ -11,7 +11,8 @@
     tap   = next page (or dismiss an alert / mute a hazard alarm)
     hold  = push a fresh snapshot to the web portal
 
-  Pages auto-cycle every 5 s (see the C_* card list).
+  The wall deck (four retro cards) auto-cycles every 10 s. Tap walks the
+  detail cards too; after a minute with no tap the deck returns.
 
   Architecture:
     loop()   — sensor, button, buzzer, OLED, on-demand gas scan. Never touches the network.
@@ -51,11 +52,11 @@
   #define I2C_BEGIN() Wire.begin()
 #endif
 
-// Page / long-press button is D0 (GPIO2). D1 and the XIAO BOOT button (GPIO9)
-// also work. Each input arms only after it has read "released", so a pin
-// that is held low (or wired to something else) can never jam the button.
-#define BTN_PIN        D0
-static const uint8_t BTN_PINS[] = { D0, D1, 9 };
+// The expansion-board user button is D1 (GPIO3), active low. D0 is the
+// Grove A0 pin, not that button. The BOOT button on the XIAO module is
+// GPIO9. Each pin is tracked on its own: one stuck-low pin must not hold
+// the others in the "already pressed" state.
+#define BTN_PIN        D1
 #define BTN_LONG_MS    700
 #define BTN_DEBOUNCE_MS 25
 #define BUZZER_PIN     D3
@@ -297,6 +298,7 @@ static unsigned long lastFartMs = 0;
 
 // Display
 static uint8_t       displayPage = 0;
+static unsigned long lastDeckTapMs = 0;   // last tap; detail pages return to the deck
 static bool          forceRedraw = true;
 static unsigned long lastPageAdvanceMs = 0;
 static unsigned long lastBootRenderMs = 0;
@@ -1468,50 +1470,15 @@ static void cardNetwork(const NetStatus& n) {
 }
 
 
-// ── Retro-future wall cards ────────────────────────────────────
-// Glanceable cards for a wall near the cat area. 1-bit CRT look: chevron
-// title bar, corner brackets, a dotted scan line and a radar sweep. They
-// redraw ~2.5x/s (see updateDisplay) so the animation runs.
+// ── Retro wall deck ────────────────────────────────────────────
+// Four glanceable cards for a wall. Outline ticks and a dotted rule only:
+// a solid white header ghosts on this SSD1306. A blinking lamp and one
+// blinking tick are the animation, redrawn twice a second (updateDisplay).
+// The inverse "CRT scan line" was removed because it punched holes in text.
 static bool wallFresh(const NetStatus& n) {
   return n.wall.valid && millis() - n.wall.fetchedMs < 5UL * 60UL * 1000UL;
 }
-static inline bool wallBlink() { return (millis() / 400UL) & 1UL; }
-
-static uint8_t levelSegs(const char* lv) {
-  if (!strcmp(lv, "LOW"))      return 1;
-  if (!strcmp(lv, "MODERATE")) return 3;
-  if (!strcmp(lv, "HIGH"))     return 4;
-  if (!strcmp(lv, "SEVERE"))   return 5;
-  return 0;                                   // CLEAR or N/A
-}
-
-static void drawSegBar(int y, uint8_t segs) {
-  for (uint8_t i = 0; i < 5; i++) {
-    const int x = 2 + i * 25;
-    display.drawRect(x, y, 23, 6, SSD1306_WHITE);
-    if (i < segs) display.fillRect(x + 1, y + 1, 21, 4, SSD1306_WHITE);
-  }
-}
-
-static void retroHeader(const char* title, bool alert, bool live) {
-  const bool inv = alert && wallBlink();      // header flashes on an alert
-  display.fillRect(0, 0, SCREEN_WIDTH, 10, inv ? SSD1306_BLACK : SSD1306_WHITE);
-  display.drawRect(0, 0, SCREEN_WIDTH, 10, SSD1306_WHITE);
-  const uint16_t fg = inv ? SSD1306_WHITE : SSD1306_BLACK;
-  display.setTextColor(fg);
-  display.setTextSize(1);
-  display.setCursor(3, 1);
-  display.print(F(">> "));
-  display.print(title);
-  if (live) {                                  // pulsing link lamp
-    if (wallBlink()) display.fillRect(SCREEN_WIDTH - 9, 2, 5, 5, fg);
-    else             display.drawRect(SCREEN_WIDTH - 9, 2, 5, 5, fg);
-  } else {
-    display.setCursor(SCREEN_WIDTH - 22, 1);
-    display.print(F("N/C"));
-  }
-  display.setTextColor(SSD1306_WHITE);
-}
+static inline bool wallBlink() { return (millis() / 500UL) & 1UL; }
 
 static void retroCorners() {
   const int x1 = SCREEN_WIDTH - 1, y0 = 12, y1 = SCREEN_HEIGHT - 1;
@@ -1521,145 +1488,233 @@ static void retroCorners() {
   display.drawFastHLine(x1 - 3, y1, 4, SSD1306_WHITE); display.drawFastVLine(x1, y1 - 3, 4, SSD1306_WHITE);
 }
 
-// A dotted line that drifts down the screen, like a CRT refresh bar.
-static void retroScan() {
-  const int y = 13 + (int)((millis() / 110UL) % 50UL);
-  for (int x = (y & 1) * 2; x < SCREEN_WIDTH; x += 4) display.drawPixel(x, y, SSD1306_INVERSE);
+static const char* aqiWord(int a) {
+  return a <= 50 ? "GOOD" : a <= 100 ? "MODERATE" : a <= 150 ? "SENSITIVE" :
+         a <= 200 ? "UNHEALTHY" : a <= 300 ? "VERY UNHEALTHY" : "HAZARDOUS";
 }
 
-static void drawRadar(int cx, int cy, int r, bool blip) {
-  display.drawCircle(cx, cy, r, SSD1306_WHITE);
-  display.drawCircle(cx, cy, r / 2, SSD1306_WHITE);
-  const float a = (millis() % 3000UL) * (6.2832f / 3000.0f);
-  display.drawLine(cx, cy, cx + (int)(cosf(a) * r), cy + (int)(sinf(a) * r), SSD1306_WHITE);
-  if (blip) display.fillCircle(cx + r / 3, cy - r / 3, 1, SSD1306_WHITE);
-}
-
-// "GRASS: HIGH" (type shortened by the server so this always fits 21 columns)
 static void pollenLine(char* out, size_t n, const WallStatus& w) {
   if (w.pn[0]) snprintf(out, n, "%.9s: %.8s", w.pn, w.pl);
   else         snprintf(out, n, "POLLEN: %.8s", w.pl);
 }
 
-static const char* aqiWord(int a) {
-  return a <= 50 ? "GOOD" : a <= 100 ? "MODERATE" : a <= 150 ? "SENSITIVE GRPS" :
-         a <= 200 ? "UNHEALTHY" : a <= 300 ? "VERY UNHEALTHY" : "HAZARDOUS";
-}
-
-static void cardWallSmell(const NetStatus& n) {
-  const WallStatus& w = n.wall;
-  char b[28];
-  if (!wallFresh(n)) {
-    retroHeader("ENV-OS//SMELL", false, false);
-    retroCorners();
-    display.setCursor(2, 22); display.print(n.connected ? F("> LINKING TO CORE...") : F("> WIFI OFFLINE"));
-    display.setCursor(2, 34); display.print(F("> LOCAL SENSOR ONLY"));
-    snprintf(b, sizeof(b), "> AIR SCORE %d", 100 - ss_airScore);
-    display.setCursor(2, 46); display.print(b);
-    retroScan();
-    return;
-  }
-  const bool danger = !strcmp(w.sm, "DANGER");
-  const bool bad    = danger || !strcmp(w.sm, "SMELLY");
-  retroHeader(danger ? "!! DANGER !!" : "ENV-OS//SMELL", bad, true);
-  retroCorners();
-
-  display.setTextSize(2);
-  display.setCursor(2, 14);
-  display.print(w.sm);
+static void wallChrome(const char* tag, bool alert, bool live) {
   display.setTextSize(1);
-  drawRadar(112, 22, 10, bad);
-
-  if (bad) {
-    if (w.sl > 0) snprintf(b, sizeof(b), "SINCE %dM  %.9s", w.sl, w.tr);
-    else          snprintf(b, sizeof(b), "%.9s", w.tr);
-    display.setCursor(2, 31); display.print(b);
-    snprintf(b, sizeof(b), "> %.19s", w.ca[0] ? w.ca : "UNKNOWN SOURCE");
-    display.setCursor(2, 40); display.print(b);
-    display.setCursor(2, 49); display.print(w.ac[0]);
-    display.setCursor(2, 57); display.print(w.ac[1]);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(F("SNIFF//"));
+  display.print(tag);
+  if (!live) {
+    printRight(0, "N/C");
+  } else if (wallBlink()) {
+    display.fillRect(123, 1, 4, 4, SSD1306_WHITE);
   } else {
-    snprintf(b, sizeof(b), "AIR SCORE %d/100", w.sc < 0 ? 0 : w.sc);
-    display.setCursor(2, 31); display.print(b);
-    display.setCursor(2, 40);
-    display.print(!strcmp(w.sm, "LEARNING") ? F("> LEARNING YOUR ROOM") :
-                  !strcmp(w.sm, "SLIGHT")   ? F("> SLIGHT ODOR NOTED") : F("> NO ODOR DETECTED"));
-    snprintf(b, sizeof(b), "> ALLERGENS %.9s", w.al);
-    display.setCursor(2, 49); display.print(b);
-    drawSegBar(57, levelSegs(w.al));
+    display.drawRect(123, 1, 4, 4, SSD1306_WHITE);
   }
-  retroScan();
+  if (alert && wallBlink()) display.drawFastHLine(0, 8, SCREEN_WIDTH, SSD1306_WHITE);
+  else for (int x = 0; x < SCREEN_WIDTH; x += 2) display.drawPixel(x, 8, SSD1306_WHITE);
+  retroCorners();
 }
 
-static void cardWallAllergen(const NetStatus& n) {
-  const WallStatus& w = n.wall;
-  char b[28];
-  if (!wallFresh(n)) {
-    retroHeader("ENV-OS//ALLERGEN", false, false);
-    retroCorners();
-    display.setCursor(2, 28); display.print(F("> AWAITING DATA LINK"));
-    retroScan();
+// One blinking tick marks the current value. The rest stay hollow so the
+// panel is not a slab of white (that ghosts on this OLED).
+static void tickGauge(int y, int lit, int n = 20) {
+  lit = constrain(lit, 0, n);
+  for (int i = 0; i < n; i++) {
+    const int x = 4 + i * 6;
+    const bool on = i < lit || (i == lit && wallBlink());
+    if (on) display.fillRect(x, y, 3, 5, SSD1306_WHITE);
+    else    display.drawRect(x, y, 3, 5, SSD1306_WHITE);
+  }
+}
+
+static void drawSpark(HistId id, int x, int y, int w, int h, float minSpan) {
+  if (histFilled < 2) {
+    const int mid = y + h / 2;
+    for (int i = 0; i < w; i += 3) display.drawPixel(x + i, mid, SSD1306_WHITE);
+    display.fillRect(x + (int)((millis() / 80UL) % (unsigned)w), mid - 1, 2, 3, SSD1306_WHITE);
     return;
   }
-  const uint8_t segs = levelSegs(w.al);
-  retroHeader("ENV-OS//ALLERGEN", segs >= 4, true);
-  retroCorners();
+  float lo = 1e9f, hi = -1e9f;
+  for (uint8_t i = 0; i < histFilled; i++) {
+    float v = histBuf[id][(histHead - histFilled + i + HIST_LEN) % HIST_LEN];
+    lo = min(lo, v); hi = max(hi, v);
+  }
+  if (hi - lo < minSpan) { float mid = (hi + lo) / 2; lo = mid - minSpan / 2; hi = mid + minSpan / 2; }
+  int px = 0, py = 0;
+  for (uint8_t i = 0; i < histFilled; i++) {
+    float v = histBuf[id][(histHead - histFilled + i + HIST_LEN) % HIST_LEN];
+    int cx = x + (histFilled == 1 ? 0 : i * (w - 1) / (histFilled - 1));
+    int cy = y + h - 1 - (int)((v - lo) / (hi - lo) * (h - 1));
+    if (i) display.drawLine(px, py, cx, cy, SSD1306_WHITE);
+    px = cx; py = cy;
+  }
+}
+
+static int deckScore(const NetStatus& n) {
+  if (homeFresh(n)) return constrain(n.home.score, 0, 100);
+  return constrain(100 - ss_airScore, 0, 100);
+}
+
+// Short lines for a clean room. ASCII, <= 20 columns. Rotates every 8 s.
+static const char* const FINE_LINES[] = {
+  "AIR: BORING. GOOD.",
+  "NOSE REPORTS CLEAR",
+  "CATS UNBOTHERED",
+  "FILTERS CAN NAP",
+  "ROOM SMELLS LIKE ROOM",
+  "SCIENCE SAYS: FINE",
+  "ODOR LEVEL: NONE",
+  "BREATHE EASY, HUMAN",
+};
+static const char* fineLine() {
+  return FINE_LINES[(millis() / 8000UL) % ARRAY_LEN(FINE_LINES)];
+}
+
+static void deckFooter(const NetStatus& n, bool bad) {
+  char b[22];
+  const char* msg = fineLine();
+  if (bad) {
+    if (n.wall.ac[0][0]) msg = n.wall.ac[0];
+    else if (n.wall.ca[0]) msg = n.wall.ca;
+    else msg = "OPEN A WINDOW";
+  } else if (n.snark[0]) {
+    msg = n.snark;
+  }
+  snprintf(b, sizeof(b), "> %.18s", msg);
+  display.setCursor(0, 55);
+  display.print(b);
+}
+
+static void cardWallBridge(const NetStatus& n) {
+  const bool bad = wallFresh(n) && (!strcmp(n.wall.sm, "SMELLY") || !strcmp(n.wall.sm, "DANGER"));
+  wallChrome("BRIDGE", bad || hazardActive, n.connected);
+  char b[16];
+  snprintf(b, sizeof(b), "%d", deckScore(n));
   display.setTextSize(2);
-  display.setCursor(2, 14);
-  display.print(w.al);
+  display.setCursor(2, 12);
+  display.print(b);
   display.setTextSize(1);
-  snprintf(b, sizeof(b), "> %.19s", w.an[0] ? w.an : "NO ACTIVE DRIVER");
-  display.setCursor(2, 31); display.print(b);
-  pollenLine(b, sizeof(b), w);
-  display.setCursor(2, 40); display.print(b);
-  display.setCursor(2, 49); display.print(w.wn[0] ? w.wn : "WINDOWS: NO ACTION");
-  drawSegBar(57, segs);
-  retroScan();
+  const char* mood = wallFresh(n) && n.wall.sm[0] ? n.wall.sm : iaqQuality(ss_iaq);
+  display.setCursor(44, 16);
+  display.print(mood);
+  tickGauge(32, deckScore(n) / 5);
+  snprintf(b, sizeof(b), "%dF", (int)(ss_tempF + 0.5f));
+  display.setCursor(2, 42); display.print(b);
+  snprintf(b, sizeof(b), "%d%%", (int)(ss_hum + 0.5f));
+  display.setCursor(40, 42); display.print(b);
+  snprintf(b, sizeof(b), "IAQ %.0f", ss_iaq);
+  printRight(42, b);
+  deckFooter(n, bad);
 }
 
-static void cardWallOutdoor(const NetStatus& n) {
-  const WallStatus& w = n.wall;
-  char b[28];
-  if (!wallFresh(n) || w.aq < 0) {
-    retroHeader("ENV-OS//OUTSIDE", false, wallFresh(n));
-    retroCorners();
-    display.setCursor(2, 28); display.print(wallFresh(n) ? F("> NO OUTDOOR FEED") : F("> AWAITING DATA LINK"));
-    retroScan();
+static void traceRow(const char* name, const char* value, HistId id, float span, int y) {
+  display.setCursor(0, y);
+  display.print(name);
+  drawSpark(id, 32, y, 62, 8, span);
+  printRight(y, value);
+}
+
+static void cardWallTrace(const NetStatus& n) {
+  const bool bad = ss_iaq >= 150 || ss_co2 >= 1500;
+  wallChrome("TRACE", bad, n.connected);
+  char b[12];
+  snprintf(b, sizeof(b), "%.0f", ss_iaq);          traceRow("IAQ", b, H_IAQ, 20, 12);
+  snprintf(b, sizeof(b), ss_voc < 10 ? "%.1f" : "%.0f", ss_voc);
+  traceRow("VOC", b, H_VOC, 0.4f, 26);
+  snprintf(b, sizeof(b), "%.0f", ss_co2);          traceRow("CO2", b, H_CO2, 80, 40);
+  display.setCursor(0, 55);
+  if (!bsecCalibrationReady(ss_iaqAcc)) display.print(F("> SENSOR WARMING"));
+  else if (bad)                         display.print(F("> TRACE IS HIGH"));
+  else                                  display.print(F("> TRACE IS STEADY"));
+}
+
+static void cardWallOdor(const NetStatus& n) {
+  wallChrome("ODOR", hazardActive, n.connected);
+  if (!bsecCalibrationReady(ss_iaqAcc)) {
+    display.setTextSize(2);
+    display.setCursor(2, 14); display.print(F("WARM"));
+    display.setTextSize(1);
+    display.setCursor(2, 36); display.print(F("> NOSE IS LEARNING"));
+    display.setCursor(2, 46); display.print(F("> ODORS IN A BIT"));
     return;
   }
-  retroHeader("ENV-OS//OUTSIDE", w.aq > 150, true);
-  retroCorners();
+  uint8_t idx[ODOR_COUNT];
+  for (uint8_t i = 0; i < ODOR_COUNT; i++) idx[i] = i;
+  for (uint8_t i = 0; i < 3; i++)
+    for (uint8_t j = i + 1; j < ODOR_COUNT; j++)
+      if (ss_scores[idx[j]] > ss_scores[idx[i]]) { uint8_t t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+  display.setTextSize(2);
+  display.setCursor(2, 11);
+  display.print(odorShort[idx[0]]);
+  display.setTextSize(1);
+  char b[8];
+  snprintf(b, sizeof(b), "%u%%", ss_scores[idx[0]]);
+  printRight(14, b);
+  tickGauge(30, ss_scores[idx[0]] / 5);
+  for (uint8_t r = 1; r < 3; r++) {
+    snprintf(b, sizeof(b), "%u%%", ss_scores[idx[r]]);
+    display.setCursor(r == 1 ? 2 : 66, 42);
+    display.print(odorShort[idx[r]]);
+    display.print(' ');
+    display.print(b);
+  }
+  const bool bad = wallFresh(n) && (!strcmp(n.wall.sm, "SMELLY") || !strcmp(n.wall.sm, "DANGER"));
+  deckFooter(n, bad);
+}
+
+static void cardWallSky(const NetStatus& n) {
+  const WallStatus& w = n.wall;
+  const bool bad = wallFresh(n) && w.aq > 100;
+  wallChrome("SKY", bad, n.connected);
+  char b[20];
+  if (!wallFresh(n) || w.aq < 0) {
+    snprintf(b, sizeof(b), "%d", (int)(ss_tempF + 0.5f));
+    display.setTextSize(2);
+    display.setCursor(2, 12); display.print(b);
+    display.setTextSize(1);
+    display.setCursor(2 + (int)strlen(b) * 12 + 2, 18); display.print(F("F LOCAL"));
+    snprintf(b, sizeof(b), "RH %d%%", (int)(ss_hum + 0.5f));
+    display.setCursor(2, 34); display.print(b);
+    snprintf(b, sizeof(b), "%.0f hPa", pressToHpa(ss_pressure));
+    printRight(34, b);
+    display.setCursor(0, 55);
+    display.print(n.connected ? F("> SKY NET LINKING") : F("> SKY NET OFFLINE"));
+    return;
+  }
   snprintf(b, sizeof(b), "%d", w.aq);
   display.setTextSize(2);
-  display.setCursor(2, 14); display.print(b);
+  display.setCursor(2, 12); display.print(b);
   display.setTextSize(1);
-  display.setCursor(2 + (int)strlen(b) * 12 + 3, 21); display.print(F("AQI"));
+  display.setCursor(2 + (int)strlen(b) * 12 + 3, 14); display.print(F("AQI"));
+  display.setCursor(2 + (int)strlen(b) * 12 + 3, 23); display.print(aqiWord(w.aq));
   if (w.ot > -900) { snprintf(b, sizeof(b), "%dF", w.ot); printRight(14, b); }
   if (isnan(w.uv)) strlcpy(b, "UV --", sizeof(b)); else snprintf(b, sizeof(b), "UV %.1f", w.uv);
-  display.setCursor(2, 31); display.print(b);
-  snprintf(b, sizeof(b), "> %.18s", aqiWord(w.aq));
-  display.setCursor(2, 40); display.print(b);
+  display.setCursor(2, 36); display.print(b);
   pollenLine(b, sizeof(b), w);
-  display.setCursor(2, 49); display.print(b);
-  drawSegBar(57, levelSegs(w.pl));
-  retroScan();
+  display.setCursor(2, 46); display.print(b);
+  display.setCursor(0, 55);
+  if (w.wn[0]) { snprintf(b, sizeof(b), "> %.18s", w.wn); display.print(b); }
+  else         display.print(F("> WINDOWS: NO NOTE"));
 }
 
 enum CardId : uint8_t {
-  C_WALL_SMELL, C_WALL_ALLERGEN, C_WALL_OUTDOOR,
+  C_WALL_BRIDGE, C_WALL_TRACE, C_WALL_ODOR, C_WALL_SKY,
   C_HOME, C_IAQ, C_VOC, C_CO2, C_TEMP, C_HUM, C_PRESS, C_ODORS,
   C_ALLERGEN, C_OUTDOOR, C_SNARK, C_NETWORK, C_COUNT
 };
 #define NUM_PAGES C_COUNT
+static bool isWallPage(uint8_t page) { return page <= C_WALL_SKY; }
 
 static void renderCurrentPage() {
   const NetStatus n = copyNetStatus();
   display.clearDisplay();
   display.setTextSize(1);
   switch (displayPage) {
-    case C_WALL_SMELL:    cardWallSmell(n);    break;
-    case C_WALL_ALLERGEN: cardWallAllergen(n); break;
-    case C_WALL_OUTDOOR:  cardWallOutdoor(n);  break;
+    case C_WALL_BRIDGE: cardWallBridge(n); break;
+    case C_WALL_TRACE:  cardWallTrace(n);  break;
+    case C_WALL_ODOR:   cardWallOdor(n);   break;
+    case C_WALL_SKY:    cardWallSky(n);    break;
     case C_HOME:     cardHomeScore(n); break;
     case C_IAQ:      cardIaq();        break;
     case C_VOC:      cardVoc();        break;
@@ -1678,14 +1733,13 @@ static void renderCurrentPage() {
 
 static void drawSplash() {
   display.clearDisplay();
-  // Simple nose logo
-  display.fillRoundRect(50, 6, 28, 20, 10, SSD1306_WHITE);
-  display.fillCircle(57, 20, 5, SSD1306_BLACK);
-  display.fillCircle(71, 20, 5, SSD1306_BLACK);
+  display.drawCircle(64, 16, 12, SSD1306_WHITE);
+  display.drawCircle(64, 16, 4, SSD1306_WHITE);
+  display.drawLine(64, 16, 74, 8, SSD1306_WHITE);
   display.setTextSize(1);
-  display.setCursor(19, 34); display.print(F("SniffMaster Pro"));
-  display.setCursor(4, 47);  display.print(F("Tap: page"));
-  display.setCursor(4, 56);  display.print(F("Hold: sync portal"));
+  display.setCursor(28, 34); display.print(F("SNIFFMASTER"));
+  display.setCursor(16, 46); display.print(F("WALL DECK ARMED"));
+  display.setCursor(4, 56);  display.print(F("Tap page  Hold sync"));
   display.display();
 }
 
@@ -2133,12 +2187,28 @@ static void processSample(unsigned long now) {
 // Button (loop task)
 // ══════════════════════════════════════════════════════════════
 
-static bool          btnArmed = false;       // wait for release after boot
-static bool          btnStable = false;      // debounced "down" state
-static bool          btnLastRaw = false;
-static unsigned long btnRawChangeMs = 0;
-static unsigned long btnDownMs = 0;
-static bool          btnLongFired = false;
+struct BtnTrack {
+  uint8_t gpio;
+  bool    armed;       // has been seen released since boot
+  bool    stable;      // debounced "down"
+  bool    lastRaw;
+  unsigned long changeMs;
+  unsigned long downMs;
+  bool    longFired;
+};
+static BtnTrack btnTrack[] = {
+  { D1, false, false, false, 0, 0, false },
+  { D0, false, false, false, 0, 0, false },
+  { 9,  false, false, false, 0, 0, false },
+};
+// Set from a falling-edge interrupt. display() blocks for ~160 ms while the
+// OLED frame is sent, which is long enough to miss a whole tap if we only
+// poll in loop().
+static volatile bool btnFell[3] = {};
+static void IRAM_ATTR btnIsr0() { btnFell[0] = true; }
+static void IRAM_ATTR btnIsr1() { btnFell[1] = true; }
+static void IRAM_ATTR btnIsr2() { btnFell[2] = true; }
+static void (*const btnIsr[3])() = { btnIsr0, btnIsr1, btnIsr2 };
 
 static void onShortPress() {
   if (alarmStepsLeft) alarmStop();
@@ -2155,6 +2225,7 @@ static void onShortPress() {
   }
   displayPage = (displayPage + 1) % NUM_PAGES;
   lastPageAdvanceMs = millis();
+  lastDeckTapMs = lastPageAdvanceMs;
   forceRedraw = true;
 }
 
@@ -2170,35 +2241,63 @@ static void onLongPress() {
   showOverlay("Portal Sync", "Fresh snapshot\nqueued for upload.", 1500, false);
 }
 
+static void armButtonPins() {
+  for (uint8_t i = 0; i < 3; i++) {
+    BtnTrack& b = btnTrack[i];
+    pinMode(b.gpio, INPUT_PULLUP);
+    gpio_pullup_en((gpio_num_t)b.gpio);
+    gpio_pulldown_dis((gpio_num_t)b.gpio);
+    attachInterrupt(digitalPinToInterrupt(b.gpio), btnIsr[i], FALLING);
+  }
+}
+
 static void handleButton(unsigned long now) {
-  static bool pinArmed[sizeof(BTN_PINS)] = {};
-  bool raw = false;
-  for (uint8_t i = 0; i < sizeof(BTN_PINS); i++) {
-    const bool low = digitalRead(BTN_PINS[i]) == LOW;
-    if (!pinArmed[i]) { if (!low) pinArmed[i] = true; continue; }
-    raw |= low;
-  }
-  if (raw != btnLastRaw) { btnLastRaw = raw; btnRawChangeMs = now; }
-  if (now - btnRawChangeMs < BTN_DEBOUNCE_MS) return;
-
-  if (!btnArmed) {           // ignore a button held/floating through boot
-    if (!raw) btnArmed = true;
-    btnStable = raw;
-    return;
+  static unsigned long lastPullMs = 0;
+  // Wi-Fi bring-up can clear the pull-ups on these pins. Put them back
+  // without detaching the edge interrupt (gpio pull only, no pinMode).
+  if (lastPullMs && now - lastPullMs >= 2000UL) {
+    for (BtnTrack& b : btnTrack) gpio_pullup_en((gpio_num_t)b.gpio);
+    lastPullMs = now;
+  } else if (!lastPullMs) {
+    lastPullMs = now;
   }
 
-  if (raw && !btnStable) {                 // pressed
-    btnStable = true;
-    btnDownMs = now;
-    btnLongFired = false;
-  } else if (raw && btnStable) {           // held
-    if (!btnLongFired && now - btnDownMs >= BTN_LONG_MS) {
-      btnLongFired = true;
-      onLongPress();
+  for (uint8_t i = 0; i < 3; i++) {
+    BtnTrack& b = btnTrack[i];
+    const bool fell = btnFell[i];
+    if (fell) btnFell[i] = false;
+    const bool low = digitalRead(b.gpio) == LOW || fell;
+    if (!b.armed) {
+      if (digitalRead(b.gpio) == HIGH) b.armed = true;
+      continue;
     }
-  } else if (!raw && btnStable) {          // released
-    btnStable = false;
-    if (!btnLongFired) onShortPress();
+    if (low != b.lastRaw) { b.lastRaw = low; b.changeMs = now; }
+    if (!fell && now - b.changeMs < BTN_DEBOUNCE_MS) continue;
+
+    if (low && !b.stable) {
+      b.stable = true;
+      b.downMs = now;
+      b.longFired = false;
+      // Tap completed entirely during an OLED transfer: the pin is already up.
+      if (fell && digitalRead(b.gpio) == HIGH) {
+        b.stable = false;
+        b.lastRaw = false;
+        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        onShortPress();
+      }
+    } else if (low && b.stable) {
+      if (!b.longFired && now - b.downMs >= BTN_LONG_MS) {
+        b.longFired = true;
+        Serial.printf("[BTN] hold gpio=%u\n", b.gpio);
+        onLongPress();
+      }
+    } else if (!low && b.stable) {
+      b.stable = false;
+      if (!b.longFired) {
+        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        onShortPress();
+      }
+    }
   }
 }
 
@@ -3189,7 +3288,7 @@ static void runGasScan() {
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  for (uint8_t p : BTN_PINS) pinMode(p, INPUT_PULLUP);
+  armButtonPins();
 
   Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
@@ -3296,16 +3395,25 @@ static void updateDisplay(unsigned long now) {
     }
   }
 
-  // Wall cards are the glanceable ones: hold them longer than the sensor
-  // cards, and redraw them ~2.5x/s so the radar and scan line animate.
-  const bool wallPage = displayPage <= C_WALL_OUTDOOR;
-  if (now - lastPageAdvanceMs >= (wallPage ? 8000UL : PAGE_CYCLE_MS)) {
-    displayPage = (displayPage + 1) % NUM_PAGES;
+  // Wall deck cycles on its own. Detail cards keep cycling only while
+  // someone is tapping; a quiet minute returns to the bridge card.
+  const bool wallPage = isWallPage(displayPage);
+  if (!wallPage && lastDeckTapMs && now - lastDeckTapMs >= 60000UL) {
+    displayPage = C_WALL_BRIDGE;
+    lastPageAdvanceMs = now;
+    forceRedraw = true;
+  } else if (wallPage && now - lastPageAdvanceMs >= 10000UL) {
+    displayPage = (displayPage + 1) % 4;   // C_WALL_BRIDGE .. C_WALL_SKY are 0..3
+    lastPageAdvanceMs = now;
+    forceRedraw = true;
+  } else if (!wallPage && now - lastPageAdvanceMs >= PAGE_CYCLE_MS) {
+    displayPage++;
+    if (displayPage >= NUM_PAGES) displayPage = C_HOME;
     lastPageAdvanceMs = now;
     forceRedraw = true;
   }
   static unsigned long lastWallAnimMs = 0;
-  if (wallPage && now - lastWallAnimMs >= 400UL) {
+  if (wallPage && now - lastWallAnimMs >= 500UL) {
     lastWallAnimMs = now;
     forceRedraw = true;
   }
@@ -3398,15 +3506,15 @@ void loop() {
   if (newDataReady) processSample(now);
   alarmTick(millis());
   updateDisplay(millis());
+  handleButton(millis());   // catch a tap that landed during the OLED transfer
   oledHealthCheck(millis());
 
   const unsigned long took = millis() - now;
   if (took > loopMaxMs) loopMaxMs = took;
   if (now - lastLoopLogMs >= 10000UL) {
-    Serial.printf("[LOOP] max=%lums heap=%u minHeap=%u oledRecov=%u bsecFail=%u timing=%u last=%d acc=%u runIn=%.0f stab=%.0f\n",
-                  loopMaxMs, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(), oledRecoveries,
-                  bsecRunFail, bsecTimingViol, bsecLastFailStatus, latestIAQAccuracy,
-                  latestRunInStatus, latestStabStatus);
+    Serial.printf("[LOOP] max=%lums heap=%u page=%u d0=%d d1=%d boot=%d\n",
+                  loopMaxMs, (unsigned)ESP.getFreeHeap(), displayPage,
+                  digitalRead(D0), digitalRead(D1), digitalRead(9));
     bsecRunFail = bsecTimingViol = 0;
     loopMaxMs = 0;
     lastLoopLogMs = now;
