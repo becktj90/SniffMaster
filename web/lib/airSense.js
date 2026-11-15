@@ -289,8 +289,10 @@ export function buildAirSense(ctx = {}) {
     const top = active.slice(0, 3).map((r) => `${r.name} ${r.score}`).join(", ");
     know.push(`Top smell classes: ${top}.`);
   }
-  know.push(atlasHonesty());
-
+  // The honesty disclaimer is NOT a story line: it is returned as `honesty`
+  // and the client renders it once as the note under the story list. Pushing
+  // it here too printed the identical paragraph twice in a row in the
+  // "Everything known about this air" card (Nov 15 phone video).
   return {
     honesty: atlasHonesty(),
     freshnessDebt: debt,
