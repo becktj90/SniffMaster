@@ -255,6 +255,38 @@ async function pingHealthchecks() {
   }
 }
 
+function healthchecksPingUrl() {
+  const raw = String(process.env.HEALTHCHECKS_PING_URL || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Tell Healthchecks.io this ingest succeeded. The check alerts through ntfy
+ * when pings stop. A Vercel Hobby cron runs at most once a day, so it cannot
+ * notice a device that goes quiet this afternoon. Never throws.
+ */
+async function pingHealthchecks() {
+  const url = healthchecksPingUrl();
+  if (!url) return;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: AbortSignal.timeout(2500),
+      headers: { "User-Agent": "SniffMaster-update" },
+    });
+    if (!res.ok) console.error("healthchecks ping status:", res.status);
+  } catch (err) {
+    console.error("healthchecks ping failed:", err?.message || err);
+  }
+}
+
 const GUEST_CHECK_EVERY_MS = 5 * 60 * 1000;
 
 /**
