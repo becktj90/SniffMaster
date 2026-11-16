@@ -46,6 +46,29 @@ Do not repeat the same fact in the summary and the tips. Don't mention AI, model
 
 const r1 = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 10) / 10);
 
+function flagOn(v) {
+  return v === true || v === 1 || v === "1";
+}
+
+/**
+ * Settled heater, real gas/IAQ/CO2 already on the wire, BSEC accuracy still 1.
+ * That is a running sensor in still air, not a cold boot.
+ */
+export function sensorRunningLowAccuracy(latest) {
+  const acc = Number(latest?.iaqAcc);
+  if (!Number.isFinite(acc) || acc < 1 || acc >= 2) return false;
+  const posted = /room air has not varied/i.test(String(latest?.calibration || ""));
+  const settled = flagOn(latest?.stab) || flagOn(latest?.runIn) || posted;
+  const gas = Number(latest?.gasR);
+  const iaq = Number(latest?.iaq);
+  const co2 = Number(latest?.co2);
+  const publishing = Number.isFinite(gas) && gas > 0 && Number.isFinite(iaq) && Number.isFinite(co2) && co2 > 0;
+  return settled && publishing;
+}
+
+export const STEADY_AIR_SENTENCE =
+  "The sensor is running, and BSEC accuracy is still low because the room air has not varied.";
+
 /** Small, stable facts object: what Claude sees and what the cache key hashes. */
 export function insightFacts(home, latest, weather) {
   const s = home?.series || {};
@@ -69,7 +92,9 @@ export function insightFacts(home, latest, weather) {
       iaq: r1(home?.gases?.iaq),
       co2: r1(home?.gases?.co2),
       bvoc: r1(home?.gases?.bvoc),
+      // Accuracy 2 is earned by air variation. Uptime does not promote a 1 to a 2.
       sensorCalibrated: Number(latest?.iaqAcc) >= 2,
+      sensorRunningLowAccuracy: sensorRunningLowAccuracy(latest),
     },
     lastSixHours: { tempChangeC: delta(s.tempC), humidityChange: delta(s.humidity), co2Change: delta(s.co2) },
     pets: home?.petAllergen ? { index: home.petAllergen.index, level: home.petAllergen.level, confidence: home.petAllergen.confidence } : null,
@@ -90,6 +115,7 @@ export function insightCacheKey(f) {
   return [
     b(f.score, 5), b(f.indoor.tempF, 2), b(f.indoor.humidity, 5), b(f.indoor.co2, 150), b(f.indoor.iaq, 25),
     f.smell?.smellsBad ? 1 : 0, f.smell?.cause || "", f.pets?.level || "", f.mold || "", b(f.outdoor?.aqi, 20),
+    f.indoor.sensorRunningLowAccuracy ? "low" : f.indoor.sensorCalibrated ? "ready" : "warm",
     f.localTime ? Math.floor(Number(f.localTime.slice(0, 2)) / 3) : "x",
   ].join("|");
 }
@@ -138,7 +164,8 @@ export function fallbackInsights(f) {
   if (f.outdoor && f.outdoor.tempC !== null && Number.isFinite(f.outdoor.tempC)) bits.push(`${Math.round(f.outdoor.tempC * 9 / 5 + 32)}°F outside`);
   let summary = bits.length ? `${bits.join(" and ")}.` : "";
   if (f.ventilation) summary += ` ${f.ventilation}`;
-  if (!t.sensorCalibrated) summary += " The gas sensor is still calibrating, so treat air-quality numbers as rough for now.";
+  if (t.sensorRunningLowAccuracy) summary += ` ${STEADY_AIR_SENTENCE}`;
+  else if (!t.sensorCalibrated) summary += " The gas sensor is still calibrating, so treat air-quality numbers as rough for now.";
 
   if (Number.isFinite(t.co2) && t.co2 >= 1000) tips.push({ tone: t.co2 >= 1500 ? "bad" : "fair", title: "Room is getting stuffy", text: `CO₂ is around ${Math.round(t.co2)} ppm. Ten minutes with a window open will reset it.` });
   if (Number.isFinite(t.humidity) && t.humidity >= 60) tips.push({ tone: "fair", title: "On the humid side", text: `At ${Math.round(t.humidity)}% humidity, mold and dust mites get comfortable. A dehumidifier or fan helps.` });

@@ -390,26 +390,40 @@ export async function getBleOccupancyHistory(count = 48) {
 
 /**
  * Alert de-dupe state for threshold SMS alerts.
- * Shape: { activeKeys: string[], sentAt: { [key]: epochMs } }
+ * Shape: { activeKeys: string[], sentAt: { [key]: epochMs },
+ *          gasBase?: number, gasBaseAt?: epochMs }
  * Lets /api/update fire an SMS only when a breach newly appears (state
  * transition) and re-fire the same breach only after a per-key cooldown.
+ * gasBase is the last median gas-resistance baseline computed from history;
+ * the ingest gate uses it (with a wider ratio than the trip ratio) so a
+ * relative gas-drop breach can be ruled in/out without a history read on
+ * every post. gasBaseAt bounds its staleness — the gate forces a re-learn
+ * when it is older than GAS_BASE_REFRESH_MS (see lib/thresholds.js).
  */
 export async function getAlertState() {
   const redis = getRedis();
   const raw = await redis.get(KEY_ALERT_STATE);
   if (!raw) return { activeKeys: [], sentAt: {} };
   const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  const gasBase = Number(parsed.gasBase);
+  const gasBaseAt = Number(parsed.gasBaseAt);
   return {
     activeKeys: Array.isArray(parsed.activeKeys) ? parsed.activeKeys : [],
     sentAt: parsed.sentAt && typeof parsed.sentAt === "object" ? parsed.sentAt : {},
+    ...(Number.isFinite(gasBase) ? { gasBase } : {}),
+    ...(Number.isFinite(gasBaseAt) ? { gasBaseAt } : {}),
   };
 }
 
 export async function setAlertState(state) {
   const redis = getRedis();
+  const gasBase = Number(state?.gasBase);
+  const gasBaseAt = Number(state?.gasBaseAt);
   const entry = {
     activeKeys: Array.isArray(state?.activeKeys) ? state.activeKeys : [],
     sentAt: state?.sentAt && typeof state.sentAt === "object" ? state.sentAt : {},
+    ...(Number.isFinite(gasBase) ? { gasBase } : {}),
+    ...(Number.isFinite(gasBaseAt) ? { gasBaseAt } : {}),
     updatedAt: Date.now(),
   };
   await redis.set(KEY_ALERT_STATE, JSON.stringify(entry));
@@ -603,6 +617,14 @@ export async function setJsonCache(key, value, ttlSec) {
  * Atomically increment a counter and (on first increment) give it a TTL so it
  * resets itself. Returns the new value. Used to hard-cap paid API calls.
  */
+/** Current value of a counter from incrCounter, or 0 when it has never been bumped. */
+export async function getCounter(key) {
+  const redis = getRedis();
+  const raw = await redis.get(`sniffmaster:counter:${key}`);
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export async function incrCounter(key, ttlSec) {
   const redis = getRedis();
   const k = `sniffmaster:counter:${key}`;

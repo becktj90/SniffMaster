@@ -26,6 +26,7 @@ import {
   getLatestSniff,
   getSettings,
   putSettings,
+  getAlertState,
   getDailySummary,
   getAlertSnapshot,
   getJsonCache,
@@ -38,7 +39,7 @@ import { buildHomeMetrics, mergeClimateHistory } from "../lib/homeAir.js";
 import { toGuestView, guestTopic } from "../lib/guest.js";
 import { analyzeCause } from "../lib/causes.js";
 import { toOledView } from "../lib/oled.js";
-import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers } from "../lib/homeInsights.js";
+import { analyzeSmell, allergyOutlook, ventilationAdvice, parseTriggers, canonicalSeverities } from "../lib/homeInsights.js";
 import { buildAirSense } from "../lib/airSense.js";
 import { fetchOutdoor } from "../lib/outdoor.js";
 import { fetchGooglePollen } from "../lib/pollen.js";
@@ -62,9 +63,18 @@ import { Redis } from "@upstash/redis";
 import { createHash } from "node:crypto";
 import { insightFacts, insightCacheKey, claudeInsights, fallbackInsights } from "../lib/insights.js";
 import {
+  aiInsightFacts,
+  aiInsightCacheKey,
+  generateAiInsight,
+  fallbackInsight,
+  resolveInsightCache,
+  AI_INSIGHT_TTL_SEC,
+  AI_INSIGHT_FALLBACK_TTL_SEC,
+} from "../lib/aiInsight.js";
+import {
   RULES as SUBSCRIBER_RULES,
   AlertError,
-  channelStatus,
+  alertChannels,
   loadSubscribers,
   startSubscription,
   confirmSubscription,
@@ -792,7 +802,36 @@ async function officeStats(req, res) {
 // like the other dashboard GETs. Never returns any API key.
 const HOME_OUTDOOR_TTL_SEC = 15 * 60;
 
-export async function buildHomePayload(triggersInput) {
+const HOME_PAYLOAD_TTL_SEC = 300;
+
+/**
+ * Whole-home payload, cached 300 s per trigger set in Redis. This is the hot
+ * path: /api/oled, /api/home-stats, /api/guest, /api/insights and both
+ * /api/update alert gates all build it, ~4,000×/day, and a fresh build
+ * re-reads + re-parses the full 24 h history (~2 MB) every time. A 5-minute
+ * stale window is cheap at the dashboard's 2-minute poll and the device's
+ * 1-minute post cadence — readings are 1-minute cadence, so the payload is
+ * at most a few minutes stale — and a cache miss rebuilds identically.
+ */
+export async function buildHomePayload(triggersInput, severitiesInput) {
+  // The severity string is part of the cache key: two devices with the same
+  // triggers but different severities get different outlooks.
+  const sevKey = canonicalSeverities(severitiesInput);
+  const key = `home-payload:${parseTriggers(triggersInput).join(",") || "none"}|${sevKey || "std"}`;
+  try {
+    const hit = await getJsonCache(key);
+    if (hit) return hit;
+  } catch {}
+  const payload = await buildHomePayloadFresh(triggersInput, severitiesInput);
+  if (payload) {
+    try {
+      await setJsonCache(key, payload, HOME_PAYLOAD_TTL_SEC);
+    } catch {}
+  }
+  return payload;
+}
+
+async function buildHomePayloadFresh(triggersInput, severitiesInput) {
     const triggers = parseTriggers(triggersInput);
     // Full snapshots cover the last 24h. Mold (72h) and dust mites (7d) read
     // the compact 10-minute series, which survives after the full buffer rolls.
@@ -856,7 +895,7 @@ export async function buildHomePayload(triggersInput) {
     const smell = analyzeSmell(latest, legacy);
     const cause = analyzeCause(latest, legacy, { outdoor, pollen });
     const withPollen = { ...metrics, pollen };
-    const outlook = allergyOutlook(withPollen, triggers, smell);
+    const outlook = allergyOutlook(withPollen, triggers, smell, severitiesInput);
     const ventilation = ventilationAdvice(withPollen, smell, triggers);
     const airSense = buildAirSense({
       latest,
@@ -892,6 +931,15 @@ export async function buildHomePayload(triggersInput) {
       city: latest.city || "",
       located: haveLoc,
       location: haveLoc ? { lat: Math.round(lat * 1e4) / 1e4, lon: Math.round(lon * 1e4) / 1e4 } : null,
+      airSample: latest.airSampleState ? {
+        state: latest.airSampleState,
+        startedAt: Number(latest.airSampleStartedAt) || null,
+        progress: Number.isFinite(Number(latest.airSampleProgress)) ? Number(latest.airSampleProgress) : null,
+        baselineVoc: Number.isFinite(Number(latest.airSampleBaselineVoc)) ? Number(latest.airSampleBaselineVoc) : null,
+        deltaVoc: Number.isFinite(Number(latest.airSampleDeltaVoc)) ? Number(latest.airSampleDeltaVoc) : null,
+        result: latest.airSampleResult || "",
+        completedAt: Number(latest.airSampleCompletedAt) || null,
+      } : null,
       ...metrics,
       pollen,
       googleAir,
@@ -908,12 +956,14 @@ async function homeStats(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Cache-Control", "no-store");
+  // s-maxage matches the dashboard's 120 s poll so alternate polls hit the
+  // edge instead of rebuilding the ~2 MB home payload.
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=120, stale-while-revalidate=60");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
 
   try {
-    const payload = await buildHomePayload(req.query?.triggers);
+    const payload = await buildHomePayload(req.query?.triggers, req.query?.severity);
     if (!payload) return res.status(204).end();
     return res.status(200).json(payload);
   } catch (err) {
@@ -926,17 +976,32 @@ async function homeStats(req, res) {
 // GET /api/oled — tiny pre-formatted status for the wall-mounted OLED:
 // smell state, likely cause + action, allergen level, outdoor pollen/AQI.
 // Device-sized (under ~700 bytes). Read-only like the other dashboard GETs.
+//
+// The wall feed polls every 60 s for the same fixed trigger set, so the
+// formatted view itself is cached 300 s: the wall feed then never triggers
+// a full ~2 MB home-payload rebuild.
+const OLED_VIEW_TTL_SEC = 300;
+
 async function oled(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+  // s-maxage matches the device's 60 s wall poll so alternate polls hit the edge.
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=60, stale-while-revalidate=60");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
   try {
+    try {
+      const cached = await getJsonCache("oled-view");
+      if (cached) return res.status(200).json(cached);
+    } catch {}
     // A wall display near the cats cares about every household trigger.
     const payload = await buildHomePayload("cat,dog,pollen,dustMite,mold,smoke");
     if (!payload) return res.status(204).end();
-    return res.status(200).json(toOledView(payload));
+    const view = toOledView(payload);
+    try {
+      await setJsonCache("oled-view", view, OLED_VIEW_TTL_SEC);
+    } catch {}
+    return res.status(200).json(view);
   } catch (err) {
     console.error("oled error:", err);
     return res.status(500).json({ error: "oled error" });
@@ -1524,11 +1589,74 @@ async function insights(req, res) {
   }
 }
 
+// ── ai-insight ───────────────────────────────────────────────────────────
+// GET /api/ai-insight — one short, human, tailored insight about what the
+// current air means for focus and breathing. OpenAI writes it when
+// OPENAI_API_KEY is set (see lib/aiInsight.js); otherwise a deterministic
+// writer says the same kind of thing from the same facts, and the response
+// always says which mode produced it. The text is cached per bucketed room
+// state and regenerated only on material change — a breach, a big swing, or
+// a move to steady air — with a 15-minute floor between OpenAI calls (a
+// breach appearing or clearing may regenerate sooner, never faster than
+// 2 minutes), so a poll cycle can't spam the API. Never returns the key.
+async function aiInsight(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  // s-maxage matches the dashboard's 120 s home poll; the insight text
+  // itself is already cached per bucketed room state server-side.
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=120, stale-while-revalidate=60");
+  if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
+  try {
+    const [home, latest, settings, alertState] = await Promise.all([
+      buildHomePayload(req.query?.triggers, req.query?.severity),
+      getLatest(),
+      getSettings(),
+      getAlertState().catch(() => null),
+    ]);
+    if (!home) return res.status(204).end();
+    const facts = aiInsightFacts(home, latest, settings, req.query?.triggers, req.query?.severity, {
+      gasBase: alertState?.gasBase,
+    });
+    const stateKey = aiInsightCacheKey(facts);
+    const hash = createHash("sha256").update(stateKey).digest("hex").slice(0, 20);
+    const perStateKey = `ai-insight:${hash}`;
+    const perState = await getJsonCache(perStateKey).catch(() => null);
+    const last = await getJsonCache("ai-insight:last").catch(() => null);
+    const decision = resolveInsightCache({
+      perState,
+      last,
+      breaches: facts.breaches.map((b) => b.key),
+    });
+    const aiConfigured = Boolean(process.env.OPENAI_API_KEY);
+    if (decision === "per-state" && perState) {
+      return res.status(200).json({ ...perState, receivedAt: home.receivedAt, aiConfigured });
+    }
+    if (decision === "last" && last) {
+      return res.status(200).json({ ...last, receivedAt: home.receivedAt, aiConfigured });
+    }
+    const aiText = await generateAiInsight(facts);
+    const mode = aiText ? "openai" : "deterministic";
+    const entry = {
+      text: aiText || fallbackInsight(facts),
+      mode,
+      generatedAt: Date.now(),
+      breaches: facts.breaches.map((b) => b.key),
+    };
+    await setJsonCache(perStateKey, entry, mode === "openai" ? AI_INSIGHT_TTL_SEC : AI_INSIGHT_FALLBACK_TTL_SEC).catch(() => {});
+    if (mode === "openai") await setJsonCache("ai-insight:last", entry, AI_INSIGHT_TTL_SEC).catch(() => {});
+    return res.status(200).json({ ...entry, receivedAt: home.receivedAt, aiConfigured });
+  } catch (err) {
+    console.error("ai-insight error:", err?.message || err);
+    return res.status(500).json({ error: "ai-insight error" });
+  }
+}
+
 // ── sensors ──────────────────────────────────────────────────────────────
 // GET /api/sensors?range=1h|6h|24h|7d — every BME688 / BSEC channel as
 // downsampled column arrays for the detail charts, plus the latest snapshot.
-// 1h–24h read the full 1-minute snapshot buffer; 7d reads the compact
-// 10-minute climate series (temperature, humidity, CO2, IAQ only).
+// 1h–6h read the full 1-minute snapshot buffer; 24h reads the compact
+// 1-minute climate series (temperature, humidity, CO2, IAQ only — same shape
+// as 7d, which reads the compact 10-minute series). Odor classifier scores
+// are only available from the full buffer, so 24h/7d return odors: null.
 const SENSOR_FIELDS = ["iaq", "staticIaq", "voc", "dVoc", "co2", "tempF", "humidity", "pressHpa", "gasR", "compGas", "gasPct", "airScore", "iaqAcc", "pm25", "pm10"];
 const RANGE_MIN = { "1h": 60, "6h": 360, "24h": 1440 };
 
@@ -1561,6 +1689,19 @@ async function sensors(req, res) {
       const { coarse } = await getHomeSeries();
       const rows = [...coarse].sort((a, b) => a.t - b.t);
       series = bucketMean(rows, 336, {
+        tempF: (r) => (Number.isFinite(Number(r.tc)) ? (r.tc * 9) / 5 + 32 : null),
+        humidity: (r) => r.rh,
+        co2: (r) => r.co2,
+        iaq: (r) => r.iaq,
+        pm25: (r) => r.pm25,
+      });
+    } else if (range === "24h") {
+      // Same compact shape as 7d, from the 1-minute fine series instead of
+      // the 10-minute coarse one — no 1,470-row full-history pull + bucket.
+      const { fine } = await getHomeSeries();
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      const rows = [...fine].filter((p) => Number(p.t) >= cutoff).sort((a, b) => a.t - b.t);
+      series = bucketMean(rows, 240, {
         tempF: (r) => (Number.isFinite(Number(r.tc)) ? (r.tc * 9) / 5 + 32 : null),
         humidity: (r) => r.rh,
         co2: (r) => r.co2,
@@ -1610,8 +1751,10 @@ async function alerts(req, res) {
   }
   if (req.method === "GET") {
     const subs = await loadSubscribers().catch(() => []);
+    const availability = await alertChannels().catch(() => ({ channels: { email: false, sms: false, push: true }, smsReason: null }));
     return res.status(200).json({
-      channels: channelStatus(),
+      channels: availability.channels,
+      smsReason: availability.smsReason,
       subscriberCount: subs.filter((s) => s.verified).length,
       rules: Object.fromEntries(Object.entries(SUBSCRIBER_RULES).map(([k, r]) => [k, { label: r.label, hint: r.hint || "", unit: r.unit, dir: r.dir, def: r.def, min: r.min, max: r.max, easy: r.easy || 0 }])),
     });
@@ -1683,6 +1826,7 @@ const ROUTES = {
   settings,
   "report-card": reportCard,
   insights,
+  "ai-insight": aiInsight,
   sensors,
   alerts,
   "air-tile": airTile,

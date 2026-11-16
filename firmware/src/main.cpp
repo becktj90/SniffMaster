@@ -5,11 +5,14 @@
     - BME688 on Grove I2C (addr 0x76)
     - Built-in SSD1306 128x64 OLED (addr 0x3C)
     - Passive buzzer on D3 (hazard alarm ONLY)
-    - USER button on D0 (D1 and the BOOT button also work)
+    - USER button on the right-hand D1 / GPIO3 only
+    - D0 is the Grove port (logged, not a control)
+    - GPIO9 is the BOOT strap pin and is not a control
 
   Button:
-    tap   = next page (or dismiss an alert / mute a hazard alarm)
-    hold  = push a fresh snapshot to the web portal
+    tap        = next page (or dismiss an alert / mute a hazard alarm)
+    hold ~700ms = start or cancel an Air Sample (not a portal sync)
+    A hazard mute does not start a sample. The portal breath_check command does.
 
   The wall deck (four retro cards) auto-cycles every 10 s. Tap walks the
   detail cards too; after a minute with no tap the deck returns.
@@ -29,7 +32,12 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <esp_idf_version.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
+#include <esp_timer.h>
 #include <math.h>
+#include <time.h>
 #include "bsec2.h"
 #include "bme68xLibrary.h"
 #include "secrets.h"               // WIFI_CREDS, OPENAI_API_KEY, OPENAI_MODEL
@@ -52,10 +60,10 @@
   #define I2C_BEGIN() Wire.begin()
 #endif
 
-// The expansion-board user button is D1 (GPIO3), active low. D0 is the
-// Grove A0 pin, not that button. The BOOT button on the XIAO module is
-// GPIO9. Each pin is tracked on its own: one stuck-low pin must not hold
-// the others in the "already pressed" state.
+// The right-hand USER button is D1 (GPIO3), active low. Only that pin
+// changes pages or starts an Air Sample. D0 (GPIO2) is the Grove port and
+// is logged, not acted on. GPIO9 is a boot strapping pin; a normal press
+// must not depend on it. A stuck Grove or BOOT pin cannot hold D1 down.
 #define BTN_PIN        D1
 #define BTN_LONG_MS    700
 #define BTN_DEBOUNCE_MS 25
@@ -71,10 +79,76 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 100000UL, 100000UL);
 
 #define PAGE_CYCLE_MS       5000UL    // metric cards auto-advance
+#define UI_TASK_WDT_TIMEOUT_MS 8000UL  // reset if the UI task stops making progress
 
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) (sizeof(a) / sizeof(a[0]))
 #endif
+
+enum UiLoopStage : uint8_t {
+  UI_STAGE_BOOT,
+  UI_STAGE_BUTTON,
+  UI_STAGE_GAS_SCAN,
+  UI_STAGE_HOME_SENSORS,
+  UI_STAGE_SENSOR,
+  UI_STAGE_PROCESS_SAMPLE,
+  UI_STAGE_ALARM,
+  UI_STAGE_DISPLAY,
+  UI_STAGE_OLED_HEALTH,
+  UI_STAGE_IDLE,
+};
+
+// This survives a task-watchdog restart and tells us which UI operation was
+// in flight. The network task is deliberately not watched here: it must never
+// be able to take the button, display, or sensor loop down with it.
+RTC_DATA_ATTR static uint8_t lastUiLoopStage = UI_STAGE_BOOT;
+static bool uiTaskWdtActive = false;
+
+static const char* uiLoopStageName(uint8_t stage) {
+  switch (stage) {
+    case UI_STAGE_BUTTON:         return "button";
+    case UI_STAGE_GAS_SCAN:       return "gas scan";
+    case UI_STAGE_HOME_SENSORS:   return "home sensors";
+    case UI_STAGE_SENSOR:         return "sensor";
+    case UI_STAGE_PROCESS_SAMPLE: return "sample processing";
+    case UI_STAGE_ALARM:          return "alarm";
+    case UI_STAGE_DISPLAY:        return "display";
+    case UI_STAGE_OLED_HEALTH:    return "OLED health";
+    case UI_STAGE_IDLE:           return "idle";
+    default:                      return "startup";
+  }
+}
+
+static void resetUiTaskWatchdog() {
+  if (uiTaskWdtActive) esp_task_wdt_reset();
+}
+
+static void startUiTaskWatchdog() {
+#if ESP_IDF_VERSION_MAJOR >= 5
+  esp_task_wdt_config_t config = {};
+  config.timeout_ms = UI_TASK_WDT_TIMEOUT_MS;
+  config.idle_core_mask = 0;
+  config.trigger_panic = true;
+  const esp_err_t initResult = esp_task_wdt_init(&config);
+#else
+  const esp_err_t initResult = esp_task_wdt_init(UI_TASK_WDT_TIMEOUT_MS / 1000UL, true);
+#endif
+
+  if (initResult != ESP_OK && initResult != ESP_ERR_INVALID_STATE) {
+    Serial.printf("[WDT] UI watchdog init failed: %d\n", (int)initResult);
+    return;
+  }
+  const esp_err_t addResult = esp_task_wdt_add(nullptr);
+  if (addResult != ESP_OK) {
+    Serial.printf("[WDT] UI watchdog add failed: %d\n", (int)addResult);
+    return;
+  }
+  uiTaskWdtActive = true;
+  if (esp_reset_reason() == ESP_RST_TASK_WDT)
+    Serial.printf("[WDT] Recovered stalled UI at %s\n", uiLoopStageName(lastUiLoopStage));
+  lastUiLoopStage = UI_STAGE_IDLE;
+  Serial.printf("[WDT] UI recovery armed (%lus)\n", UI_TASK_WDT_TIMEOUT_MS / 1000UL);
+}
 
 // ══════════════════════════════════════════════════════════════
 // BSEC2 configuration
@@ -266,6 +340,7 @@ static bool    ss_pressDisagree = false;
 static EnvPressureTrend gPressTrend;
 static unsigned long lastPressSampleMs = 0;
 static bool    ss_valid = false;
+static bool    ss_publishing = false;   // at least one valid gas + IAQ + CO2 sample
 static float   ss_prevVoc = 0;
 static uint8_t ss_prevTier = 0xFF;
 static int     ss_prevAirScore = 0;
@@ -355,7 +430,7 @@ struct Telemetry {
   float   voc, iaq, staticIaq, co2, tempF, hum, pressHpa, gasR, compGas, gasPct, dVoc;
   uint8_t iaqAcc;
   bool    calReady;
-  char    calText[28];
+  char    calText[96];
   int     airScore;
   uint8_t tier;
   uint8_t odors[ODOR_COUNT];
@@ -381,6 +456,16 @@ struct Telemetry {
   const char* iaqTrend;   // string literals only
   const char* vocTrend;
   char    hazard[12];
+  // Air Sample. Absent on the wire until a sample is attempted. Result fields
+  // keep the latest completed summary; they are not a session history.
+  bool    airSampleKnown;
+  char    airSampleState[12];
+  uint32_t airSampleStartedAt;
+  uint8_t airSampleProgress;
+  float   airSampleBaselineVoc;   // NAN when unknown
+  float   airSampleDeltaVoc;      // NAN when unknown
+  char    airSampleResult[12];
+  uint32_t airSampleCompletedAt;
 };
 static Telemetry gTelem = {};
 
@@ -399,6 +484,7 @@ static uint32_t   gSniffGen = 0;        // bumped per queued event; guards clear
 static bool       gPushRequested = false;
 static volatile bool gScanBusy = false;          // loop owns the BME688; net skips TLS
 static volatile bool gGasScanRequest = false;    // net asks, loop runs the scan
+static volatile bool gAirSampleRequest = false;  // portal breath_check, loop starts it
 
 // net → main: connection info + outdoor data
 struct WeatherData {
@@ -427,11 +513,13 @@ struct OutdoorAQI {
   int   heatF, uv, precipPct;
   char  source[12];             // google | open-meteo
 };
-// Server-computed Home mode metrics (GET /api/home-stats)
+// Server-computed Home mode metrics. Formerly fetched separately from
+// GET /api/home-stats every 2 min; now filled from the /api/oled wall feed
+// (fetchWallStatus, every 60 s), which carries the same scalars.
 struct HomeStats {
   bool  valid;
   unsigned long fetchedMs;
-  int   score;            // Home Air Score 0-100
+  int   score;            // dashboard home health score, 0-100, higher is healthier
   char  grade[12];
   int   comp[4];          // VOC, ventilation, biological, comfort (-1 = missing)
   float dewPointF;
@@ -446,7 +534,7 @@ struct WallStatus {
   unsigned long fetchedMs;
   int   sc, sl, aq, ot;     // home score, minutes smelly, outdoor AQI, outdoor F (-1/-999 = none)
   float uv;                 // NAN = none
-  char  sm[10];             // FRESH | SLIGHT | SMELLY | DANGER | LEARNING
+  char  sm[10];             // FRESH | SLIGHT | SMELLY | DANGER | LEARNING | GAS SHIFT
   char  tr[12];             // trend word
   char  ca[24];             // likely cause
   char  cc[8];              // cause confidence
@@ -697,6 +785,13 @@ static bool homeBaseLooksValid(const HomeOdorBaseline &b) {
 
 static bool bsecPhysicallySettled(float stab, float runIn) { return stab >= 1.0f || runIn >= 1.0f; }
 
+// Accuracy 2 needs the air to change. An hour in a still room often stays at 1.
+// That is a running sensor, not a cold boot, and it is not accuracy 3.
+static bool accuracyLimitedBySteadyAir(uint8_t iaqAcc, float stab, float runIn) {
+  return iaqAcc >= 1 && iaqAcc < ODOR_RUNTIME_ACC_MIN &&
+         bsecPhysicallySettled(stab, runIn) && ss_publishing;
+}
+
 static void updateCalibrationRuntimeState(uint8_t iaqAcc, float stab, float runIn) {
   const bool readySample = (iaqAcc >= ODOR_RUNTIME_ACC_MIN) &&
                            (bsecPhysicallySettled(stab, runIn) || calState.bsecStateLoaded);
@@ -729,15 +824,27 @@ static const char* calibrationStatusText(uint8_t iaqAcc, float stab, float runIn
   if (iaqAcc >= ODOR_RUNTIME_ACC_MIN &&
       (bsecPhysicallySettled(stab, runIn) || calState.bsecStateLoaded))
     return "Finalizing sensor";
-  if (calState.bsecStateLoaded) return "Restoring calibration";
-  if (runIn >= 1.0f) return "Finishing run-in";
+  if (accuracyLimitedBySteadyAir(iaqAcc, stab, runIn)) return "Accuracy low";
+  if (calState.bsecStateLoaded && !bsecPhysicallySettled(stab, runIn))
+    return "Restoring calibration";
+  if (runIn >= 1.0f && !ss_publishing) return "Finishing run-in";
+  if (iaqAcc >= 1 && !bsecPhysicallySettled(stab, runIn)) return "Calibrating sensor";
+  if (iaqAcc == 0 || !bsecPhysicallySettled(stab, runIn)) return "Warming sensor";
   if (iaqAcc >= 1) return "Calibrating sensor";
   return "Warming sensor";
+}
+
+// Posted to the dashboard. The OLED keeps the short status above.
+static const char* calibrationPostText(uint8_t iaqAcc, float stab, float runIn) {
+  if (accuracyLimitedBySteadyAir(iaqAcc, stab, runIn))
+    return "The sensor is running, and BSEC accuracy is still low because the room air has not varied.";
+  return calibrationStatusText(iaqAcc, stab, runIn);
 }
 
 static const char* calibrationBadgeText(uint8_t iaqAcc, float stab, float runIn) {
   if (fullCalibrationReady(iaqAcc)) return nullptr;
   if (bsecCalibrationReady(iaqAcc)) return "BASE";
+  if (accuracyLimitedBySteadyAir(iaqAcc, stab, runIn)) return "RUN";
   if (calState.bsecStateLoaded) return "REST";
   if (iaqAcc == 0 && !bsecPhysicallySettled(stab, runIn)) return "WARM";
   return "~CAL";
@@ -837,8 +944,9 @@ static void applyHomeMlTuning(uint8_t s[ODOR_COUNT], float voc, float iaq,
                               float co2, float gasR, float dVocRise,
                               float hum, uint8_t iaqAcc) {
   if (!bsecCalibrationReady(iaqAcc)) {
-    for (uint8_t i = 0; i < ODOR_COUNT; i++)
-      s[i] = (s[i] >= ODOR_STRONG_CONF) ? (uint8_t)(s[i] * 0.75f) : (uint8_t)(s[i] * 0.35f);
+    // Accuracy below 2 is not a trusted classification. Keep every class in
+    // the background band so a gas shift cannot be posted as a named smell.
+    for (uint8_t i = 0; i < ODOR_COUNT; i++) s[i] = 0;
     return;
   }
 
@@ -945,8 +1053,7 @@ static void deriveExpandedOdors(uint8_t s[ODOR_COUNT], float voc, float iaq,
   s[OD_CITRUS] = clampScore(citrus);
 
   if (!bsecCalibrationReady(iaqAcc)) {
-    for (uint8_t i = BASE_ODOR_COUNT; i < ODOR_COUNT; i++)
-      s[i] = (s[i] >= ODOR_STRONG_CONF) ? (uint8_t)(s[i] * 0.7f) : (uint8_t)(s[i] * 0.4f);
+    for (uint8_t i = 0; i < ODOR_COUNT; i++) s[i] = 0;
   }
 }
 
@@ -1312,7 +1419,10 @@ static void cardOdors() {
     display.setCursor(0, 16);
     display.print(calibrationStatusText(ss_iaqAcc, ss_stabStatus, ss_runInStatus));
     display.setCursor(0, 28);
-    display.print(F("Odor model warming up"));
+    if (accuracyLimitedBySteadyAir(ss_iaqAcc, ss_stabStatus, ss_runInStatus))
+      display.print(F("Needs an air change"));
+    else
+      display.print(F("Odor model warming up"));
   } else {
     // Top 4 odor scores as bars
     uint8_t idx[ODOR_COUNT];
@@ -1327,8 +1437,16 @@ static void cardOdors() {
       drawMiniBar(12 + r * 10, label, ss_scores[idx[r]], pct);
     }
   }
+  uint8_t dominant, runnerUp;
+  topTwo(ss_scores, dominant, runnerUp);
   char buf[24];
-  snprintf(buf, sizeof(buf), "Farts today: %d", fartCount);
+  // Keep this exactly in step with the `primary` value sent to the dashboard.
+  // The card already shows calibration state above the footer.
+  if (ss_scores[dominant] < ODOR_MIN_CONF) {
+    strlcpy(buf, "Dominant: clean air", sizeof(buf));
+  } else {
+    snprintf(buf, sizeof(buf), "Dominant: %s", odorShort[dominant]);
+  }
   display.setCursor(0, 55);
   display.print(buf);
 }
@@ -1624,7 +1742,9 @@ static void cardWallTrace(const NetStatus& n) {
   traceRow("VOC", b, H_VOC, 0.4f, 26);
   snprintf(b, sizeof(b), "%.0f", ss_co2);          traceRow("CO2", b, H_CO2, 80, 40);
   display.setCursor(0, 55);
-  if (!bsecCalibrationReady(ss_iaqAcc)) display.print(F("> SENSOR WARMING"));
+  if (accuracyLimitedBySteadyAir(ss_iaqAcc, ss_stabStatus, ss_runInStatus))
+    display.print(F("> ACCURACY STILL LOW"));
+  else if (!bsecCalibrationReady(ss_iaqAcc)) display.print(F("> SENSOR WARMING"));
   else if (bad)                         display.print(F("> TRACE IS HIGH"));
   else                                  display.print(F("> TRACE IS STEADY"));
 }
@@ -1633,10 +1753,17 @@ static void cardWallOdor(const NetStatus& n) {
   wallChrome("ODOR", hazardActive, n.connected);
   if (!bsecCalibrationReady(ss_iaqAcc)) {
     display.setTextSize(2);
-    display.setCursor(2, 14); display.print(F("WARM"));
-    display.setTextSize(1);
-    display.setCursor(2, 36); display.print(F("> NOSE IS LEARNING"));
-    display.setCursor(2, 46); display.print(F("> ODORS IN A BIT"));
+    if (accuracyLimitedBySteadyAir(ss_iaqAcc, ss_stabStatus, ss_runInStatus)) {
+      display.setCursor(2, 14); display.print(F("LOW ACC"));
+      display.setTextSize(1);
+      display.setCursor(2, 36); display.print(F("> SENSOR IS RUNNING"));
+      display.setCursor(2, 46); display.print(F("> NEEDS AIR CHANGE"));
+    } else {
+      display.setCursor(2, 14); display.print(F("WARM"));
+      display.setTextSize(1);
+      display.setCursor(2, 36); display.print(F("> NOSE IS LEARNING"));
+      display.setCursor(2, 46); display.print(F("> ODORS IN A BIT"));
+    }
     return;
   }
   uint8_t idx[ODOR_COUNT];
@@ -1739,7 +1866,7 @@ static void drawSplash() {
   display.setTextSize(1);
   display.setCursor(28, 34); display.print(F("SNIFFMASTER"));
   display.setCursor(16, 46); display.print(F("WALL DECK ARMED"));
-  display.setCursor(4, 56);  display.print(F("Tap page  Hold sync"));
+  display.setCursor(0, 56);  display.print(F("Tap page. Hold sample"));
   display.display();
 }
 
@@ -1995,6 +2122,9 @@ static void onSensorData(const bme68xData data, const bsecOutputs outputs, const
 // Sample processing (loop task)
 // ══════════════════════════════════════════════════════════════
 
+static void airSampleNote(unsigned long now);
+static void fillAirSampleTelem(Telemetry& t);
+
 static void processSample(unsigned long now) {
   newDataReady = false;
   const bool hadValid = ss_valid;
@@ -2004,6 +2134,9 @@ static void processSample(unsigned long now) {
   const uint8_t iaqAcc = latestIAQAccuracy;
   const float tempF = latestTemp * 9.0f / 5.0f + 32.0f;
   const float hpa = pressToHpa(pressure);
+
+  if (latestGasValid && gasR > 0.0f && isfinite(iaq) && isfinite(co2) && co2 > 0.0f)
+    ss_publishing = true;
 
   const float voc = pushAndSmooth(latestVocRaw);
   const float vocDelta = voc - ss_prevVoc;
@@ -2123,6 +2256,7 @@ static void processSample(unsigned long now) {
   ss_prevAirScore = airScore;
 
   histPush(now);
+  airSampleNote(now);
   const bool advisoryCooling = advisoryEverShown && now - lastAdvisoryMs < ADVISORY_COOLDOWN_MS;
   checkAirAlerts(iaq, voc, co2, hum, scores, iaqAcc, outdoorAqi, ventShutEdge,
                  strcmp(vent.vent, "shut") == 0);
@@ -2138,7 +2272,7 @@ static void processSample(unsigned long now) {
     t.tempF = tempF; t.hum = hum; t.pressHpa = hpa; t.gasR = gasR;
     t.compGas = latestCompGas; t.gasPct = latestGasPct; t.dVoc = vocDelta;
     t.iaqAcc = iaqAcc; t.calReady = calReady;
-    strlcpy(t.calText, calibrationStatusText(iaqAcc, latestStabStatus, latestRunInStatus), sizeof(t.calText));
+    strlcpy(t.calText, calibrationPostText(iaqAcc, latestStabStatus, latestRunInStatus), sizeof(t.calText));
     t.airScore = airScore; t.roomScore = roomScore; t.tier = tier;
     t.dewF = dewF;
     strlcpy(t.vent, vent.vent, sizeof(t.vent));
@@ -2159,11 +2293,16 @@ static void processSample(unsigned long now) {
     t.rawHum = bsecRawExtras ? latestRawHum : NAN;
     t.iaqTrend = getIaqTrend(); t.vocTrend = getVocTrend();
     strlcpy(t.hazard, hazardLabel(airScore, hazardActive), sizeof(t.hazard));
+    fillAirSampleTelem(t);
   }
 
   // ── BSEC state persistence ────────────────────────────────
-  if (calReady) {
+  // Save from accuracy 1 so an hour of still air survives a reboot.
+  // saveBsecState() refuses accuracy 0. Accuracy 2 is not invented here.
+  if (iaqAcc >= 1) {
+    const bool firstUseful = !bsecEverSaved;
     if (iaqAcc == 3 && !bsecAcc3Saved) { saveBsecState(); bsecAcc3Saved = true; }
+    else if (firstUseful) saveBsecState();
     else if (homeBase.ready && calState.homeBaseDirty) saveBsecState();
     else if (now - lastBsecSaveMs >= BSEC_SAVE_MS) saveBsecState();
   }
@@ -2184,31 +2323,407 @@ static void processSample(unsigned long now) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// Air Sample — VOC response check, not a health or alcohol test
+// ══════════════════════════════════════════════════════════════
+// Uses the existing BSEC2 breath-VOC equivalent. No second sensor path.
+// Windows: 10 s baseline, then 25 s measure (inside the 20–30 s band).
+// The OLED states that total (35 s). LP samples arrive about every 3 s,
+// so a window needs at least 3 gas-valid, heat-stable samples.
+//
+// Thresholds on the smoothed delta (measure mean − baseline mean), ppm:
+//   mild   >= 0.5
+//   strong >= 1.5
+//   else   no meaningful VOC shift
+// A negative or tiny rise stays "no meaningful shift".
+
+static constexpr unsigned long SAMPLE_BASE_MS    = 10000UL;
+static constexpr unsigned long SAMPLE_MEASURE_MS = 25000UL;
+static constexpr unsigned long SAMPLE_RESULT_MS  = 10000UL;
+static constexpr unsigned long SAMPLE_REJECT_MS  = 2500UL;
+static constexpr unsigned long SAMPLE_CANCEL_MS  = 1500UL;
+static constexpr unsigned long SAMPLE_GAP_MS     = 9000UL; // ~3 missed LP cycles
+static constexpr uint8_t SAMPLE_MIN_N            = 3;
+static constexpr float SAMPLE_MILD_PPM           = 0.5f;
+static constexpr float SAMPLE_STRONG_PPM         = 1.5f;
+static constexpr unsigned SAMPLE_TOTAL_S =
+    (unsigned)((SAMPLE_BASE_MS + SAMPLE_MEASURE_MS) / 1000UL);
+
+enum AirPhase : uint8_t { AP_IDLE, AP_BASE, AP_MEASURE, AP_RESULT, AP_REJECT, AP_CANCEL };
+
+struct SampleAcc {
+  float voc, iaq, co2, gasR, hum, tempF;
+  uint16_t n;
+};
+
+static AirPhase apPhase = AP_IDLE;
+static unsigned long apPhaseMs = 0;
+static unsigned long apLastGoodMs = 0;
+static SampleAcc apBase = {};
+static SampleAcc apMeas = {};
+static float apBaselineVoc = NAN;
+static float apLiveDelta = NAN;
+static float apPrevVoc = NAN;
+static float apSavedBase = NAN;
+static float apSavedDelta = NAN;
+static char apStatus[16] = "sampling";
+static char apSavedResult[12] = "";
+static char apReject[32] = "";
+static uint32_t apStartedAt = 0;
+static uint32_t apCompletedAt = 0;
+static uint8_t apProgress = 0;
+static bool apHasResult = false;
+
+static uint32_t epochNow() {
+  const time_t t = time(nullptr);
+  return (t > 1600000000L) ? (uint32_t)t : 0;
+}
+
+static bool airSampleBusy() { return apPhase != AP_IDLE; }
+
+static const char* airSampleStateName() {
+  switch (apPhase) {
+    case AP_BASE:    return "baseline";
+    case AP_MEASURE: return "measure";
+    case AP_RESULT:  return "result";
+    case AP_REJECT:  return "rejected";
+    case AP_CANCEL:  return "cancelled";
+    default:         return "idle";
+  }
+}
+
+static const char* sampleRejectReason() {
+  if (!ss_valid) return "no sensor data";
+  if (!latestGasValid) return "gas not valid";
+  if (!(ss_gasR > 0.0f)) return "no gas reading";
+  if (!bsecPhysicallySettled(ss_stabStatus, ss_runInStatus)) return "not stabilized";
+  return nullptr;
+}
+
+static void fillAirSampleTelem(Telemetry& t) {
+  t.airSampleKnown = (apPhase != AP_IDLE) || apHasResult || apStartedAt != 0;
+  strlcpy(t.airSampleState, airSampleStateName(), sizeof(t.airSampleState));
+  t.airSampleStartedAt = apStartedAt;
+  t.airSampleProgress = apProgress;
+  if (apPhase == AP_BASE && apBase.n) t.airSampleBaselineVoc = apBase.voc / apBase.n;
+  else if (isfinite(apBaselineVoc))   t.airSampleBaselineVoc = apBaselineVoc;
+  else                                t.airSampleBaselineVoc = apSavedBase;
+  if (apPhase == AP_MEASURE && isfinite(apLiveDelta)) t.airSampleDeltaVoc = apLiveDelta;
+  else if (apHasResult)                               t.airSampleDeltaVoc = apSavedDelta;
+  else                                                t.airSampleDeltaVoc = NAN;
+  strlcpy(t.airSampleResult, apSavedResult, sizeof(t.airSampleResult));
+  t.airSampleCompletedAt = apCompletedAt;
+}
+
+static void publishAirSampleTelem() {
+  if (!gLock) return;
+  LockGuard g;
+  fillAirSampleTelem(gTelem);
+}
+
+static void sampleAccAdd(SampleAcc& a) {
+  a.voc += ss_voc; a.iaq += ss_iaq; a.co2 += ss_co2;
+  a.gasR += ss_gasR; a.hum += ss_hum; a.tempF += ss_tempF;
+  a.n++;
+}
+
+static void airSampleNote(unsigned long now) {
+  if (apPhase != AP_BASE && apPhase != AP_MEASURE) return;
+  if (!ss_valid || !latestGasValid || !(ss_gasR > 0.0f)) return;
+  apLastGoodMs = now;
+  if (apPhase == AP_BASE) {
+    sampleAccAdd(apBase);
+    return;
+  }
+  sampleAccAdd(apMeas);
+  if (!apMeas.n || !isfinite(apBaselineVoc)) return;
+  apLiveDelta = (apMeas.voc / apMeas.n) - apBaselineVoc;
+  if (isfinite(apPrevVoc) && ss_voc > apPrevVoc + 0.05f && apLiveDelta > 0.15f)
+    strlcpy(apStatus, "signal rising", sizeof(apStatus));
+  else if (isfinite(apPrevVoc) && fabsf(ss_voc - apPrevVoc) <= 0.08f && apMeas.n >= 2)
+    strlcpy(apStatus, "stable", sizeof(apStatus));
+  else
+    strlcpy(apStatus, "sampling", sizeof(apStatus));
+  apPrevVoc = ss_voc;
+}
+
+static void airSampleFinish(const char* token) {
+  strlcpy(apSavedResult, token, sizeof(apSavedResult));
+  apSavedBase = apBaselineVoc;
+  apSavedDelta = apLiveDelta;
+  apHasResult = true;
+  apCompletedAt = epochNow();
+  apProgress = 100;
+  apPhase = AP_RESULT;
+  apPhaseMs = millis();
+  Serial.printf("[SAMPLE] complete %s dVOC=%.2f\n", token, apSavedDelta);
+  publishAirSampleTelem();
+  requestPortalPush();
+  forceRedraw = true;
+}
+
+static void airSampleLongPress() {
+  if (hazardActive || alarmStepsLeft) {
+    Serial.println(F("[SAMPLE] rejected hazard alarm"));
+    return;
+  }
+  if (apPhase == AP_BASE || apPhase == AP_MEASURE) {
+    Serial.println(F("[SAMPLE] cancelled"));
+    apReject[0] = 0;
+    apPhase = AP_CANCEL;
+    apPhaseMs = millis();
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  if (apPhase != AP_IDLE) {
+    apPhase = AP_IDLE;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  const char* why = sampleRejectReason();
+  if (why) {
+    Serial.printf("[SAMPLE] rejected %s\n", why);
+    strlcpy(apReject, why, sizeof(apReject));
+    apPhase = AP_REJECT;
+    apPhaseMs = millis();
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  apBase = {};
+  apMeas = {};
+  apBaselineVoc = NAN;
+  apLiveDelta = NAN;
+  apPrevVoc = NAN;
+  apProgress = 0;
+  strlcpy(apStatus, "sampling", sizeof(apStatus));
+  apStartedAt = epochNow();
+  apPhase = AP_BASE;
+  apPhaseMs = millis();
+  apLastGoodMs = apPhaseMs;
+  Serial.println(F("[SAMPLE] start"));
+  publishAirSampleTelem();
+  requestPortalPush();
+  forceRedraw = true;
+}
+
+static void airSampleTick(unsigned long now) {
+  if (apPhase == AP_IDLE) return;
+  if (hazardActive && (apPhase == AP_BASE || apPhase == AP_MEASURE)) {
+    Serial.println(F("[SAMPLE] cancelled hazard"));
+    apPhase = AP_IDLE;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  if (apPhase == AP_REJECT) {
+    if (now - apPhaseMs >= SAMPLE_REJECT_MS) {
+      apPhase = AP_IDLE;
+      forceRedraw = true;
+      publishAirSampleTelem();
+    }
+    return;
+  }
+  if (apPhase == AP_CANCEL) {
+    if (now - apPhaseMs >= SAMPLE_CANCEL_MS) {
+      apPhase = AP_IDLE;
+      forceRedraw = true;
+      publishAirSampleTelem();
+    }
+    return;
+  }
+  if (apPhase == AP_RESULT) {
+    if (now - apPhaseMs >= SAMPLE_RESULT_MS) {
+      apPhase = AP_IDLE;
+      forceRedraw = true;
+      publishAirSampleTelem();
+    }
+    return;
+  }
+  if (now - apLastGoodMs >= SAMPLE_GAP_MS) {
+    Serial.println(F("[SAMPLE] cancelled sensor data unavailable"));
+    strlcpy(apReject, "Sensor data lost", sizeof(apReject));
+    apPhase = AP_CANCEL;
+    apPhaseMs = now;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  const unsigned long total = SAMPLE_BASE_MS + SAMPLE_MEASURE_MS;
+  if (apPhase == AP_BASE) {
+    const unsigned long elapsed = now - apPhaseMs;
+    apProgress = elapsed >= total ? 99 : (uint8_t)((elapsed * 100UL) / total);
+    if (elapsed < SAMPLE_BASE_MS) return;
+    if (apBase.n < SAMPLE_MIN_N) {
+      Serial.printf("[SAMPLE] rejected baseline too thin (%u)\n", apBase.n);
+      strlcpy(apReject, "Baseline too thin", sizeof(apReject));
+      apPhase = AP_REJECT;
+      apPhaseMs = now;
+      publishAirSampleTelem();
+      forceRedraw = true;
+      return;
+    }
+    apBaselineVoc = apBase.voc / apBase.n;
+    apPhase = AP_MEASURE;
+    apPhaseMs = now;
+    apLastGoodMs = now;
+    strlcpy(apStatus, "sampling", sizeof(apStatus));
+    Serial.printf("[SAMPLE] baseline-ready n=%u voc=%.2f iaq=%.0f co2=%.0f gas=%.0f rh=%.0f t=%.1f\n",
+                  apBase.n, apBaselineVoc, apBase.iaq / apBase.n, apBase.co2 / apBase.n,
+                  apBase.gasR / apBase.n, apBase.hum / apBase.n, apBase.tempF / apBase.n);
+    publishAirSampleTelem();
+    requestPortalPush();
+    forceRedraw = true;
+    return;
+  }
+  const unsigned long elapsed = now - apPhaseMs;
+  const unsigned long into = SAMPLE_BASE_MS + elapsed;
+  apProgress = into >= total ? 99 : (uint8_t)((into * 100UL) / total);
+  if (elapsed < SAMPLE_MEASURE_MS) return;
+  if (apMeas.n < SAMPLE_MIN_N || !isfinite(apBaselineVoc)) {
+    Serial.printf("[SAMPLE] cancelled measure too thin (%u)\n", apMeas.n);
+    strlcpy(apReject, "Measure too thin", sizeof(apReject));
+    apPhase = AP_CANCEL;
+    apPhaseMs = now;
+    publishAirSampleTelem();
+    forceRedraw = true;
+    return;
+  }
+  apLiveDelta = (apMeas.voc / apMeas.n) - apBaselineVoc;
+  const char* token = "no_shift";
+  if (apLiveDelta >= SAMPLE_STRONG_PPM) token = "strong";
+  else if (apLiveDelta >= SAMPLE_MILD_PPM) token = "mild";
+  airSampleFinish(token);
+}
+
+static void renderAirSample() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(F("AIR SAMPLE"));
+  for (int x = 0; x < SCREEN_WIDTH; x += 2) display.drawPixel(x, 8, SSD1306_WHITE);
+
+  if (apPhase == AP_REJECT || apPhase == AP_CANCEL) {
+    display.setCursor(0, 16);
+    display.print(apPhase == AP_REJECT ? F("NOT READY") : F("CANCELLED"));
+    if (apReject[0]) { display.setCursor(0, 30); display.print(apReject); }
+    display.setCursor(0, 52);
+    display.print(apPhase == AP_REJECT ? F("Hold again to retry") : F("Sample stopped"));
+    display.display();
+    return;
+  }
+
+  if (apPhase == AP_RESULT) {
+    if (isfinite(apSavedDelta)) {
+      char b[12];
+      snprintf(b, sizeof(b), "%+.2f", apSavedDelta);
+      printRight(0, b);
+    }
+    display.setCursor(0, 14);
+    if (!strcmp(apSavedResult, "strong")) display.print(F("Strong VOC response"));
+    else if (!strcmp(apSavedResult, "mild")) display.print(F("Mild VOC response"));
+    else {
+      display.print(F("No meaningful"));
+      display.setCursor(0, 24);
+      display.print(F("VOC shift"));
+    }
+    display.setCursor(0, 38);
+    display.print(F("VOC response only -"));
+    display.setCursor(0, 48);
+    display.print(F("not a health or"));
+    display.setCursor(0, 56);
+    display.print(F("alcohol test."));
+    display.display();
+    return;
+  }
+
+  const unsigned long now = millis();
+  unsigned long remainMs = 0;
+  if (apPhase == AP_BASE) {
+    const unsigned long elapsed = now - apPhaseMs;
+    const unsigned long total = SAMPLE_BASE_MS + SAMPLE_MEASURE_MS;
+    remainMs = elapsed >= total ? 0 : total - elapsed;
+  } else if (now - apPhaseMs < SAMPLE_MEASURE_MS) {
+    remainMs = SAMPLE_MEASURE_MS - (now - apPhaseMs);
+  }
+  const unsigned sec = (unsigned)((remainMs + 999UL) / 1000UL);
+
+  if (apPhase == AP_BASE) {
+    char line[24];
+    snprintf(line, sizeof(line), "exhaled air - %u sec", SAMPLE_TOTAL_S);
+    display.setCursor(0, 12);
+    display.print(F("Hold near fresh/"));
+    display.setCursor(0, 22);
+    display.print(line);
+  } else {
+    display.setCursor(0, 12);
+    display.print(apStatus);
+    char b[20];
+    if (isfinite(apLiveDelta)) snprintf(b, sizeof(b), "dVOC %+.2f", apLiveDelta);
+    else strlcpy(b, "dVOC --", sizeof(b));
+    display.setCursor(0, 22);
+    display.print(b);
+  }
+  display.setTextSize(2);
+  char count[8];
+  snprintf(count, sizeof(count), "%us", sec);
+  display.setCursor(0, 34);
+  display.print(count);
+  display.setTextSize(1);
+  display.setCursor(78, 40);
+  display.print(apPhase == AP_BASE ? F("BASE") : F("MEAS"));
+  const int markTicks = 16;
+  const int mark = (apProgress * markTicks) / 100;
+  for (int i = 0; i < markTicks; i++) {
+    const int x = 4 + i * 7;
+    if (i == mark && wallBlink()) display.fillRect(x, 56, 4, 5, SSD1306_WHITE);
+    else display.drawRect(x, 56, 4, 5, SSD1306_WHITE);
+  }
+  display.display();
+}
+
+// ══════════════════════════════════════════════════════════════
 // Button (loop task)
 // ══════════════════════════════════════════════════════════════
 
 struct BtnTrack {
-  uint8_t gpio;
-  bool    armed;       // has been seen released since boot
-  bool    stable;      // debounced "down"
+  gpio_num_t gpio;
+  volatile uint8_t level;   // 1 = released, sampled by the timer
+  volatile bool    fell;    // latched press, survives an OLED transfer
+  uint8_t lowSamples;       // consecutive low timer ticks, for debounce
+  bool    armed;            // has been seen released since boot
+  bool    stable;           // debounced "down"
   bool    lastRaw;
   unsigned long changeMs;
   unsigned long downMs;
   bool    longFired;
 };
 static BtnTrack btnTrack[] = {
-  { D1, false, false, false, 0, 0, false },
-  { D0, false, false, false, 0, 0, false },
-  { 9,  false, false, false, 0, 0, false },
+  { GPIO_NUM_3, 1, false, 0, false, false, false, 0, 0, false },  // D1, the only user button
 };
-// Set from a falling-edge interrupt. display() blocks for ~160 ms while the
-// OLED frame is sent, which is long enough to miss a whole tap if we only
-// poll in loop().
-static volatile bool btnFell[3] = {};
-static void IRAM_ATTR btnIsr0() { btnFell[0] = true; }
-static void IRAM_ATTR btnIsr1() { btnFell[1] = true; }
-static void IRAM_ATTR btnIsr2() { btnFell[2] = true; }
-static void (*const btnIsr[3])() = { btnIsr0, btnIsr1, btnIsr2 };
+// display() blocks the loop for ~95–160 ms, and Wi-Fi can clear a GPIO
+// pull-up. A 10 ms timer keeps sampling D1 and re-arms its pull-up. One
+// 10 ms low sample is not a tap: the edge latches on the third low sample.
+// D0 and GPIO9 are not sampled as buttons.
+static bool btnTimerOn = false;
+
+static void buttonSample(void*) {
+  for (BtnTrack& b : btnTrack) {
+    gpio_set_direction(b.gpio, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(b.gpio, GPIO_PULLUP_ONLY);
+    const uint8_t level = gpio_get_level(b.gpio) ? 1 : 0;
+    if (level == 0) {
+      if (b.lowSamples < 255) b.lowSamples++;
+      // 30 ms low before the edge counts, so a one-sample glitch is ignored.
+      if (btnTimerOn && b.lowSamples == 3) b.fell = true;
+    } else {
+      b.lowSamples = 0;
+    }
+    b.level = level;
+  }
+}
 
 static void onShortPress() {
   if (alarmStepsLeft) alarmStop();
@@ -2223,6 +2738,7 @@ static void onShortPress() {
     dismissOverlay();
     return;
   }
+  if (airSampleBusy()) return;   // a sample owns the screen until it finishes or is cancelled
   displayPage = (displayPage + 1) % NUM_PAGES;
   lastPageAdvanceMs = millis();
   lastDeckTapMs = lastPageAdvanceMs;
@@ -2234,41 +2750,59 @@ static void onLongPress() {
     alarmStop();
     hazardMuted = true;
     dismissOverlay();
+    Serial.println(F("[BTN] hold muted hazard"));
+    return;   // muting an alarm must not start an Air Sample
+  }
+  airSampleLongPress();
+}
+
+static void airSampleFromCommand() {
+  if (apPhase != AP_IDLE) {
+    Serial.println(F("[SAMPLE] breath_check ignored, sample active"));
     return;
   }
-  Serial.println(F("[BTN] Hold → portal sync"));
-  requestPortalPush();
-  showOverlay("Portal Sync", "Fresh snapshot\nqueued for upload.", 1500, false);
+  airSampleLongPress();
 }
 
 static void armButtonPins() {
-  for (uint8_t i = 0; i < 3; i++) {
-    BtnTrack& b = btnTrack[i];
-    pinMode(b.gpio, INPUT_PULLUP);
-    gpio_pullup_en((gpio_num_t)b.gpio);
-    gpio_pulldown_dis((gpio_num_t)b.gpio);
-    attachInterrupt(digitalPinToInterrupt(b.gpio), btnIsr[i], FALLING);
+  // Read Grove D0 and the BOOT strap once for the idle log. Do not pull
+  // them up on the timer, and do not treat either as the user button.
+  gpio_set_direction(GPIO_NUM_2, GPIO_MODE_INPUT);
+  gpio_set_direction(GPIO_NUM_9, GPIO_MODE_INPUT);
+  buttonSample(nullptr);   // record idle levels before edges count
+  const esp_timer_create_args_t args = {
+    .callback = buttonSample,
+    .arg = nullptr,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name = "btn",
+    .skip_unhandled_events = true,
+  };
+  esp_timer_handle_t timer = nullptr;
+  if (esp_timer_create(&args, &timer) == ESP_OK &&
+      esp_timer_start_periodic(timer, 10000) == ESP_OK) {
+    btnTimerOn = true;
   }
+  // Logged after USB serial is up. D0 is Grove. GPIO9 is the strap pin.
+  Serial.printf("[BTN] timer=%d idle d1=%u d0=%u boot=%u\n",
+                btnTimerOn ? 1 : 0, btnTrack[0].level,
+                (unsigned)gpio_get_level(GPIO_NUM_2),
+                (unsigned)gpio_get_level(GPIO_NUM_9));
 }
 
 static void handleButton(unsigned long now) {
-  static unsigned long lastPullMs = 0;
-  // Wi-Fi bring-up can clear the pull-ups on these pins. Put them back
-  // without detaching the edge interrupt (gpio pull only, no pinMode).
-  if (lastPullMs && now - lastPullMs >= 2000UL) {
-    for (BtnTrack& b : btnTrack) gpio_pullup_en((gpio_num_t)b.gpio);
-    lastPullMs = now;
-  } else if (!lastPullMs) {
-    lastPullMs = now;
-  }
+  for (BtnTrack& b : btnTrack) {
+    bool fell = false;
+    uint8_t level;
+    noInterrupts();
+    fell = b.fell;
+    b.fell = false;
+    level = b.level;
+    interrupts();
+    if (!btnTimerOn) level = gpio_get_level(b.gpio) ? 1 : 0;
 
-  for (uint8_t i = 0; i < 3; i++) {
-    BtnTrack& b = btnTrack[i];
-    const bool fell = btnFell[i];
-    if (fell) btnFell[i] = false;
-    const bool low = digitalRead(b.gpio) == LOW || fell;
+    const bool low = level == 0 || fell;
     if (!b.armed) {
-      if (digitalRead(b.gpio) == HIGH) b.armed = true;
+      if (level == 1) b.armed = true;
       continue;
     }
     if (low != b.lastRaw) { b.lastRaw = low; b.changeMs = now; }
@@ -2279,22 +2813,22 @@ static void handleButton(unsigned long now) {
       b.downMs = now;
       b.longFired = false;
       // Tap completed entirely during an OLED transfer: the pin is already up.
-      if (fell && digitalRead(b.gpio) == HIGH) {
+      if (fell && level == 1) {
         b.stable = false;
         b.lastRaw = false;
-        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        Serial.printf("[BTN] tap gpio=%d\n", (int)b.gpio);
         onShortPress();
       }
     } else if (low && b.stable) {
       if (!b.longFired && now - b.downMs >= BTN_LONG_MS) {
         b.longFired = true;
-        Serial.printf("[BTN] hold gpio=%u\n", b.gpio);
+        Serial.printf("[BTN] hold gpio=%d\n", (int)b.gpio);
         onLongPress();
       }
     } else if (!low && b.stable) {
       b.stable = false;
       if (!b.longFired) {
-        Serial.printf("[BTN] tap gpio=%u\n", b.gpio);
+        Serial.printf("[BTN] tap gpio=%d\n", (int)b.gpio);
         onShortPress();
       }
     }
@@ -2345,12 +2879,10 @@ static float         lat = 0, lon = 0;
 static int32_t       utcOffsetSec = 0;
 static unsigned long lastLocationTryMs = 0;
 static unsigned long envOkMs = 0, envTryMs = 0;
-static unsigned long homeOkMs = 0, homeTryMs = 0;
 static unsigned long wallOkMs = 0, wallTryMs = 0;
 static unsigned long snarkOkMs = 0, snarkTryMs = 0;
 static int           snarkScore = -1000;    // device air score at last snark
-static const unsigned long HOME_STATS_MS   = 2UL * 60UL * 1000UL;
-static const unsigned long WALL_STATS_MS   = 60UL * 1000UL;   // server edge-caches 30 s
+static const unsigned long WALL_STATS_MS   = 60UL * 1000UL;   // server edge-caches 60 s
 static const unsigned long SNARK_REFRESH_MS = 20UL * 60UL * 1000UL;
 static const unsigned long SNARK_RETRY_MS   = 5UL * 60UL * 1000UL;
 
@@ -2669,60 +3201,6 @@ static bool fetchGoogleEnv() {
   return true;
 }
 
-// ── Dashboard → device: server-computed Home metrics ─────────
-static bool fetchHomeStats() {
-  String body;
-  int code = request(dashboardUrl("/api/home-stats"), nullptr, &body, false, 10000);
-  if (code != 200) { Serial.printf("[WEB] home-stats failed: %d\n", code); return false; }
-
-  // Filter keeps only what the OLED shows (the full response is ~7 KB)
-  JsonDocument filter;
-  filter["score"]["value"] = true;
-  filter["score"]["grade"] = true;
-  filter["score"]["components"][0]["key"] = true;
-  filter["score"]["components"][0]["score"] = true;
-  filter["climate"]["dewPointC"] = true;
-  filter["biological"]["mold"]["pct"] = true;
-  filter["biological"]["mold"]["category"] = true;
-  filter["biological"]["dustMite"]["pct"] = true;
-  filter["biological"]["dustMite"]["category"] = true;
-  filter["biological"]["dryAir"]["pct"] = true;
-  filter["biological"]["dryAir"]["category"] = true;
-  filter["petAllergen"]["index"] = true;
-  filter["petAllergen"]["level"] = true;
-  filter["visitor"]["headline"] = true;
-  JsonDocument doc;
-  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return false;
-  if (doc["score"]["value"].isNull()) return false;
-
-  HomeStats h = {};
-  h.valid = true;
-  h.fetchedMs = millis();
-  h.score = doc["score"]["value"] | 0;
-  strlcpy(h.grade, doc["score"]["grade"] | "", sizeof(h.grade));
-  static const char* const KEYS[4] = { "voc", "ventilation", "biological", "comfort" };
-  for (int i = 0; i < 4; i++) {
-    h.comp[i] = -1;
-    for (JsonObject c : doc["score"]["components"].as<JsonArray>())
-      if (strcmp(c["key"] | "", KEYS[i]) == 0 && !c["score"].isNull()) h.comp[i] = c["score"].as<int>();
-  }
-  JsonVariant dp = doc["climate"]["dewPointC"];
-  h.dewPointF = dp.isNull() ? NAN : dp.as<float>() * 9.0f / 5.0f + 32.0f;
-  JsonObject bio = doc["biological"];
-  h.moldPct = bio["mold"]["pct"] | 0;      strlcpy(h.moldCat, bio["mold"]["category"] | "--", sizeof(h.moldCat));
-  h.mitePct = bio["dustMite"]["pct"] | 0;  strlcpy(h.miteCat, bio["dustMite"]["category"] | "--", sizeof(h.miteCat));
-  h.dryPct  = bio["dryAir"]["pct"] | 0;    strlcpy(h.dryCat, bio["dryAir"]["category"] | "--", sizeof(h.dryCat));
-  h.petIdx  = doc["petAllergen"]["index"] | 0;
-  strlcpy(h.petLevel, doc["petAllergen"]["level"] | "--", sizeof(h.petLevel));
-  strlcpy(h.headline, doc["visitor"]["headline"] | "", sizeof(h.headline));
-
-  Serial.printf("[WEB] home-stats: score=%d %s\n", h.score, h.grade);
-  LockGuard g;
-  gNet.home = h;
-  return true;
-}
-
-
 // ── Dashboard → device: pre-formatted wall display feed ──────
 static bool fetchWallStatus() {
   String body;
@@ -2750,9 +3228,33 @@ static bool fetchWallStatus() {
   strlcpy(w.pn, doc["pn"] | "", sizeof(w.pn));
   strlcpy(w.wn, doc["wn"] | "", sizeof(w.wn));
   for (int i = 0; i < 2; i++) strlcpy(w.ac[i], doc["ac"][i] | "", sizeof(w.ac[i]));
+  // Home health scalars ride the wall feed now (see toOledView): fill the
+  // HomeStats the OLED screens render, so the separate /api/home-stats poll
+  // is no longer needed. Only when a score is present, mirroring the old
+  // fetchHomeStats() requirement; every field degrades to its "missing"
+  // default when an older server omits it.
+  HomeStats h = {};
+  bool haveHome = false;
+  if (!doc["sc"].isNull()) {
+    h.valid = true;
+    h.fetchedMs = millis();
+    h.score = w.sc;
+    strlcpy(h.grade, doc["gr"] | "", sizeof(h.grade));
+    for (int i = 0; i < 4; i++) h.comp[i] = doc["cp"][i] | -1;
+    JsonVariant dp = doc["dp"];
+    h.dewPointF = dp.isNull() ? NAN : dp.as<float>();
+    h.moldPct = doc["mo"] | 0;      strlcpy(h.moldCat, doc["mc"] | "--", sizeof(h.moldCat));
+    h.mitePct = doc["mi"] | 0;      strlcpy(h.miteCat, doc["ic"] | "--", sizeof(h.miteCat));
+    h.dryPct  = doc["dr"] | 0;      strlcpy(h.dryCat, doc["dc"] | "--", sizeof(h.dryCat));
+    h.petIdx  = doc["pi"] | 0;
+    strlcpy(h.petLevel, doc["pe"] | "--", sizeof(h.petLevel));
+    strlcpy(h.headline, doc["hl"] | "", sizeof(h.headline));
+    haveHome = true;
+  }
   Serial.printf("[WEB] oled: smell=%s cause=%s allergen=%s pollen=%s\n", w.sm, w.ca, w.al, w.pl);
   LockGuard g;
   gNet.wall = w;
+  if (haveHome) gNet.home = h;
   return true;
 }
 
@@ -2789,14 +3291,20 @@ static bool fetchSnark(const Telemetry& t) {
   NetStatus ns;
   { LockGuard g; ns = gNet; }
 
-  char facts[400];
+  char facts[560];
   struct tm tm;
   char clock[12] = "unknown";
   if (localTimeNow(&tm)) strftime(clock, sizeof(clock), "%I:%M %p", &tm);
+  const bool steadyLow = !t.calReady && t.iaqAcc >= 1 && t.iaqAcc < 2 &&
+                         (t.stab || t.runIn) && t.gasValid && t.gasR > 0.0f && t.co2 > 0.0f;
+  const char* calNote = t.calReady ? "" :
+      (steadyLow
+         ? " (sensor running; BSEC accuracy still low because room air has not varied)"
+         : " (sensor still calibrating)");
   int n = snprintf(facts, sizeof(facts),
                    "Time %s. Device air score %d/100 (higher is worse). IAQ %.0f%s. VOC %.2f ppm. "
                    "CO2 est %.0f ppm. %.0fF, %.0f%%RH. Top smell: %s %u%%. Farts today: %d.",
-                   clock, t.airScore, t.iaq, t.calReady ? "" : " (sensor still calibrating)",
+                   clock, t.airScore, t.iaq, calNote,
                    t.voc, t.co2, t.tempF, t.hum,
                    t.primaryIdx < ODOR_COUNT ? odorNames[t.primaryIdx] : "nothing", t.primaryConf,
                    t.fartCount);
@@ -2893,6 +3401,9 @@ static void applyRemoteCommand(JsonVariantConst cmd) {
     Serial.println(F("[WEB] Remote command: refresh"));
     pushPending = true;
     lastPostAttemptMs = 0;
+  } else if (strcmp(action, "breath_check") == 0) {
+    gAirSampleRequest = true;
+    Serial.println(F("[WEB] Remote command: breath_check"));
   } else if (strcmp(action, "gas_scan") == 0) {
     if (gScanBusy || gGasScanRequest) {
       Serial.println(F("[GAS] scan busy — command dropped"));
@@ -2967,6 +3478,17 @@ static bool sendSnapshot(const Telemetry& t, String* responseOut) {
   doc["iaqTrend"]   = t.iaqTrend;
   doc["vocTrend"]   = t.vocTrend;
   doc["calibration"] = t.calText;
+  if (t.airSampleKnown) {
+    doc["airSampleState"] = t.airSampleState;
+    if (t.airSampleStartedAt) doc["airSampleStartedAt"] = t.airSampleStartedAt;
+    doc["airSampleProgress"] = t.airSampleProgress;
+    if (isfinite(t.airSampleBaselineVoc))
+      doc["airSampleBaselineVoc"] = roundf(t.airSampleBaselineVoc * 100.0f) / 100.0f;
+    if (isfinite(t.airSampleDeltaVoc))
+      doc["airSampleDeltaVoc"] = roundf(t.airSampleDeltaVoc * 100.0f) / 100.0f;
+    if (t.airSampleResult[0]) doc["airSampleResult"] = t.airSampleResult;
+    if (t.airSampleCompletedAt) doc["airSampleCompletedAt"] = t.airSampleCompletedAt;
+  }
   doc["hazard"]     = t.hazard;
   doc["primary"]    = t.primaryIdx < ODOR_COUNT ? odorNames[t.primaryIdx] : "Clean Air";
   doc["primaryConf"] = t.primaryConf;
@@ -3110,10 +3632,6 @@ static void task(void*) {
                  (!envTryMs || now - envTryMs >= OPTIONAL_RETRY_MS)) {
         envTryMs = now;
         if (fetchGoogleEnv()) envOkMs = millis();
-      } else if (lastPostOkMs && (!homeOkMs || now - homeOkMs >= HOME_STATS_MS) &&
-                 (!homeTryMs || now - homeTryMs >= OPTIONAL_RETRY_MS)) {
-        homeTryMs = now;
-        if (fetchHomeStats()) homeOkMs = millis();
       } else if (lastPostOkMs && (!wallOkMs || now - wallOkMs >= WALL_STATS_MS) &&
                  (!wallTryMs || now - wallTryMs >= OPTIONAL_RETRY_MS)) {
         wallTryMs = now;
@@ -3244,6 +3762,8 @@ static void runGasScan() {
   uint8_t nSeen = 0;
   const unsigned long deadline = millis() + 15000UL;
   while (programmed && nSeen < HEATER_STEP_COUNT && (long)(deadline - millis()) > 0) {
+    lastUiLoopStage = UI_STAGE_GAS_SCAN;
+    resetUiTaskWatchdog();
     handleButton(millis());
     alarmTick(millis());
     if (!bme.fetchData()) { delay(20); continue; }
@@ -3290,12 +3810,13 @@ static void runGasScan() {
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  armButtonPins();
 
   Serial.begin(115200);
-#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
-  Serial.setTxTimeoutMs(0);   // never stall the UI when no USB host is reading
-#endif
+  // Always. Gating this on the USB-CDC build flags left Arduino builds
+  // blocking in Serial.printf when nothing was reading the port, which froze
+  // the loop and dropped every button press.
+  Serial.setTxTimeoutMs(0);
+  armButtonPins();
 
   I2C_BEGIN();
   Wire.setClock(100000);
@@ -3335,6 +3856,7 @@ void setup() {
   bsecInitMillis = millis();
 
   smellnet_init();
+  startUiTaskWatchdog();
   Serial.println(F("SniffMaster Pro v5.0 ready"));
 }
 
@@ -3379,6 +3901,15 @@ static void bsecWatchdog(unsigned long now, bool ran) {
 }
 
 static void updateDisplay(unsigned long now) {
+  if (airSampleBusy()) {
+    if (forceRedraw || !lastBootRenderMs || now - lastBootRenderMs >= 500UL) {
+      renderAirSample();
+      lastBootRenderMs = now;
+      forceRedraw = false;
+    }
+    return;
+  }
+
   if (!ss_valid) {
     if (forceRedraw || !lastBootRenderMs || now - lastBootRenderMs >= 1000UL) {
       renderBootStatusPage();
@@ -3490,25 +4021,45 @@ static void serviceHomeSensors(unsigned long now) {
 
 void loop() {
   const unsigned long now = millis();
+  Serial.setTxTimeoutMs(0);
+  lastUiLoopStage = UI_STAGE_BUTTON;
   handleButton(now);
+  if (gAirSampleRequest) {
+    gAirSampleRequest = false;
+    airSampleFromCommand();
+  }
   if (gGasScanRequest && !gScanBusy) {
     gGasScanRequest = false;
+    lastUiLoopStage = UI_STAGE_GAS_SCAN;
     runGasScan();
   }
   if (gScanBusy) {
+    lastUiLoopStage = UI_STAGE_ALARM;
     alarmTick(millis());
+    lastUiLoopStage = UI_STAGE_IDLE;
+    resetUiTaskWatchdog();
     delay(5);
     return;
   }
 #if SM_HOME_SENSORS
+  lastUiLoopStage = UI_STAGE_HOME_SENSORS;
   serviceHomeSensors(now);
 #endif
+  lastUiLoopStage = UI_STAGE_SENSOR;
   const bool ran = envSensor.run();
   bsecWatchdog(now, ran);
-  if (newDataReady) processSample(now);
+  if (newDataReady) {
+    lastUiLoopStage = UI_STAGE_PROCESS_SAMPLE;
+    processSample(now);
+  }
+  airSampleTick(millis());
+  lastUiLoopStage = UI_STAGE_ALARM;
   alarmTick(millis());
+  lastUiLoopStage = UI_STAGE_DISPLAY;
   updateDisplay(millis());
+  lastUiLoopStage = UI_STAGE_BUTTON;
   handleButton(millis());   // catch a tap that landed during the OLED transfer
+  lastUiLoopStage = UI_STAGE_OLED_HEALTH;
   oledHealthCheck(millis());
 
   const unsigned long took = millis() - now;
@@ -3521,5 +4072,7 @@ void loop() {
     loopMaxMs = 0;
     lastLoopLogMs = now;
   }
+  lastUiLoopStage = UI_STAGE_IDLE;
+  resetUiTaskWatchdog();
   delay(5);   // let the network + idle tasks run
 }

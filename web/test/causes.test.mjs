@@ -107,6 +107,8 @@ test("OLED feed fits 21-column lines and stays small", () => {
     outdoor: { usAqi: 42, uvIndex: 6.2, tempC: 24 }, ventilation: { action: "open", text: "Open windows for 10 minutes: indoor air is stale and outdoor air is fine." },
   });
   assert.equal(view.sm, "SMELLY");
+  assert.equal(toOledView({ smell: { state: "unclassified", level: "Unclassified gas change" } }).sm, "GAS SHIFT");
+  assert.equal("GAS SHIFT".length, 9);
   assert.equal(view.ca, "LITTER / PET AREA");
   assert.equal(view.an, "CAT DANDER");
   assert.equal(view.al, "HIGH");
@@ -115,6 +117,36 @@ test("OLED feed fits 21-column lines and stays small", () => {
   assert.equal(view.wn, "OPEN WINDOWS 10 MIN");
   assert.ok(view.pn.length <= 9);
   assert.ok(JSON.stringify(view).length < 700, String(JSON.stringify(view).length));
+});
+
+test("OLED feed carries the home-stats scalars for the wall display", () => {
+  const view = toOledView({
+    receivedAt: now,
+    score: { value: 72, grade: "Good", components: [
+      { key: "voc", score: 80 }, { key: "ventilation", score: 65 },
+      { key: "biological", score: 70 }, { key: "comfort", score: 90 },
+    ]},
+    climate: { dewPointC: 15.5 },
+    biological: {
+      mold: { pct: 20, category: "Low" },
+      dustMite: { pct: 55, category: "Moderate" },
+      dryAir: { pct: 10, category: "Low" },
+    },
+    petAllergen: { index: 42, level: "Moderate" },
+    visitor: { headline: "Air in this home is in good shape." },
+    smell: { state: "ok", level: "No smell" },
+    cause: { key: "none" }, outlook: { level: "Low", items: [] },
+    pollen: { ok: false }, outdoor: {}, ventilation: {},
+  });
+  assert.equal(view.gr, "Good");
+  assert.deepEqual(view.cp, [80, 65, 70, 90]);
+  assert.equal(view.dp, 59.9);
+  assert.equal(view.mo, 20); assert.equal(view.mc, "Low");
+  assert.equal(view.mi, 55); assert.equal(view.ic, "Moderate");
+  assert.equal(view.dr, 10); assert.equal(view.dc, "Low");
+  assert.equal(view.pi, 42); assert.equal(view.pe, "Moderate");
+  assert.equal(view.hl, "Air in this home is in good shape.");
+  assert.ok(JSON.stringify(view).length < 1000, String(JSON.stringify(view).length));
 });
 
 test("wrap ellipsises, splits long words, strips non-ASCII", () => {

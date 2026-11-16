@@ -12,9 +12,15 @@
   --ink-3: #7d8899;
   --accent: #6aa8ff;
   --accent-ink: #0b1220;
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
+  /* Series palette (chart lines, default bars): deliberately disjoint in hue
+     from the state colors below — blue / violet / cyan, so a series line
+     never reads as a good/fair/poor/bad state. */
+  --series-1: #4f8ff0;
+  --series-2: #8b7cf6;
+  --series-3: #2fb3c4;
+  /* Soft chart gridlines: visible enough to read values against, faint
+     enough not to compete with the data. */
+  --viz-grid: rgba(148, 163, 184, 0.16);
   --good: #3ccf74;
   --fair: #fab219;
   --poor: #ec835a;
@@ -25,6 +31,12 @@
   --bad-bg: rgba(240, 98, 98, 0.13);
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 10px 30px rgba(0, 0, 0, 0.25);
   --radius: 18px;
+  /* Spacing scale: one set of tokens for every gap and pad on the page.
+     --gap is the space between cards and sections; --pad is card padding;
+     --page-x is the page side padding. */
+  --gap: 14px;
+  --pad: 16px;
+  --page-x: 20px;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
@@ -33,7 +45,8 @@
     color-scheme: light;
     --bg: #f5f6f8; --bg-2: #eef0f3; --card: #ffffff; --card-2: #f7f8fa; --line: #e3e6eb; --line-2: #d4d9e0;
     --ink: #121722; --ink-2: #485365; --ink-3: #6f7a8b; --accent: #2a6fdb; --accent-ink: #ffffff;
-    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+    --series-1: #2f6fd0; --series-2: #6a5ae0; --series-3: #128a9e;
+    --viz-grid: rgba(71, 85, 105, 0.20);
     --good: #0f8a3c; --fair: #a66b00; --poor: #c4501f; --bad: #c62f2f;
     --good-bg: rgba(15, 138, 60, 0.09); --fair-bg: rgba(250, 178, 25, 0.16); --poor-bg: rgba(236, 131, 90, 0.14); --bad-bg: rgba(198, 47, 47, 0.09);
     --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px rgba(16, 24, 40, 0.06);
@@ -43,7 +56,8 @@
   color-scheme: light;
   --bg: #f5f6f8; --bg-2: #eef0f3; --card: #ffffff; --card-2: #f7f8fa; --line: #e3e6eb; --line-2: #d4d9e0;
   --ink: #121722; --ink-2: #485365; --ink-3: #6f7a8b; --accent: #2a6fdb; --accent-ink: #ffffff;
-  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --series-1: #2f6fd0; --series-2: #6a5ae0; --series-3: #128a9e;
+  --viz-grid: rgba(71, 85, 105, 0.20);
   --good: #0f8a3c; --fair: #a66b00; --poor: #c4501f; --bad: #c62f2f;
   --good-bg: rgba(15, 138, 60, 0.09); --fair-bg: rgba(250, 178, 25, 0.16); --poor-bg: rgba(236, 131, 90, 0.14); --bad-bg: rgba(198, 47, 47, 0.09);
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px rgba(16, 24, 40, 0.06);
@@ -54,7 +68,11 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 var(--sans);
   -webkit-font-smoothing: antialiased; min-height: 100vh; overflow-x: hidden;
-  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+  /* No bottom clearance padding: on mobile the cats band + tab bar live
+     in the sticky bottom dock at the end of the document, in flow, so
+     the footer scrolls to rest directly above them; on desktop the
+     min-width:861px rule below still clears the fixed cats band. */
+  padding-bottom: 0;
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -70,39 +88,84 @@ button, input, select { font: inherit; color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 700; letter-spacing: -0.01em; }
 .brand:hover { text-decoration: none; }
-.brand-mark { width: 26px; height: 26px; border-radius: 8px; background: conic-gradient(from 210deg, var(--series-3), var(--series-1), #9085e9, var(--series-3)); box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset; }
+.brand-mark { width: 26px; height: 26px; border-radius: 8px; object-fit: cover; display: block; box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset; }
 .tabs { display: flex; gap: 4px; margin: 0 auto; }
 .tabs a { display: flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 10px; color: var(--ink-2); font-weight: 500; font-size: 14px; }
 .tabs a:hover { background: var(--card); text-decoration: none; color: var(--ink); }
 .tabs a[aria-current="page"] { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line) inset; }
 .tabs svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* Tab icons: filled shapes and accent details inside the tab SVGs. The
+   base .tabs svg rule is stroke-only, so these classes opt individual
+   shapes back into fills. Every color is a theme token, so the icons
+   read in both dark and light themes. */
+.tabs svg .fill { fill: currentColor; stroke: none; }
+.tabs svg .acc { fill: var(--accent); stroke: none; }
+.tabs svg .accs { stroke: var(--accent); fill: none; }
+.tabs svg .sun { fill: var(--fair); stroke: none; }
+.tabs svg .area { fill: currentColor; fill-opacity: .16; stroke: none; }
+/* The active tab's icon picks up the accent in both layouts: mobile
+   already colors the whole link accent, desktop keeps the pill and
+   the ink label, so only the icon turns accent there. */
+.tabs a[aria-current="page"] svg { color: var(--accent); }
 .status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
 .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
 .status.live .dot { background: var(--good); box-shadow: 0 0 0 4px var(--good-bg); }
 .status.stale .dot { background: var(--fair); }
 .status.down .dot { background: var(--bad); }
+.cal-pill { display: flex; align-items: center; flex: none; }
+.cal-pill:hover { text-decoration: none; }
+.icon-btn { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 10px; color: var(--ink-2); flex: none; }
+.icon-btn:hover { background: var(--card); color: var(--ink); text-decoration: none; }
+.icon-btn.active { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line) inset; }
+.icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (max-width: 860px) {
-  /* backdrop-filter would make the header the containing block for the fixed tab bar */
+  /* The header is a plain opaque bar on mobile: the tab bar lives in the
+     bottom dock now, not in the header. */
   .topbar { padding-left: 16px; padding-right: 16px; backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg); }
+  /* Header nav is hidden on mobile; the dock copy below is the tab bar. */
+  .topbar .tabs { display: none; }
+  /* Bottom dock: the cats band + tab bar in one sticky wrapper at the end
+     of the document. Sticky (not fixed): in iOS Safari a fixed bottom bar
+     anchors to the layout viewport and slides under the bottom toolbar,
+     cutting off the tab labels — env(safe-area-inset-bottom) only covers
+     the home indicator, not the toolbar. A sticky dock sticks to the
+     visible viewport instead, so it stays above the toolbar in Safari
+     and at the screen bottom in the installed PWA. The tab bar's own
+     bottom padding still carries the safe-area inset. No fixed pixel
+     offset anywhere: the dock is exactly as tall as its contents. */
+  .bottom-dock { position: sticky; bottom: 0; z-index: 30; }
   .tabs {
-    position: fixed; left: 0; right: 0; bottom: 0; margin: 0; justify-content: space-around; gap: 0;
+    margin: 0; justify-content: space-around; gap: 0;
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); background: color-mix(in srgb, var(--bg-2) 92%, transparent);
     backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-top: 1px solid var(--line);
   }
   .tabs a { flex-direction: column; gap: 2px; font-size: 10.5px; padding: 6px 4px; min-width: 52px; }
   .tabs a[aria-current="page"] { background: transparent; box-shadow: none; color: var(--accent); }
   .status { margin-left: auto; }
+  /* Header right side is tight on phones: kitten mark alone, no brand text. */
+  .brand-name { display: none; }
 }
-@media (min-width: 861px) { body { padding-bottom: 0; } }
+@media (max-width: 480px) {
+  /* Keep just the status dot; the text would crowd the calibration pill. */
+  #status-text { display: none; }
+}
+@media (min-width: 861px) { body { padding-bottom: 72px; } }
 
 /* ── Layout ────────────────────────────────────────────────────── */
-main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 40px; outline: none; }
-@media (max-width: 600px) { main { padding: 16px 16px 32px; } }
-.page-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 4px 0 18px; }
-.page-head h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.025em; margin: 0; }
+main { max-width: 1240px; margin: 0 auto; padding: 20px var(--page-x) 28px; outline: none; }
+@media (max-width: 600px) { main { padding: 14px 16px 24px; } }
+.page-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 2px 0 var(--gap); }
+.page-head h1 { font-size: 24px; line-height: 1.15; letter-spacing: -0.025em; margin: 0; }
 .page-head p { margin: 4px 0 0; color: var(--ink-2); max-width: 62ch; }
-.grid { display: grid; gap: 16px; }
+.grid { display: grid; gap: var(--gap); }
+/* Mixed-height rows: cards hug their content instead of stretching tall
+   with empty space inside (Alerts form vs How it works, Google air vs
+   Pollen, calibration vs the small add-on card). Tops stay aligned. */
+.grid.top { align-items: start; }
+/* Section spacing utility: one token, used instead of inline margins. */
+.mt { margin-top: var(--gap); }
+.mb { margin-bottom: var(--gap); }
 .g-hero { grid-template-columns: minmax(0, 340px) minmax(0, 1fr); }
 .g-side { grid-template-columns: minmax(0, 1fr) minmax(0, 340px); }
 .g-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -111,12 +174,43 @@ main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 40px; outline: none
 @media (max-width: 1020px) { .g-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .g-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .g-hero, .g-side, .g-2, .g-3 { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 420px) { .g-4 { grid-template-columns: minmax(0, 1fr); } }
-.stack { display: grid; gap: 16px; margin-top: 16px; }
+@media (min-width: 1280px) {
+  /* Sensors channel cards go 3-across on wide desktops: 8 cards drop from
+     4 rows to 3, and each chart stays wide enough to read. */
+  .g-2.wide3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 
-.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); min-width: 0; }
+/* ── Wide desktop ──────────────────────────────────────────────── */
+/* The 1240px cap left ~340px of empty margin on each side of a 1920px
+   screen. Step the content out at wide viewports; text-heavy bits keep
+   their own readable line lengths (brief summary stays 70ch, footer
+   text stays 90ch), so nothing stretches into unreadably wide lines. */
+/* Overview bottom row: below the wide breakpoint it is 2 columns, so
+   the air-sample card (third item) spans both instead of leaving a
+   half-empty cell beside it. */
+.overview-bottom > .card:last-child { grid-column: 1 / -1; }
+@media (min-width: 1440px) {
+  main { max-width: 1400px; }
+  .foot { max-width: 1400px; }
+  /* Overview hero: the score column gets a little room, and the brief's
+     tips go 3-across so the wide brief card fills instead of stretching. */
+  .g-hero.overview-hero { grid-template-columns: minmax(0, 380px) minmax(0, 1fr); }
+  .brief .tips { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* Overview bottom row: Outside + risks + air sample share one row of
+     three, instead of two cards plus a lone full-width sample card. */
+  .overview-bottom { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .overview-bottom > .card:last-child { grid-column: auto; }
+}
+@media (min-width: 1720px) {
+  main { max-width: 1560px; }
+  .foot { max-width: 1560px; }
+}
+.stack { display: grid; gap: var(--gap); margin-top: var(--gap); }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--pad); box-shadow: var(--shadow); min-width: 0; }
 .card h2, .card h3 { margin: 0; font-size: 15px; letter-spacing: -0.005em; }
-.card .kicker { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
-.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.card .kicker { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .card-head .sub { color: var(--ink-3); font-size: 12.5px; }
 .muted { color: var(--ink-3); }
 .small { font-size: 12.5px; }
@@ -133,27 +227,39 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .tone.na { color: var(--ink-3); background: var(--card-2); }
 
 /* ── Hero score ────────────────────────────────────────────────── */
-.score-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 22px 18px; }
+.score-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 18px var(--pad); }
 .ring { position: relative; width: 200px; height: 200px; }
 .ring svg { width: 100%; height: 100%; transform: rotate(135deg); }
 .ring .track { stroke: var(--card-2); }
 .ring .arc { transition: stroke-dashoffset .9s cubic-bezier(.2,.8,.2,1); }
+.ring .seg { stroke-linecap: butt; }
+.ring .seg.ghost { opacity: .18; }
+.ring .tick { stroke: var(--ink-3); stroke-width: 2; stroke-linecap: round; }
+@media (prefers-reduced-motion: reduce) {
+  .ring .arc { transition: none; }
+}
+.gauge-note { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--ink); max-width: 36ch; }
+.driver { margin: 0; font-size: 12.5px; color: var(--ink-2); }
+.driver b { color: var(--ink); }
 .ring-label { position: absolute; inset: 0; display: grid; place-content: center; }
 .ring-label .num { font-size: 58px; font-weight: 600; line-height: 1; }
-.ring-label .grade { font-size: 13px; color: var(--ink-2); margin-top: 6px; font-weight: 600; letter-spacing: .02em; }
+.ring-label .grade { font-size: 13px; color: var(--ink-2); margin-top: 4px; font-weight: 600; letter-spacing: .02em; }
 .score-card .where { color: var(--ink-3); font-size: 12.5px; }
-.components { width: 100%; display: grid; gap: 7px; margin-top: 10px; text-align: left; }
+.device-readout { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); text-align: left; color: var(--ink-2); font-size: 12.5px; }
+.device-readout b { color: var(--ink); font-size: 16px; }
+.device-readout small { grid-column: 1 / -1; color: var(--ink-3); }
+.components { width: 100%; display: grid; gap: 6px; margin-top: 8px; text-align: left; }
 .comp { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 12.5px; color: var(--ink-2); }
-.comp .bar { grid-column: 1 / -1; height: 5px; border-radius: 4px; background: var(--card-2); overflow: hidden; }
-.comp .bar i { display: block; height: 100%; border-radius: 4px; }
+.comp .bar { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--card-2); overflow: hidden; }
+.comp .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--bar, var(--series-1)), color-mix(in srgb, var(--bar, var(--series-1)) 58%, white)); }
 
 .brief { position: relative; overflow: hidden; }
 .brief::after { content: ""; position: absolute; inset: -40% -20% auto auto; width: 320px; height: 320px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--series-1) 16%, transparent), transparent 70%); pointer-events: none; }
 .brief h2 { font-size: 23px; line-height: 1.25; letter-spacing: -0.02em; margin: 0 0 8px; font-weight: 700; }
-.brief .summary { color: var(--ink-2); font-size: 15.5px; margin: 0 0 16px; max-width: 70ch; }
+.brief .summary { color: var(--ink-2); font-size: 15.5px; margin: 0 0 var(--gap); max-width: 70ch; }
 .tips { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 600px) { .tips { grid-template-columns: minmax(0, 1fr); } }
-.tip { background: var(--card-2); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+.tip { background: var(--card-2); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; }
 .tip b { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 3px; }
 .tip b::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
 .tip.good b::before { background: var(--good); } .tip.fair b::before { background: var(--fair); } .tip.bad b::before { background: var(--bad); }
@@ -164,30 +270,32 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 /* ── Stat tiles ────────────────────────────────────────────────── */
 .stat .value { font-size: 30px; font-weight: 600; line-height: 1.1; margin: 2px 0; }
 .stat .value small { font-size: 14px; color: var(--ink-3); font-weight: 500; margin-left: 3px; font-family: var(--sans); }
-.stat .line { color: var(--ink-2); font-size: 13.5px; margin-top: 6px; }
-.stat .spark { display: block; width: 100%; margin-top: 10px; height: 34px; }
+/* Mid-size value for text readings (smell level, bouquet) — same voice as .value, smaller. */
+.stat .value-md { font-size: 22px; font-family: var(--sans); font-weight: 700; }
+.stat .line { color: var(--ink-2); font-size: 13.5px; margin-top: 4px; }
+.stat .spark { display: block; width: 100%; margin-top: 8px; height: 30px; }
 .brief { display: flex; flex-direction: column; }
 .brief .tips { margin-top: auto; }
 
 /* ── Charts ────────────────────────────────────────────────────── */
-.chart { position: relative; width: 100%; height: 190px; touch-action: pan-y; }
-.chart.tall { height: 240px; }
+.chart { position: relative; width: 100%; height: 170px; touch-action: pan-y; }
+.chart.tall { height: 220px; }
 .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.chart .grid-line { stroke: var(--line); stroke-width: 1; }
+.chart .grid-line { stroke: var(--viz-grid); stroke-width: 1; }
 .chart .axis-text { fill: var(--ink-3); font-size: 10.5px; font-family: var(--sans); }
 .chart .crosshair { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart .dot { stroke: var(--card); stroke-width: 2; }
 .chart-empty { display: grid; place-items: center; height: 100%; color: var(--ink-3); font-size: 13px; border: 1px dashed var(--line); border-radius: 12px; }
-.metric-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.metric-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
 .metric-head .now { text-align: right; }
 .metric-head .now .num { font-size: 24px; font-weight: 600; line-height: 1.1; }
 .metric-head .now small { color: var(--ink-3); font-size: 12px; }
-.mma { display: flex; gap: 14px; font-size: 12px; color: var(--ink-3); margin-top: 8px; flex-wrap: wrap; }
+.mma { display: flex; gap: 14px; font-size: 12px; color: var(--ink-3); margin-top: 6px; flex-wrap: wrap; }
 .mma b { color: var(--ink-2); font-weight: 600; font-family: var(--mono); }
 .legend { display: flex; gap: 12px; font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
-.legend.bands { gap: 8px 14px; margin: 2px 0 8px; font-size: 13px; }
+.legend.bands { gap: 8px 14px; margin: 2px 0 6px; font-size: 13px; }
 .legend i.swatch { width: 12px; height: 12px; border-radius: 3px; }
 .swatch.good { background: var(--good); } .swatch.fair { background: var(--fair); }
 .swatch.poor { background: var(--poor); } .swatch.bad { background: var(--bad); }
@@ -204,6 +312,7 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .seg { display: inline-flex; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 3px; gap: 2px; }
 .seg button { border: 0; background: transparent; padding: 8px 14px; border-radius: 9px; color: var(--ink-2); font-weight: 600; font-size: 15px; cursor: pointer; min-height: 44px; }
 .seg button[aria-pressed="true"] { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line-2) inset; }
+.seg button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── Lists, tables, bars ──────────────────────────────────────── */
 .kv { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; font-size: 13.5px; margin: 0; }
@@ -212,7 +321,10 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .hbars { display: grid; gap: 9px; }
 .hbar { display: grid; grid-template-columns: minmax(90px, 140px) 1fr 38px; align-items: center; gap: 10px; font-size: 13px; }
 .hbar .track { height: 8px; background: var(--card-2); border-radius: 4px; overflow: hidden; }
-.hbar .track i { display: block; height: 100%; border-radius: 4px; background: var(--series-1); }
+/* Bars read as a left-to-right gradient (base color → a lighter tint of
+   itself). The color comes from an inline --bar custom property where the
+   bar means a state; otherwise it defaults to the series blue. */
+.hbar .track i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--bar, var(--series-1)), color-mix(in srgb, var(--bar, var(--series-1)) 58%, white)); }
 .hbar .v { text-align: right; font-family: var(--mono); color: var(--ink-2); font-size: 12px; }
 .hbar.dim { color: var(--ink-3); }
 .note { font-size: 12.5px; color: var(--ink-3); margin: 12px 0 0; }
@@ -229,17 +341,18 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .forecast .hi { font-size: 18px; font-family: var(--mono); }
 
 /* ── Pet meter ─────────────────────────────────────────────────── */
-.meter { position: relative; width: 100%; max-width: 360px; margin: 6px auto 0; }
-.meter svg { width: 100%; display: block; }
-.meter .needle { transition: transform 1s cubic-bezier(.2,.8,.2,1); transform-origin: 150px 150px; }
-.meter-value { text-align: center; margin-top: 6px; }
-.meter-value .num { font-size: 44px; font-weight: 600; line-height: 1; }
+.pet-ring { display: flex; justify-content: center; }
+.pet-ring .ring { width: 232px; height: 232px; }
+.pet-pills { text-align: center; margin-top: 8px; }
+.pet-cats { text-align: center; margin: 8px 0 0; }
+.pet-trend { margin-top: 12px; }
+.pet-trend .spark { display: block; width: 100%; height: 30px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { border: 1px solid var(--line-2); background: transparent; border-radius: 999px; padding: 7px 14px; min-height: 38px; cursor: pointer; font-weight: 500; font-size: 13.5px; color: var(--ink-2); }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
 /* ── Forms ─────────────────────────────────────────────────────── */
-.form { display: grid; gap: 16px; }
+.form { display: grid; gap: var(--gap); }
 .field label { display: block; font-weight: 600; font-size: 13.5px; margin-bottom: 6px; }
 .field input[type="email"], .field input[type="tel"], .field input[type="text"] {
   width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--bg-2); font-size: 16px;
@@ -261,12 +374,15 @@ a.card:hover { text-decoration: none; border-color: var(--line-2); transform: tr
 .code-input { font-family: var(--mono) !important; letter-spacing: .4em; font-size: 22px !important; text-align: center; }
 fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 fieldset.field legend { font-weight: 700; font-size: 16px; margin-bottom: 8px; padding: 0; }
-.form .seg { display: flex; width: 100%; }
-.form .seg button { flex: 1; }
+.form .seg { display: flex; width: 100%; flex-wrap: wrap; }
+.form .seg button { flex: 1 1 5.5rem; }
+a.btn { text-decoration: none; }
+a.btn:hover { text-decoration: none; }
+.msg[role="alert"] { margin: 0; }
 .choices { display: grid; gap: 10px; }
 label.choice {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  margin: 0; padding: 14px 16px; min-height: 72px; border-radius: 16px;
+  margin: 0; padding: 12px 14px; min-height: 64px; border-radius: 16px;
   background: var(--card-2); border: 1px solid var(--line); cursor: pointer; font-weight: 500;
 }
 label.choice > span { display: block; min-width: 0; }
@@ -286,7 +402,7 @@ label.choice.off { opacity: .72; }
 .more { margin-top: 14px; }
 .more summary { cursor: pointer; font-weight: 650; font-size: 16px; min-height: 48px; display: list-item; margin-left: 1.1em; }
 .polls { margin-top: 8px; }
-.poll { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+.poll { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 10px 0; border-top: 1px solid var(--line); }
 .poll b { font-size: 15px; }
 .poll p { margin: 3px 0 0; color: var(--ink-2); font-size: 14.5px; line-height: 1.4; max-width: 52ch; }
 .poll .num { font-weight: 600; white-space: nowrap; padding-top: 1px; }
@@ -306,9 +422,161 @@ label.choice.off { opacity: .72; }
 @keyframes sk { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
-.foot { max-width: 1180px; margin: 0 auto; padding: 8px 20px 32px; color: var(--ink-3); font-size: 12.5px; }
+.foot { max-width: 1240px; margin: 0 auto; padding: 2px var(--page-x) 20px; color: var(--ink-3); font-size: 12.5px; }
 .foot p { margin: 6px 0; max-width: 90ch; }
 @media (max-width: 520px) {
   .rule { grid-template-columns: 1fr; }
   .rule .lim { justify-content: flex-start; }
 }
+
+/* Roaming black cats — global overlay. The cats live in a dedicated band
+   in the sticky bottom dock (end of the document): above the tab bar,
+   below the page content, so they never cover a number, gauge, chart,
+   card or text. On desktop the dock is an invisible wrapper and the band
+   is fixed to the viewport bottom as before; on mobile it rides in flow
+   inside the dock. pointer-events: none keeps every tap reaching the
+   page. The count follows the live pet dander index. */
+/* The band is a solid strip, not a transparent overlay: without a
+   background, page text scrolling underneath showed through around the
+   opaque cats, so cats sat on top of text while scrolling (Nov 15 phone
+   video). Now text slides under a solid strip like the tab bar below it. */
+.cats-band { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; z-index: 30; overflow: hidden; pointer-events: none; background: var(--bg); border-top: 1px solid var(--line); }
+@media (max-width: 860px) {
+  /* Inside the sticky bottom dock the band is in flow, directly above the
+     tab bar — no fixed offset, so the two can never drift apart or slide
+     under Safari's toolbar separately. Cats a touch smaller and lower so
+     nothing clips. */
+  .cats-band { bottom: calc(50px + env(safe-area-inset-bottom)); height: 52px; }
+  .bottom-dock .cats-band { position: relative; bottom: auto; }
+  .roam-cat { bottom: calc(var(--lane, 0px) * .5); }
+  .roam-cat svg { width: calc(var(--w, 60px) * .85); }
+}
+.roam-cat { position: absolute; bottom: var(--lane, 0px); left: -90px; animation: roam-a var(--dur, 36s) linear infinite; animation-delay: var(--delay, 0s); }
+.roam-cat svg { display: block; width: var(--w, 60px); height: auto; filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, .35)); animation: cat-bob .5s ease-in-out infinite alternate; }
+.roam-cat--rev { scale: -1 1; }
+.roam-cat--pause-b { animation-name: roam-b; }
+.roam-cat--pause-c { animation-name: roam-c; }
+.roam-cat--pause-a.roam-cat--rev { animation-name: roam-a-rev; }
+.roam-cat--pause-b.roam-cat--rev { animation-name: roam-b-rev; }
+.roam-cat--pause-c.roam-cat--rev { animation-name: roam-c-rev; }
+/* Each roam pauses mid-crossing for a look around — a different spot per cat. */
+@keyframes roam-a { 0% { left: -90px; } 30% { left: 28%; } 46% { left: 28%; } 100% { left: 105%; } }
+@keyframes roam-b { 0% { left: -90px; } 45% { left: 52%; } 62% { left: 52%; } 100% { left: 105%; } }
+@keyframes roam-c { 0% { left: -90px; } 58% { left: 74%; } 72% { left: 74%; } 100% { left: 105%; } }
+@keyframes roam-a-rev { 0% { left: 105%; } 30% { left: 72%; } 46% { left: 72%; } 100% { left: -90px; } }
+@keyframes roam-b-rev { 0% { left: 105%; } 45% { left: 48%; } 62% { left: 48%; } 100% { left: -90px; } }
+@keyframes roam-c-rev { 0% { left: 105%; } 58% { left: 26%; } 72% { left: 26%; } 100% { left: -90px; } }
+@keyframes cat-bob { from { transform: translateY(0); } to { transform: translateY(-3px); } }
+.cat-eyes { animation: cat-blink 4.6s infinite; animation-delay: var(--blink, 0s); transform-box: fill-box; transform-origin: center; }
+@keyframes cat-blink { 0%, 91%, 100% { transform: scaleY(1); } 94%, 96% { transform: scaleY(.08); } }
+.cat-tail { transform-box: fill-box; transform-origin: 100% 100%; animation: cat-tail-sway 1.6s ease-in-out infinite alternate; }
+@keyframes cat-tail-sway { from { transform: rotate(-9deg); } to { transform: rotate(12deg); } }
+.cat-ear-r { transform-box: fill-box; transform-origin: 50% 100%; animation: cat-ear-twitch 7s infinite; }
+@keyframes cat-ear-twitch { 0%, 88%, 100% { transform: rotate(0); } 90% { transform: rotate(-14deg); } 92% { transform: rotate(6deg); } 94% { transform: rotate(0); } }
+@media (prefers-reduced-motion: reduce) {
+  /* No roaming: cats rest spread across the band at their --spot. */
+  .roam-cat { animation: none; left: calc(var(--spot, 20) * 1%); transform: translateX(-50%); }
+}
+
+/* ── Animated header kitten ──────────────────────────────────────── */
+/* Inline-SVG brand mark (replaces the static kitten-logo.webp in the
+   header; the webp stays on disk as the favicon/app-icon source).
+   Big amber eyes that blink and glance around, a gently bobbing head,
+   breathing body, ear twitch, sniffing nose, and a tongue-lick that the
+   brand-cat.js scheduler triggers at random every 15–30s. */
+.brand-mark.brand-cat { overflow: hidden; }
+.brand-cat .bc-head { transform-box: fill-box; transform-origin: 50% 55%; animation: bc-bob 5s ease-in-out infinite alternate; }
+@keyframes bc-bob { from { transform: translateY(0) rotate(-1.1deg); } to { transform: translateY(.9px) rotate(1.1deg); } }
+.brand-cat .bc-body { transform-box: fill-box; transform-origin: 50% 100%; animation: bc-breathe 3.6s ease-in-out infinite alternate; }
+@keyframes bc-breathe { from { transform: scaleY(1); } to { transform: scaleY(1.035); } }
+.brand-cat .bc-eyes { transform-box: fill-box; transform-origin: 50% 50%; animation: bc-blink 4.4s infinite; transition: transform .15s ease; }
+@keyframes bc-blink { 0%, 90%, 100% { transform: scaleY(1); } 93%, 95% { transform: scaleY(.08); } }
+.brand-cat .bc-pupils { animation: bc-glance 14s infinite; }
+@keyframes bc-glance { 0%, 27%, 43%, 59%, 75%, 100% { transform: translateX(0); } 31%, 38% { transform: translateX(1.6px); } 64%, 70% { transform: translateX(-1.6px); } }
+.brand-cat .bc-ear-r { transform-box: fill-box; transform-origin: 50% 100%; animation: bc-ear-twitch 9s infinite; }
+@keyframes bc-ear-twitch { 0%, 86%, 100% { transform: rotate(0); } 88.5% { transform: rotate(-14deg); } 91% { transform: rotate(5deg); } 93% { transform: rotate(0); } }
+.brand-cat .bc-nose { transform-box: fill-box; transform-origin: 50% 50%; animation: bc-sniff 6s infinite; }
+@keyframes bc-sniff { 0%, 46%, 56%, 100% { transform: scale(1); } 50%, 52% { transform: scale(1.12); } }
+.brand-cat .bc-tongue { transform: scaleY(0); transform-box: fill-box; transform-origin: 50% 0; }
+.brand-cat.licking .bc-tongue { animation: bc-lick .9s ease-in-out; }
+@keyframes bc-lick { 0% { transform: scaleY(0); } 25%, 55% { transform: scaleY(1) translateX(0); } 40% { transform: scaleY(1) translateX(.7px); } 70% { transform: scaleY(1) translateX(-.7px); } 100% { transform: scaleY(0); } }
+.brand-cat.licking .bc-eyes { animation: none; transform: scaleY(.45); }
+.brand-cat.licking .bc-paw { animation: bc-paw-lift .9s ease-in-out; }
+@keyframes bc-paw-lift { 0%, 100% { transform: translateY(0); } 40%, 60% { transform: translateY(-2.4px); } }
+@media (prefers-reduced-motion: reduce) {
+  /* Parked cat: eyes open, still, no licking. */
+  .brand-cat .bc-head, .brand-cat .bc-body, .brand-cat .bc-eyes, .brand-cat .bc-pupils,
+  .brand-cat .bc-ear-r, .brand-cat .bc-nose, .brand-cat .bc-tongue, .brand-cat .bc-paw { animation: none !important; }
+  .brand-cat.licking .bc-eyes { transform: none; }
+}
+
+/* ── Sensor Health page: calibration stepper ──────────────────────── */
+.cal-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0 4px; }
+.cal-steps .step { text-align: center; font-size: 12px; color: var(--ink-3); }
+.cal-steps .step i { display: block; width: 12px; height: 12px; margin: 0 auto 6px; border-radius: 50%; background: var(--card-2); border: 2px solid var(--line); }
+.cal-steps .step.done { color: var(--ink-2); }
+.cal-steps .step.done i { background: var(--good); border-color: transparent; }
+.cal-steps .step.now { color: var(--ink); font-weight: 600; }
+.cal-steps .step.now.good i { background: var(--good); border-color: transparent; box-shadow: 0 0 0 4px var(--good-bg); }
+.cal-steps .step.now.fair i { background: var(--fair); border-color: transparent; box-shadow: 0 0 0 4px var(--fair-bg); }
+.cal-steps .step.now.poor i { background: var(--poor); border-color: transparent; box-shadow: 0 0 0 4px var(--poor-bg); }
+.coach-points { margin: 8px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-2); }
+.coach-points li { margin: 4px 0; }
+
+/* ── Settings: per-trigger severity rows + alert-limit inputs ──────── */
+.sev-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.sev-row > span { font-weight: 600; }
+.thresh-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.thresh { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.thresh > span:first-child { flex: 1; min-width: 0; }
+.thresh input { width: 84px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+.thresh .unit { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+@media (max-width: 560px) {
+  .thresh-grid { grid-template-columns: 1fr; }
+  .sev-row { flex-direction: column; align-items: stretch; }
+  .sev-row .seg { align-self: flex-start; }
+}
+
+/* ── Chart viewing: data vs interpretation, zoom, events ───────────── */
+/* Plain-English interpretation reads differently from measurement data:
+   smaller, muted, italic — a glance separates what was measured from
+   what it means. Numbers and traces keep the series colors. */
+.interp { font-style: italic; color: var(--ink-3); }
+.stat .line.interp { font-size: 13px; }
+/* Toolbar above each chart: series legend, reset zoom, event toggle,
+   CSV + PNG export. Sits outside the .chart box so it never eats into
+   the plot height. */
+.chart-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; min-height: 26px; flex-wrap: wrap; }
+.ct-series { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); font-weight: 600; }
+.ct-series i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.ct-spacer { flex: 1; }
+.ct-btn { font: inherit; font-size: 12px; color: var(--ink-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.ct-btn:hover { color: var(--ink); border-color: var(--ink-3); }
+.ct-btn[aria-pressed="false"] { opacity: 0.55; }
+.chart svg { user-select: none; -webkit-user-select: none; }
+.zoom-select { fill: var(--series-1); fill-opacity: 0.14; stroke: var(--series-1); stroke-width: 1; }
+.event-label { fill: var(--ink-2); font-size: 10.5px; font-family: var(--sans); }
+.event-line { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.event-dot { fill: var(--bad); stroke: var(--card); stroke-width: 1.5; }
+.event-gap { fill: var(--fair-bg); stroke: var(--fair); stroke-width: 1; stroke-dasharray: 4 3; }
+/* Feed-gap labels are amber and semibold, distinct from event labels:
+   a gap is data integrity, not an event, and it stays when the Events
+   toggle hides the rest. */
+.gap-label { fill: var(--fair); font-size: 10.5px; font-weight: 600; font-family: var(--sans); }
+.heat { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+/* Smell heatmap legend: a low→strong intensity ramp plus the amber
+   dashed-line key for feed gaps. Pills list the strong smells in the
+   visible window; the row is empty (and hidden) when there are none. */
+.heat-legend { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--ink-3); }
+.heat-grad { width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--good), var(--fair), var(--poor)); }
+.heat-gap-key { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.heat-gap-key i { width: 2px; height: 14px; background: var(--fair); display: inline-block; }
+.heat-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.heat-pills:empty { display: none; }
+
+/* ── AI insight card (Overview) ─────────────────────────────────────── */
+/* Full-width card under the hero. The text is interpretation, so it reads
+   in the muted-italic treatment; the label says plainly whether AI wrote it. */
+.ai-insight { margin-top: var(--gap); }
+.ai-insight-text { font-size: 16px; line-height: 1.55; margin: 4px 0 8px; }
+.ai-insight-meta { margin: 0; }

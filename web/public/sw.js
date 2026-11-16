@@ -4,7 +4,7 @@
 // 404s, so the install event failed and NO shell caching ever happened.
 // Also: navigations are now network-first, so a fresh deploy shows up on the
 // next load without waiting for the skip-waiting handshake.
-const CACHE_NAME = "sniffmaster-v52"; // v52: Codex review fixes (AQI label, pollen alerts, tile alpha)
+const CACHE_NAME = "sniffmaster-v57"; // v57: app assets are network-first (was cache-first) so a fresh deploy shows up on the next load instead of one load later. Old caches are purged by the activate handler below.
 const SHELL = ["/", "/style.css", "/app.js", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 self.addEventListener("install", (e) => {
  e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL)));
@@ -44,17 +44,21 @@ self.addEventListener("fetch", (e) => {
    );
    return;
  }
- // Other static assets: cache-first with network fallback + background refresh
+ // App assets (JS/CSS/icons): network-first, cache only as the offline
+ // fallback. Cache-first with background refresh served stale files on the
+ // first load after every deploy — and a tab could even run new HTML
+ // against old CSS. Now the network response is returned whenever it
+ // arrives, the cache is refreshed for offline use, and the cached copy
+ // is served only when the network fails.
  e.respondWith(
-   caches.match(e.request).then((cached) => {
-     const fetched = fetch(e.request).then((resp) => {
+   fetch(e.request)
+     .then((resp) => {
        if (resp.ok) {
          const clone = resp.clone();
          caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
        }
        return resp;
-     }).catch(() => cached);
-     return cached || fetched;
-   })
+     })
+     .catch(() => caches.match(e.request))
  );
 });
