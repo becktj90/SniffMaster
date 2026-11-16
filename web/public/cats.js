@@ -3,10 +3,10 @@
 // pet dander rose). Inline SVG cats with faces that blink, pink inner ears
 // and nose, swaying tails and an occasional ear twitch; no images, no libs.
 //
-// The cats live in a dedicated band pinned to the bottom edge of the viewport
-// — never over the content. The band sits below the page (body padding clears
-// it) and above the mobile tab bar, so no number, gauge, chart, card or text
-// is ever covered. `pointer-events: none` keeps every tap reaching the page.
+// The cats live in a dedicated band in the sticky bottom dock at the end of
+// the document (see index.html) — above the mobile tab bar, below the page
+// content, so no number, gauge, chart, card or text is ever covered.
+// `pointer-events: none` keeps every tap reaching the page.
 //
 // The dashboard script (app.js, a classic script) uses the `window.SniffCats`
 // global below; the exports keep the mapping and markup testable from node.
@@ -86,7 +86,7 @@ export function catsInnerHtml(count) {
   return cats;
 }
 
-/** HTML for the whole roaming band: fixed to the viewport bottom, no data. */
+/** HTML for the whole roaming band: lives in the bottom dock, no data. */
 export function catsBandHtml(count) {
   return `<div class="cats-band" id="cats-band" aria-hidden="true">${catsInnerHtml(count)}</div>`;
 }
@@ -101,7 +101,11 @@ export function mountCats(count) {
     const tmp = document.createElement("div");
     tmp.innerHTML = catsBandHtml(count === undefined ? 2 : count);
     band = tmp.firstChild;
-    document.body.appendChild(band);
+    // Into the bottom dock, above the tab nav — so band and tab bar move
+    // together as one sticky unit. Falls back to body if the dock is absent.
+    const dock = document.getElementById("bottom-dock");
+    if (dock) dock.prepend(band);
+    else document.body.appendChild(band);
     currentCount = clampCount(count === undefined ? 2 : count);
   }
   return band;

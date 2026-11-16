@@ -100,6 +100,30 @@
     <p><a href="/guest">Guest view</a> · <a href="/report">Daily report</a> · <a href="/classic">Classic dashboard</a></p>
   </footer>
 
+  <!-- Bottom dock (mobile only): the cats band + tab bar ride in one
+       sticky wrapper at the end of the document. The tab bar is
+       position:fixed on no platform now — in iOS Safari a fixed bottom
+       bar anchors to the layout viewport and slides under the bottom
+       toolbar, cutting off the labels; a sticky dock sticks to the
+       visible viewport instead, so it stays above the toolbar in
+       Safari and at the screen bottom in the installed PWA (the tab
+       bar's own bottom padding still carries the home-indicator
+       safe-area inset). The nav here is a second copy of the header
+       nav: the header copy can't stick to the viewport bottom from
+       inside the sticky header, and app.js syncs aria-current across
+       every .tabs link, so both copies always agree. cats.js mounts
+       the cats band into this dock, above the nav. -->
+  <div class="bottom-dock" id="bottom-dock">
+    <nav class="tabs" aria-label="Sections">
+      <a href="#/" data-route="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M12 3l8.5 7h-2.2v10H5.7V10H3.5z"/><rect class="acc" x="10.5" y="14.5" width="3" height="5.5" rx="1"/></svg><span>Overview</span></a>
+      <a href="#/sensors" data-route="sensors"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="area" d="M3 17l5-6 4 4 5-8 4 5v9H3z"/><path d="M3 17l5-6 4 4 5-8 4 5"/><circle class="acc" cx="17" cy="7" r="2"/></svg><span>Sensors</span></a>
+      <a href="#/smell" data-route="smell"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 20c-2-2.5 2-4.5 0-7s2-4.5 0-7"/><path class="accs" d="M12 21c-2-3 2-5 0-8s2-5 0-8"/><path d="M17 20c-2-2.5 2-4.5 0-7s2-4.5 0-7"/><circle class="acc" cx="12" cy="3" r="1.6"/></svg><span>Smell</span></a>
+      <a href="#/pets" data-route="pets"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="fill" cx="7.5" cy="9" r="2.1"/><circle class="acc" cx="12" cy="6.5" r="2.1"/><circle class="fill" cx="16.5" cy="9" r="2.1"/><path class="fill" d="M12 11.8c-3.2 0-5.4 2.2-5.4 4.4 0 1.8 1.4 2.9 3 2.9.9 0 1.6-.4 2.4-.4s1.5.4 2.4.4c1.6 0 3-1.1 3-2.9 0-2.2-2.2-4.4-5.4-4.4z"/></svg><span>Pets</span></a>
+      <a href="#/outside" data-route="outside"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="sun" cx="8.5" cy="8" r="3.4"/><path d="M8.5 2.4v1.7M2.9 8h1.7M4.4 3.9l1.2 1.2"/><circle class="fill" cx="10.8" cy="15.8" r="3"/><circle class="fill" cx="14.8" cy="14.2" r="3.6"/><circle class="fill" cx="18.2" cy="16.2" r="2.6"/><rect class="fill" x="8" y="15.8" width="11.5" height="4.7" rx="2.3"/></svg><span>Outside</span></a>
+      <a href="#/alerts" data-route="alerts"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M12 3a5.5 5.5 0 0 0-5.5 5.5c0 2.9-1 4.3-2 5.4-.4.4 0 1 .5 1h14c.5 0 .9-.6.5-1-1-1.1-2-2.5-2-5.4A5.5 5.5 0 0 0 12 3z"/><circle class="acc" cx="12" cy="17.4" r="1.9"/></svg><span>Alerts</span></a>
+    </nav>
+  </div>
+
   <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module" src="/cats.js"></script>
