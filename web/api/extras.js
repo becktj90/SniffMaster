@@ -802,15 +802,16 @@ async function officeStats(req, res) {
 // like the other dashboard GETs. Never returns any API key.
 const HOME_OUTDOOR_TTL_SEC = 15 * 60;
 
-const HOME_PAYLOAD_TTL_SEC = 60;
+const HOME_PAYLOAD_TTL_SEC = 300;
 
 /**
- * Whole-home payload, cached 60 s per trigger set in Redis. This is the hot
+ * Whole-home payload, cached 300 s per trigger set in Redis. This is the hot
  * path: /api/oled, /api/home-stats, /api/guest, /api/insights and both
  * /api/update alert gates all build it, ~4,000×/day, and a fresh build
- * re-reads + re-parses the full 24 h history (~2 MB) every time. A 60 s
- * stale window is invisible at the dashboard's 2-minute poll and the
- * device's 1-minute post cadence, and a cache miss rebuilds identically.
+ * re-reads + re-parses the full 24 h history (~2 MB) every time. A 5-minute
+ * stale window is cheap at the dashboard's 2-minute poll and the device's
+ * 1-minute post cadence — readings are 1-minute cadence, so the payload is
+ * at most a few minutes stale — and a cache miss rebuilds identically.
  */
 export async function buildHomePayload(triggersInput, severitiesInput) {
   // The severity string is part of the cache key: two devices with the same
@@ -955,7 +956,9 @@ async function homeStats(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Cache-Control", "no-store");
+  // s-maxage matches the dashboard's 120 s poll so alternate polls hit the
+  // edge instead of rebuilding the ~2 MB home payload.
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=120, stale-while-revalidate=60");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
 
@@ -973,6 +976,12 @@ async function homeStats(req, res) {
 // GET /api/oled — tiny pre-formatted status for the wall-mounted OLED:
 // smell state, likely cause + action, allergen level, outdoor pollen/AQI.
 // Device-sized (under ~700 bytes). Read-only like the other dashboard GETs.
+//
+// The wall feed polls every 60 s for the same fixed trigger set, so the
+// formatted view itself is cached 300 s: the wall feed then never triggers
+// a full ~2 MB home-payload rebuild.
+const OLED_VIEW_TTL_SEC = 300;
+
 async function oled(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -981,10 +990,18 @@ async function oled(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
   try {
+    try {
+      const cached = await getJsonCache("oled-view");
+      if (cached) return res.status(200).json(cached);
+    } catch {}
     // A wall display near the cats cares about every household trigger.
     const payload = await buildHomePayload("cat,dog,pollen,dustMite,mold,smoke");
     if (!payload) return res.status(204).end();
-    return res.status(200).json(toOledView(payload));
+    const view = toOledView(payload);
+    try {
+      await setJsonCache("oled-view", view, OLED_VIEW_TTL_SEC);
+    } catch {}
+    return res.status(200).json(view);
   } catch (err) {
     console.error("oled error:", err);
     return res.status(500).json({ error: "oled error" });
@@ -1584,7 +1601,9 @@ async function insights(req, res) {
 // 2 minutes), so a poll cycle can't spam the API. Never returns the key.
 async function aiInsight(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Cache-Control", "no-store");
+  // s-maxage matches the dashboard's 120 s home poll; the insight text
+  // itself is already cached per bucketed room state server-side.
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=120, stale-while-revalidate=60");
   if (req.method !== "GET") return res.status(405).json({ error: "GET only" });
   try {
     const [home, latest, settings, alertState] = await Promise.all([
