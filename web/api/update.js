@@ -42,7 +42,7 @@ import {
 import { buildHomePayload } from "./extras.js";
 import { toGuestView, decideGuestAlerts, publishGuestAlerts, guestTopic } from "../lib/guest.js";
 import { getJsonCache, setJsonCache } from "../lib/store.js";
-import { runSubscriberAlerts } from "../lib/subscribers.js";
+import { loadSubscribers, runSubscriberAlerts } from "../lib/subscribers.js";
 import { sendSms, PUBLIC_BASE_URL, REPORT_CARD_PNG_URL } from "../lib/notify.js";
 import { buildAlertBroSummary, sanitizeSmsAscii } from "../lib/brogpt.js";
 import { buildSummary, buildBaseline, buildDeltas } from "./daily-summary.js";
@@ -282,6 +282,13 @@ const SUBSCRIBER_CHECK_EVERY_MS = 2 * 60 * 1000;
  * most every 2 minutes; best-effort, never throws.
  */
 async function maybeSendSubscriberAlerts(stored) {
+  // No verified subscribers: skip the ~2 MB home-payload build entirely.
+  // Checked before the gate, like the guest gate's early return when no
+  // guest topic is configured; one small cached read per post. A Redis
+  // failure reads as empty here, which loses nothing — the build below
+  // needs Redis too, so alerts can't run without it anyway.
+  const subs = await loadSubscribers().catch(() => []);
+  if (!subs.filter((s) => s.verified).length) return;
   const now = Date.now();
   const gate = await getJsonCache("subscriber-alert-gate");
   if (gate && now - gate.t < SUBSCRIBER_CHECK_EVERY_MS) return;

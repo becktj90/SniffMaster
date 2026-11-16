@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { startFakeUpstash } from "./fakeUpstash.mjs";
 
-test("buildHomePayload caches 60s per trigger set", async () => {
+test("buildHomePayload caches 300s per trigger set", async () => {
   const up = await startFakeUpstash();
   process.env.UPSTASH_REDIS_REST_URL = up.url;
   process.env.UPSTASH_REDIS_REST_TOKEN = "t";
