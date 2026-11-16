@@ -68,7 +68,11 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 var(--sans);
   -webkit-font-smoothing: antialiased; min-height: 100vh; overflow-x: hidden;
-  padding-bottom: calc(114px + env(safe-area-inset-bottom));
+  /* No bottom clearance padding: on mobile the cats band + tab bar live
+     in the sticky bottom dock at the end of the document, in flow, so
+     the footer scrolls to rest directly above them; on desktop the
+     min-width:861px rule below still clears the fixed cats band. */
+  padding-bottom: 0;
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -116,10 +120,23 @@ button, input, select { font: inherit; color: inherit; }
 .icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (max-width: 860px) {
-  /* backdrop-filter would make the header the containing block for the fixed tab bar */
+  /* The header is a plain opaque bar on mobile: the tab bar lives in the
+     bottom dock now, not in the header. */
   .topbar { padding-left: 16px; padding-right: 16px; backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg); }
+  /* Header nav is hidden on mobile; the dock copy below is the tab bar. */
+  .topbar .tabs { display: none; }
+  /* Bottom dock: the cats band + tab bar in one sticky wrapper at the end
+     of the document. Sticky (not fixed): in iOS Safari a fixed bottom bar
+     anchors to the layout viewport and slides under the bottom toolbar,
+     cutting off the tab labels — env(safe-area-inset-bottom) only covers
+     the home indicator, not the toolbar. A sticky dock sticks to the
+     visible viewport instead, so it stays above the toolbar in Safari
+     and at the screen bottom in the installed PWA. The tab bar's own
+     bottom padding still carries the safe-area inset. No fixed pixel
+     offset anywhere: the dock is exactly as tall as its contents. */
+  .bottom-dock { position: sticky; bottom: 0; z-index: 30; }
   .tabs {
-    position: fixed; left: 0; right: 0; bottom: 0; margin: 0; justify-content: space-around; gap: 0;
+    margin: 0; justify-content: space-around; gap: 0;
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); background: color-mix(in srgb, var(--bg-2) 92%, transparent);
     backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-top: 1px solid var(--line);
   }
@@ -413,19 +430,24 @@ label.choice.off { opacity: .72; }
 }
 
 /* Roaming black cats — global overlay. The cats live in a dedicated band
-   pinned to the bottom edge of the viewport: below the page content (the
-   body padding clears it) and above the mobile tab bar, so they never cover
-   a number, gauge, chart, card or text. pointer-events: none keeps every
-   tap reaching the page. The count follows the live pet dander index. */
+   in the sticky bottom dock (end of the document): above the tab bar,
+   below the page content, so they never cover a number, gauge, chart,
+   card or text. On desktop the dock is an invisible wrapper and the band
+   is fixed to the viewport bottom as before; on mobile it rides in flow
+   inside the dock. pointer-events: none keeps every tap reaching the
+   page. The count follows the live pet dander index. */
 /* The band is a solid strip, not a transparent overlay: without a
    background, page text scrolling underneath showed through around the
    opaque cats, so cats sat on top of text while scrolling (Nov 15 phone
    video). Now text slides under a solid strip like the tab bar below it. */
 .cats-band { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; z-index: 30; overflow: hidden; pointer-events: none; background: var(--bg); border-top: 1px solid var(--line); }
 @media (max-width: 860px) {
-  /* Tab bar occupies the very bottom: the band rides just above it, cats a
-     touch smaller and lower so nothing clips. */
+  /* Inside the sticky bottom dock the band is in flow, directly above the
+     tab bar — no fixed offset, so the two can never drift apart or slide
+     under Safari's toolbar separately. Cats a touch smaller and lower so
+     nothing clips. */
   .cats-band { bottom: calc(50px + env(safe-area-inset-bottom)); height: 52px; }
+  .bottom-dock .cats-band { position: relative; bottom: auto; }
   .roam-cat { bottom: calc(var(--lane, 0px) * .5); }
   .roam-cat svg { width: calc(var(--w, 60px) * .85); }
 }
