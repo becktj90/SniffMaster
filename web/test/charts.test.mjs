@@ -276,6 +276,18 @@ test("wiring: charts module is loaded and lineChart takes zoom/events/tools", ()
   assert.ok(jsText.includes("gap-label") && jsText.includes("event-label"), "gap and breach label classes drawn");
 });
 
+test("sensors: compact-dropped channels get an honest empty state in 24h/7d", () => {
+  // The 24h/7d views read the compact climate series, which keeps only
+  // temperature, humidity, CO2, IAQ and PM2.5 — gas resistance, VOC,
+  // pressure and gas percentage have no line there, so the chart must say
+  // so instead of "No readings in this window yet".
+  assert.ok(jsText.includes('COMPACT_DROPPED'), "dropped-channel list defined");
+  assert.ok(jsText.includes('"voc", "gasR", "pressHpa", "gasPct"'), "dropped channels are voc, gasR, pressHpa, gasPct");
+  assert.ok(jsText.includes('switch to 6h to see this line'), "empty state points at the 6h view");
+  assert.ok(jsText.includes('24-hour view uses the compact'), "24h callout explains the compact history");
+  assert.ok(jsText.includes('7-day view uses the compact'), "7d callout explains the compact history");
+});
+
 test("partitionEvents splits gaps from breaches", () => {
   const t = outageSeries();
   const co2 = t.map((ts, i) => (i > 100 && i < 110 ? 1400 : 700));
