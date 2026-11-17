@@ -576,6 +576,12 @@
     { key: "pressHpa", title: "Barometric pressure", unit: " hPa", d: 1, color: "--series-1", note: "No good or bad line. A falling line often means weather is on the way." },
     { key: "gasPct", title: "Gas percentage", unit: " %", d: 0, color: "--series-3", note: "Where this reading sits in the sensor's own history. It is not a health limit.", floor: 0, y: [0, 100] },
   ];
+  // Channels the compact climate series does not keep: the 24h/7d views
+  // read fine/coarse points built by compactClimatePoint (lib/store.js),
+  // which stores temperature, humidity, CO2, IAQ and PM2.5 only. Those
+  // channels still have a live "now" value but no line in the long views,
+  // so their empty state says so instead of implying no readings exist.
+  var COMPACT_DROPPED = ["voc", "gasR", "pressHpa", "gasPct"];
   function zoneFor(c, v) {
     if (!c.zones || !isNum(v)) return null;
     for (var i = 0; i < c.zones.length; i++) if (v >= c.zones[i].lo && v < c.zones[i].hi) return c.zones[i];
@@ -663,8 +669,13 @@
       '<div class="card"><h3>Want particulate readings?</h3><p class="muted" style="margin:6px 0 0">The BME688 senses gases, not dust. Adding a Sensirion SEN5x (PM1–PM10) makes the pet dander meter far more precise, and the firmware already has a hook for it in <code>home_sensors.h</code>.</p></div>';
 
     window.__sensorData = d;
+    var rangeNote = sensorRange === "7d"
+      ? '<div class="callout mb">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂, IAQ and PM2.5. Gas resistance, VOC, pressure and gas percentage are not kept in this view.</div>'
+      : sensorRange === "24h"
+      ? '<div class="callout mb">The 24-hour view uses the compact 1-minute history, which keeps temperature, humidity, CO₂, IAQ and PM2.5. Gas resistance, VOC, pressure and gas percentage are not kept in this view.</div>'
+      : "";
     return head("Sensors", "Every channel from the BME688 and BSEC2, at full precision.", seg) +
-      (sensorRange === "7d" ? '<div class="callout mb">The 7-day view uses the compact 10-minute history, which keeps temperature, humidity, CO₂ and IAQ.</div>' : "") +
+      rangeNote +
       '<div class="grid g-2 wide3">' + cards + "</div>" + '<div class="grid g-2 top mt">' + cal + addon + "</div>";
   }
   // Chart toolbar, rendered into the .chart-tools div above each chart:
@@ -713,8 +724,10 @@
       // integrity, so its band and label stay. The count says what the
       // toggle controls.
       var breachCount = Ch && Ch.partitionEvents ? Ch.partitionEvents(events).breaches.length : events.filter(function (e) { return e.kind !== "gap"; }).length;
+      var dropped = (sensorRange === "24h" || sensorRange === "7d") && COMPACT_DROPPED.indexOf(c.key) !== -1;
       lineChart(el, {
         t: shown.t, series: shown.series, unit: c.unit, label: c.title,
+        empty: dropped ? "Not kept in the " + (sensorRange === "7d" ? "7-day" : "24-hour") + " view — switch to 6h to see this line." : undefined,
         zones: c.zones, marks: c.marks,
         yRange: c.y || c.zones ? guideRange(visVals, c) : undefined,
         fmt: function (v) { return fmt(v, c.d); },
