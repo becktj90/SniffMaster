@@ -1239,6 +1239,9 @@
 
   // ── Alerts ─────────────────────────────────────────────────────────
   var alertState = { step: "form", channel: "email", id: null, masked: "", address: "", push: null, error: "", ok: "" };
+  // Change-your-limits form: keyed by the unsubscribe token from an alert
+  // email, so a subscriber can edit their own limits without signing up again.
+  var changeState = { token: "", masked: "", channel: "", rules: null, loaded: false, error: "", ok: "" };
   async function pageAlerts() {
     var info = await load("alerts").catch(function () { return null; });
     if (!info) return head("Alerts") + '<div class="card"><p class="muted">Alerts are unavailable right now.</p></div>';
@@ -1308,10 +1311,41 @@
         '<p class="muted small" style="margin:0">You\'ll get one message when a reading crosses your limit, a reminder at most every 3 hours if it stays there, and nothing more until it clears.</p>' +
         '<div><button class="btn block" type="submit"' + (none ? " disabled" : "") + ">Send my code</button></div></form>";
     }
+    // Already signed up? Load this subscriber's limits by their unsubscribe
+    // token and let them change the numbers — no re-signup needed.
+    var changeMsg = (changeState.error ? '<div class="msg err" role="alert">' + esc(changeState.error) + "</div>" : "") + (changeState.ok ? '<div class="msg ok" role="status">' + esc(changeState.ok) + "</div>" : "");
+    var changeBody;
+    if (!changeState.loaded) {
+      changeBody = '<form class="form" id="changeform">' + changeMsg +
+        '<p class="muted" style="margin:0">Paste the token from the unsubscribe link in any alert email — it\'s the part after <span style="white-space:nowrap">?unsub=</span> — or paste the whole link and we\'ll take it from there.</p>' +
+        '<div class="field"><label for="changetoken">Unsubscribe token</label><input id="changetoken" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste your token or unsubscribe link" value="' + esc(changeState.token) + '"' + (changeState.error ? ' aria-invalid="true"' : "") + " required></div>" +
+        '<div><button class="btn" type="submit">Load my limits</button></div></form>';
+    } else {
+      var changeChoice = function (k, r) {
+        var on = changeState.rules[k] !== undefined;
+        return '<label class="choice' + (on ? "" : " off") + '"><span><b>' + esc(r.label) + "</b><span>" + esc(r.hint || "") + "</span></span>" +
+          '<input type="checkbox" role="switch" data-crule="' + k + '"' + (on ? " checked" : "") + "></label>";
+      };
+      var changeEasy = ruleList.filter(function (x) { return x[1].easy; }).map(function (x) { return changeChoice(x[0], x[1]); }).join("");
+      var changeMore = ruleList.filter(function (x) { return !x[1].easy; }).map(function (x) { return changeChoice(x[0], x[1]); }).join("");
+      var changeNumbers = ruleList.filter(function (x) { return x[1].dir !== "flag"; }).map(function (x) {
+        var k = x[0], r = x[1];
+        var val = isNum(changeState.rules[k]) ? changeState.rules[k] : r.def;
+        return '<label class="rule"><span>' + esc(r.label) + "</span>" +
+          '<span class="lim">' + (r.dir === "above" ? "above" : "below") + ' <input type="number" data-clim="' + k + '" value="' + val + '" min="' + r.min + '" max="' + r.max + '" step="' + (r.max <= 20 ? 0.5 : 1) + '">' + esc(r.unit.trim()) + "</span></label>";
+      }).join("");
+      changeBody = '<form class="form" id="changesave">' + changeMsg +
+        '<p class="muted" style="margin:0">Limits for <b>' + esc(changeState.masked) + "</b>. Saving replaces them — anything left unticked stops alerting.</p>" +
+        '<fieldset class="field"><legend>Tell me when…</legend><div class="choices">' + changeEasy + "</div>" +
+        (changeMore ? '<details class="more"><summary>More alerts</summary><div class="choices">' + changeMore + "</div></details>" : "") +
+        '<details class="more"><summary>Change the exact numbers</summary><div class="rules">' + changeNumbers + "</div></details></fieldset>" +
+        '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">Save my limits</button><button class="btn ghost" type="button" id="change-reset">Use a different token</button></div></form>';
+    }
     return head("Alerts", "Pick what you want to hear about. An email or phone notification arrives when it happens, and each message has a link to stop.") +
       '<div class="grid g-side top"><div class="card">' + body + "</div>" +
       '<div class="card"><h3>How it works</h3><ol class="muted" style="padding-left:18px;margin:10px 0 0;display:grid;gap:8px"><li>Pick email or a phone notification, and the readings you care about.</li><li>Confirm with the code we send, so nobody can sign you up by mistake.</li><li>SniffMaster checks every couple of minutes and only messages you when something changes.</li></ol>' +
-      '<p class="note">' + info.subscriberCount + " " + (info.subscriberCount === 1 ? "person is" : "people are") + " signed up." + (none ? " Alerts aren't configured on this dashboard yet." : "") + "</p></div></div>";
+      '<p class="note">' + info.subscriberCount + " " + (info.subscriberCount === 1 ? "person is" : "people are") + " signed up." + (none ? " Alerts aren't configured on this dashboard yet." : "") + "</p></div></div>" +
+      '<div class="card mt"><h3 style="margin-bottom:8px">Already signed up? Change your limits</h3>' + changeBody + "</div>";
   }
   function bindAlerts() {
     view.querySelectorAll("[data-ch]").forEach(function (b) {
@@ -1363,6 +1397,54 @@
         var btn = cf.querySelector('button[type="submit"]'); btn.disabled = true;
         var r = await post({ action: "verify", id: alertState.id, code: $("#code").value });
         if (r.error) { alertState.error = r.error; } else { alertState = { step: "done", channel: alertState.channel, push: alertState.push, ok: "You're signed up. Alerts will go to " + r.masked + "." }; cache.alerts = null; }
+        rerender();
+      });
+    }
+    // Change-your-limits: load by unsubscribe token, then save new limits.
+    // The token input accepts the bare token or the whole unsubscribe link.
+    view.querySelectorAll("[data-crule]").forEach(function (cb) {
+      cb.addEventListener("change", function () { cb.closest(".choice") && cb.closest(".choice").classList.toggle("off", !cb.checked); });
+    });
+    var changeForm = $("#changeform");
+    if (changeForm) {
+      if (changeState.error) $("#changetoken").focus();
+      changeForm.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        var pasted = $("#changetoken").value.trim();
+        var m = pasted.match(/[?&]unsub=([^&#\s]+)/);
+        var tok = m ? decodeURIComponent(m[1]) : pasted.split(/\s+/)[0];
+        if (!tok) { changeState.error = "Paste the token from an unsubscribe link in an alert email."; changeState.ok = ""; return rerender(); }
+        var btn = changeForm.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = "Loading…";
+        var res, j;
+        try {
+          res = await fetch("/api/alerts?token=" + encodeURIComponent(tok), { cache: "no-store" });
+          j = await res.json().catch(function () { return {}; });
+        } catch (e) { res = null; j = {}; }
+        if (!res || !res.ok) {
+          changeState = { token: pasted, masked: "", channel: "", rules: null, loaded: false, error: (j && j.error) || "That link isn't recognized. Use the unsubscribe link in an alert email.", ok: "" };
+        } else {
+          changeState = { token: tok, masked: j.masked || "", channel: j.channel || "", rules: j.rules || {}, loaded: true, error: "", ok: "" };
+        }
+        rerender();
+      });
+    }
+    var changeSave = $("#changesave");
+    if (changeSave) {
+      var changeReset = $("#change-reset");
+      if (changeReset) changeReset.addEventListener("click", function () { changeState = { token: "", masked: "", channel: "", rules: null, loaded: false, error: "", ok: "" }; rerender(); });
+      changeSave.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        var rules = {};
+        changeSave.querySelectorAll("[data-crule]").forEach(function (cb) {
+          if (!cb.checked) return;
+          var k = cb.dataset.crule, lim = changeSave.querySelector('[data-clim="' + k + '"]');
+          rules[k] = lim ? Number(lim.value) : true;
+        });
+        if (!Object.keys(rules).length) { changeState.error = "Pick at least one thing to be alerted about."; changeState.ok = ""; return rerender(); }
+        var btn = changeSave.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = "Saving…";
+        var r = await post({ action: "update", token: changeState.token, rules: rules });
+        if (r.error) { changeState.error = r.error; changeState.ok = ""; }
+        else { changeState.rules = r.rules || rules; changeState.ok = "Limits updated for " + (r.masked || changeState.masked) + "."; changeState.error = ""; }
         rerender();
       });
     }
@@ -1443,7 +1525,7 @@
       var fields = S.SENSITIVITY_FIELDS.map(function (f) {
         return '<label class="thresh"><span>' + f.label + '</span><input type="number" data-setting="' + f.key + '" value="' + server[f.key] + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '" inputmode="decimal"><span class="unit">' + f.unit + "</span></label>";
       }).join("");
-      profileHtml = '<p class="muted" style="margin:0 0 12px">Alert limits live on the server, so they apply to alerts for everyone watching this dashboard.</p>' +
+      profileHtml = '<p class="muted" style="margin:0 0 12px">These are the dashboard&rsquo;s server alarm limits — they drive the owner alerts, the daily summary, and the breach strip. Your own email and push alert limits are changed on the <a href="#/alerts">Alerts page</a>.</p>' +
         '<h4 style="margin:0 0 8px">Environment</h4>' + envSeg + '<p class="note">' + esc(env.blurb) + "</p>" +
         '<h4 style="margin:14px 0 8px">Alert sensitivity ' + (preset === "custom" ? pill("Custom", "na") : "") + "</h4>" + presetSeg +
         '<p class="note">' + esc(presetBlurb) + "</p>" +
