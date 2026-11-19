@@ -2,7 +2,7 @@
  * GET /api/health
  *
  * Lightweight storage health probe for the hosted dashboard.
- * Reports whether Upstash Redis is configured and reachable.
+ * Reports whether Turso is configured and reachable.
  */
 
 import { getStorageHealth } from "../lib/store.js";

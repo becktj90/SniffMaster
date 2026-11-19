@@ -1,6 +1,6 @@
 // Health profile: alert sensitivity presets + environment type.
 //
-// The server already stores owner-adjustable alert limits in Redis and
+// The server already stores owner-adjustable alert limits in Turso and
 // merges them via getEffectiveThresholds() (web/lib/thresholds.js); the
 // Settings page writes them through POST /api/settings. This module holds
 // only the client-side preset definitions — which limit values a named

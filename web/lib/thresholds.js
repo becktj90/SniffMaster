@@ -13,7 +13,7 @@
  *   - CO2 above limit → ventilation falling behind occupancy
  *
  * The humidity/temperature/CO2 limits are OWNER-ADJUSTABLE at runtime: the settings
- * endpoint stores overrides in Redis, and callers merge them via
+ * endpoint stores overrides in the store, and callers merge them via
  * getEffectiveThresholds() before evaluating. THRESHOLDS below are the built-in
  * defaults / fallback.
  *
@@ -45,7 +45,7 @@ export const ENVIRONMENT_TYPES = ["industrial", "office", "home"];
 export const DEFAULT_ENVIRONMENT_TYPE = "industrial";
 
 // Legacy aliases from older stored settings — normalize silently so existing
-// Redis blobs keep working without a migration.
+// stored blobs keep working without a migration.
 const ENVIRONMENT_ALIASES = { construction: "industrial" };
 
 export function normalizeEnvironmentType(value) {

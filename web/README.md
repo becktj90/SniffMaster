@@ -8,7 +8,7 @@ A hosted PWA that displays real-time air quality data from your SniffMaster Pro 
 ESP32 (sketch_apr3a.ino)
   │  HTTPS POST every 10 min
   ▼
-Vercel Serverless  ──►  Upstash Redis (free tier)
+Vercel Serverless  ──►  Turso (libSQL/SQLite)
   POST /api/update           │
                              │
 Browser / iPhone PWA         │
@@ -23,7 +23,7 @@ Browser / iPhone PWA         │
 
 **API relay**: Serverless functions on Vercel for snapshots, sulfur-priority events, history, SSE, health checks, office metrics, and weather briefing.
 
-**Storage**: Upstash Redis (free tier — 10k commands/day). Stores latest snapshot + 48h ring buffer.
+**Storage**: Turso (libSQL/SQLite — free tier, 5 GB storage). Stores latest snapshot + 24h ring buffer, 7-day home series, settings, alerts, and caches. Schema lives in `lib/store.js`.
 
 **ESP32**: New `sendToWebDashboard()` function posts a JSON snapshot via HTTPS.
 
@@ -55,11 +55,16 @@ Run the tests with `npm test` (in `web/`).
 
 ## Deploy (one-time setup)
 
-### 1. Create Upstash Redis database
+### 1. Create a Turso database
 
-1. Sign up at https://upstash.com (free)
-2. Create a Redis database (any region)
-3. Copy the **REST URL** and **REST Token** from the database details page
+1. Sign up at https://turso.tech (free)
+2. Create a database (any region): `turso db create sniffmaster`
+3. Copy the database URL and auth token:
+   ```bash
+   turso db show sniffmaster --url
+   turso db tokens create sniffmaster
+   ```
+   (For local dev, a file URL works instead: `TURSO_DATABASE_URL=file:./dev.db`, no token needed.)
 
 ### 2. Deploy to Vercel
 
@@ -75,8 +80,8 @@ vercel
 
 # Set environment variables
 vercel env add SNIFFMASTER_API_KEY     # generate: openssl rand -hex 16
-vercel env add UPSTASH_REDIS_REST_URL  # from step 1
-vercel env add UPSTASH_REDIS_REST_TOKEN # from step 1
+vercel env add TURSO_DATABASE_URL       # from step 1
+vercel env add TURSO_AUTH_TOKEN         # from step 1
 vercel env add OPENAI_API_KEY          # optional, enables model-generated weather insight
 
 # Deploy to production
@@ -154,7 +159,7 @@ Returns recent sulfur/VSC priority events (newest first).
 
 ### GET /api/health
 
-Returns Redis configuration + reachability status so you can verify the hosted relay is actually talking to Upstash.
+Returns Turso configuration + reachability status so you can verify the hosted relay is actually talking to the database.
 
 ### GET /api/office-stats
 
@@ -168,7 +173,7 @@ Returns a 3-day local forecast bundle plus a concise local insight. Uses Open-Me
 
 Three modes:
 - **Unauthenticated**: returns the most recently stored 24h summary (or 204) — used by the dashboard's Restoration Safety Monitor panel.
-- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic Redis lock guarantees at most one send per 6-hour window. The report is tailored (wording, which sensors are highlighted) by the current `environmentType` — see `/api/settings` below.
+- **Authorized** (`Authorization: Bearer $CRON_SECRET`, sent automatically by Vercel Cron): computes the 24h min/avg/max baseline, texts the morning report via AWS SNS, stores it, and returns the JSON. An atomic store lock guarantees at most one send per 6-hour window. The report is tailored (wording, which sensors are highlighted) by the current `environmentType` — see `/api/settings` below.
 - **`?manual=true`** (no `CRON_SECRET` needed — the "Send test report now" button on the dashboard): forces a real, fresh send the same way `?force=true` does, but since anyone with the dashboard URL can trigger it and each send costs real money via ClickSend, it's rate-limited server-side to once every 5 minutes (independent of the 6-hour cron resend guard) rather than gated behind a secret.
 
 Report wording isn't static: it factors in how many consecutive days a problem has persisted (or that it just cleared) via `computeProblemStreak()`, and the OpenAI-written narrative is given the same day-over-day % comparisons the report page shows, so two different underlying situations don't read the same.
@@ -289,13 +294,13 @@ Humidity 61% > 55% → you'll get an alert text immediately!
 The frontend is static files and the API is standard serverless functions. You can adapt to:
 
 - **Netlify**: Move `api/` to `netlify/functions/`, update imports, add `netlify.toml`
-- **Cloudflare Pages + Workers**: Convert functions to Workers format, use Cloudflare KV instead of Upstash
+- **Cloudflare Pages + Workers**: Convert functions to Workers format, use Cloudflare D1 instead of Turso
 - **Railway / Fly.io**: Wrap in an Express server
 
 ## Cost
 
 Everything used is free tier:
 - **Vercel**: Free for hobby (100 GB bandwidth, 100k function invocations/month)
-- **Upstash Redis**: Free tier (10k commands/day — device posts 144/day, dashboard polls ~5k/day when open)
+- **Turso**: Free tier (5 GB storage, 500M rows read/month — device posts 144/day, dashboard polls are small SQL reads)
 - **AWS SNS**: ~$0.00645 per US SMS (~$0.25/month for one daily report + occasional alerts)
 - **ESP32**: One HTTPS POST every 10 minutes (~1–3 seconds, no impact on sensor loop)

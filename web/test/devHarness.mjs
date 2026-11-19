@@ -1,12 +1,17 @@
-// Local dev harness: fake Redis + seeded readings + the real server on :5057.
-import { startFakeUpstash } from "./fakeUpstash.mjs";
-const up = await startFakeUpstash();
-process.env.UPSTASH_REDIS_REST_URL = up.url; process.env.UPSTASH_REDIS_REST_TOKEN = "t";
+// Local dev harness: local Turso DB + seeded readings + the real server on :5057.
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createClient } from "@libsql/client";
+import { compactClimatePoint, shouldSampleCoarse, ensureStoreSchema, getLatest, getStorageHealth } from "../lib/store.js";
+const dbFile = join(tmpdir(), "sniffmaster-dev.db");
+rmSync(dbFile, { force: true });
+process.env.TURSO_DATABASE_URL = `file:${dbFile}`;
 process.env.SNIFFMASTER_API_KEY = "dev"; process.env.PORT = "5057";
 delete process.env.GOOGLE_POLLEN_API_KEY;
 const withPm = process.argv.includes("--pm");
 const now = Date.now();
-// newest-first list, as the store keeps it (lpush)
+// newest-first list, as the store keeps it (rings read back newest-first)
 const list = [];
 for (let i = 0; i < 432; i++) {
   const odors = Array(20).fill(2); odors[16] = i < 30 ? 55 : 10;
@@ -18,18 +23,35 @@ for (let i = 0; i < 432; i++) {
     bsecCfg: "bme680_iaq_33v_3s_4d", bsecBundle: "full", wifiRssi: -53, uptime: 21435, tempRawC: 22.5, humRaw: 49,
     ...(withPm ? { pm25: 6 + Math.sin(i / 12) * 4 + (i < 20 ? 14 : 0), pm10: 14 + Math.sin(i / 12) * 6 + (i < 20 ? 22 : 0), hcho: 18 } : {}) }));
 }
-up.kv.set("sniffmaster:history", list);
-up.kv.set("sniffmaster:latest", list[0]);
+await ensureStoreSchema();
+const client = createClient({ url: `file:${dbFile}` });
+// Direct SQL, not putSnapshot — putSnapshot would overwrite receivedAt with
+// Date.now() and flatten the 3-day spread into one instant.
+const stmts = [{ sql: "INSERT INTO kv (key, value) VALUES ('sniffmaster:latest', ?)", args: [list[0]] }];
+for (const raw of [...list].reverse()) {
+  const h = JSON.parse(raw);
+  stmts.push({ sql: "INSERT INTO rings (ring, ts, payload) VALUES ('sniffmaster:history', ?, ?)", args: [Number(h.receivedAt) || now, raw] });
+}
+const fine = list.map((raw) => compactClimatePoint(JSON.parse(raw))).filter(Boolean);
+const coarse = [];
+for (const p of [...fine].reverse()) if (shouldSampleCoarse(coarse[0]?.t, p.t)) coarse.unshift(p);
+for (const p of [...fine].reverse()) {
+  stmts.push({ sql: "INSERT INTO rings (ring, ts, payload) VALUES ('sniffmaster:home_fine', ?, ?)", args: [Number(p.t) || 0, JSON.stringify(p)] });
+}
+for (const p of [...coarse].reverse()) {
+  stmts.push({ sql: "INSERT INTO rings (ring, ts, payload) VALUES ('sniffmaster:home_coarse', ?, ?)", args: [Number(p.t) || 0, JSON.stringify(p)] });
+}
+await client.batch(stmts);
+client.close();
 const express = (await import("express")).default;
 const extras = (await import("../api/extras.js")).default;
 const app = express();
 app.use(express.json());
-app.get("/api/latest", (_req, res) => {
-  const raw = up.kv.get("sniffmaster:latest");
-  res.json(typeof raw === "string" ? JSON.parse(raw) : raw);
+app.get("/api/latest", async (_req, res) => {
+  res.json(await getLatest());
 });
 app.get("/api/version", (_req, res) => res.json({ version: "1.1.0", commitSha: null, commitRef: null, environment: "local", label: "v1.1.0 (local)" }));
-app.get("/api/health", (_req, res) => res.json({ storage: "upstash-redis", configured: true, reachable: true, latestPresent: true, latestSniffPresent: false, latestCommandPresent: false, snapshotHistoryDepth: 432, sniffHistoryDepth: 0, commandHistoryDepth: 0 }));
+app.get("/api/health", async (_req, res) => res.json(await getStorageHealth()));
 app.all("/api/home-stats", (req, res) => { req.query = { ...req.query, fn: "home-stats" }; extras(req, res); });
 app.all("/api/ai-insight", (req, res) => { req.query = { ...req.query, fn: "ai-insight" }; extras(req, res); });
 app.all("/api/guest", (req, res) => { req.query = { ...req.query, fn: "guest" }; extras(req, res); });

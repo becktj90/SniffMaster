@@ -3,17 +3,16 @@
  * "launches" route and the daily-summary morning report).
  *
  * Fetches from the RocketLaunch.Live free API and caches results in
- * Upstash Redis for one hour to stay well within rate limits.
+ * the store for one hour to stay well within rate limits.
  * Falls back to an empty list on any error so callers degrade gracefully.
  *
  * Data source: https://www.rocketlaunch.live/ (free public API, no key required)
  */
 
-import { isRedisConfigured } from "./store.js";
-import { Redis } from "@upstash/redis";
+import { isStoreConfigured, getJsonCache, setJsonCache } from "./store.js";
 
 const RLL_ALL_BASE = "https://fdo.rocketlaunch.live/json/launches/next/15";
-const CACHE_KEY = "sniffmaster:launches";
+const CACHE_KEY = "launches";
 const CACHE_TTL_SEC = 3600; // 1 hour
 
 // Cape Canaveral / KSC launch pad location identifiers (rocketlaunch.live uses state abbreviation)
@@ -21,22 +20,18 @@ const CAPE_STATE = "FL";
 const CAPE_KEYWORDS = ["kennedy", "canaveral", "cape", "ccsfs", "ksc", "slc-40", "slc-41", "lc-39"];
 
 export async function getCached() {
-  if (!isRedisConfigured()) return null;
+  if (!isStoreConfigured()) return null;
   try {
-    const redis = Redis.fromEnv();
-    const raw = await redis.get(CACHE_KEY);
-    if (!raw) return null;
-    return typeof raw === "string" ? JSON.parse(raw) : raw;
+    return await getJsonCache(CACHE_KEY);
   } catch {
     return null;
   }
 }
 
 export async function setCache(data) {
-  if (!isRedisConfigured()) return;
+  if (!isStoreConfigured()) return;
   try {
-    const redis = Redis.fromEnv();
-    await redis.set(CACHE_KEY, JSON.stringify(data), { ex: CACHE_TTL_SEC });
+    await setJsonCache(CACHE_KEY, data, CACHE_TTL_SEC);
   } catch {
     // best-effort cache
   }

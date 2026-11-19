@@ -16,7 +16,7 @@
 
 import { requireDeviceAuth } from "../lib/auth.js";
 import {
-  isRedisConfigured,
+  isStoreConfigured,
   getLatest,
   getLatestBleOccupancy,
   getBleOccupancyHistory,
@@ -59,7 +59,6 @@ import {
   isKnownEnvironmentType,
 } from "../lib/thresholds.js";
 import { getCapeLaunches, getCached as getCachedLaunches, setCache as setCacheLaunches, fetchLaunches } from "../lib/launches.js";
-import { Redis } from "@upstash/redis";
 import { createHash } from "node:crypto";
 import { insightFacts, insightCacheKey, claudeInsights, fallbackInsights } from "../lib/insights.js";
 import {
@@ -112,22 +111,20 @@ function extractOutputText(responseJson) {
 }
 
 // ── apod ─────────────────────────────────────────────────────────────────
-// GET /api/apod — NASA Astronomy Picture of the Day, cached 24h in Redis,
+// GET /api/apod — NASA Astronomy Picture of the Day, cached 24h in the store,
 // falling back to the NASA Image and Video Library (no key required).
 const APOD_BASE = "https://api.nasa.gov/planetary/apod";
-const APOD_CACHE_KEY = "sniffmaster:apod";
+const APOD_CACHE_KEY = "apod";
 const APOD_CACHE_TTL_SEC = 86400; // 24 hours — picture changes once a day
 const NASA_IMAGES_BASE = "https://images-api.nasa.gov/search";
 const NASA_IMAGES_QUERIES = ["nebula", "galaxy", "aurora", "solar system", "deep space", "supernova", "milky way", "earth from space"];
-const APOD_FALLBACK_CACHE_KEY = "sniffmaster:apod-fallback";
+const APOD_FALLBACK_CACHE_KEY = "apod-fallback";
 
 async function getApodCached(key = APOD_CACHE_KEY) {
-  if (!isRedisConfigured()) return null;
+  if (!isStoreConfigured()) return null;
   try {
-    const redis = Redis.fromEnv();
-    const raw = await redis.get(key);
-    if (!raw) return null;
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const data = await getJsonCache(key);
+    if (!data) return null;
     // Invalidate if the stored date doesn't match today (UTC)
     const today = new Date().toISOString().slice(0, 10);
     if (data?.date && data.date !== today) return null;
@@ -138,10 +135,9 @@ async function getApodCached(key = APOD_CACHE_KEY) {
 }
 
 async function setApodCache(data, key = APOD_CACHE_KEY) {
-  if (!isRedisConfigured()) return;
+  if (!isStoreConfigured()) return;
   try {
-    const redis = Redis.fromEnv();
-    await redis.set(key, JSON.stringify(data), { ex: APOD_CACHE_TTL_SEC });
+    await setJsonCache(key, data, APOD_CACHE_TTL_SEC);
   } catch {
     // best-effort cache
   }
@@ -350,7 +346,7 @@ async function command(req, res) {
 }
 
 // ── launches ─────────────────────────────────────────────────────────────
-// GET /api/launches — Cape Canaveral launches, 1h Redis cache (lib/launches.js)
+// GET /api/launches — Cape Canaveral launches, 1h store cache (lib/launches.js)
 async function launches(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -808,7 +804,7 @@ const HOME_OUTDOOR_TTL_SEC = 15 * 60;
 const HOME_PAYLOAD_TTL_SEC = 300;
 
 /**
- * Whole-home payload, cached 300 s per trigger set in Redis. This is the hot
+ * Whole-home payload, cached 300 s per trigger set in the store. This is the hot
  * path: /api/oled, /api/home-stats, /api/guest, /api/insights and both
  * /api/update alert gates all build it, ~4,000×/day, and a fresh build
  * re-reads + re-parses the full 24 h history (~2 MB) every time. A 5-minute
@@ -1033,9 +1029,9 @@ async function guest(req, res) {
 
 // ── sniff-stream ─────────────────────────────────────────────────────────
 // GET /api/sniff-stream — lightweight SSE stream for the latest sulfur/VSC
-// priority event. Polls Redis for up to 25 seconds, then the browser reconnects.
+// priority event. Polls the store for up to 25 seconds, then the browser reconnects.
 const STREAM_WINDOW_MS = 25000;
-const POLL_MS = 10000; // was 1500ms (~57K Redis cmds/day per open tab); only /classic uses this stream now
+const POLL_MS = 10000; // was 1500ms (~57K store reads/day per open tab); only /classic uses this stream now
 const HEARTBEAT_MS = 10000;
 
 function sleep(ms) {
@@ -1805,14 +1801,14 @@ async function environment(req, res) {
   const lat = Number(body.lat ?? req.query?.lat);
   const lon = Number(body.lon ?? req.query?.lon);
   const wifi = Array.isArray(body.wifi) ? body.wifi.slice(0, 8) : [];
-  const redis = isRedisConfigured();
+  const storeReady = isStoreConfigured();
   try {
     const result = await lookupEnvironment(
       { lat, lon, wifi },
       {
-        cacheGet: redis ? (key) => getJsonCache(key) : null,
-        cacheSet: redis ? (key, value, ttl) => setJsonCache(key, value, ttl) : null,
-        incr: redis ? (key, ttl) => incrCounter(key, ttl) : null,
+        cacheGet: storeReady ? (key) => getJsonCache(key) : null,
+        cacheSet: storeReady ? (key, value, ttl) => setJsonCache(key, value, ttl) : null,
+        incr: storeReady ? (key, ttl) => incrCounter(key, ttl) : null,
       }
     );
     return res.status(200).json(result && typeof result === "object" ? result : { ok: false });

@@ -1,12 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startFakeUpstash } from "./fakeUpstash.mjs";
+import { startLocalStore, wipeSourceData } from "./localStore.mjs";
 
 test("buildHomePayload caches 300s per trigger set", async () => {
-  const up = await startFakeUpstash();
-  process.env.UPSTASH_REDIS_REST_URL = up.url;
-  process.env.UPSTASH_REDIS_REST_TOKEN = "t";
-  const { putSnapshot } = await import("../lib/store.js");
+  const local = startLocalStore();
+  const { putSnapshot, getJsonCache } = await import("../lib/store.js");
   const { buildHomePayload } = await import("../api/extras.js");
   // No lat/lon: the build skips every outdoor/Google fetch, so no network stub is needed.
   await putSnapshot({
@@ -16,16 +14,14 @@ test("buildHomePayload caches 300s per trigger set", async () => {
   const first = await buildHomePayload("");
   assert.ok(first && first.mode === "home");
   // Key carries the trigger set plus the severity suffix ("std" = all moderate).
-  assert.ok([...up.kv.keys()].includes("sniffmaster:cache:home-payload:none|std"));
+  assert.ok(await getJsonCache("home-payload:none|std"));
   // Wipe the source data: a rebuild would return null, a cache hit returns the same payload.
-  for (const k of ["sniffmaster:latest", "sniffmaster:history", "sniffmaster:home_fine", "sniffmaster:home_coarse"]) {
-    up.kv.delete(k);
-  }
+  await wipeSourceData(local.file);
   const second = await buildHomePayload("");
   assert.deepEqual(second, first);
   // A different trigger set is a different cache key — no stale cross-talk.
   assert.equal(await buildHomePayload("cat"), null);
   // Same triggers but a different severity is a different cache key too.
   assert.equal(await buildHomePayload("", "cat:severe"), null);
-  up.close();
+  local.close();
 });

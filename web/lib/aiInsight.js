@@ -259,7 +259,7 @@ export function fallbackInsight(f) {
 }
 
 /**
- * Pure regeneration decision, so the handler's throttling is testable without Redis.
+ * Pure regeneration decision, so the handler's throttling is testable without the store.
  *
  * @param {object} args
  * @param {object|null} args.perState — cached entry for this exact state key, if any
