@@ -11,14 +11,13 @@
  * generation can never be blocked by a weather outage. All strings returned
  * here may be embedded in SMS bodies — keep them GSM-7-safe ASCII.
  *
- * Cached in Redis for CACHE_TTL_SEC: the daily cron only needs one fetch a
+ * Cached in the store for CACHE_TTL_SEC: the daily cron only needs one fetch a
  * day, but real-time alerts (api/update.js) also want the outlook without
  * adding Open-Meteo's round-trip latency to every device POST — a cache hit
- * there is a plain Redis read.
+ * there is a plain store read.
  */
 
-import { isRedisConfigured } from "./store.js";
-import { Redis } from "@upstash/redis";
+import { isStoreConfigured, getJsonCache, setJsonCache } from "./store.js";
 
 const LC36 = {
   name: "LC-36",
@@ -27,7 +26,7 @@ const LC36 = {
   timezone: "America/New_York",
 };
 
-const CACHE_KEY = "sniffmaster:lc36-outlook";
+const CACHE_KEY = "lc36-outlook";
 const CACHE_TTL_SEC = 1800; // 30 min — outlook doesn't shift fast enough to need fresher
 
 // WMO weather codes → short human label (ASCII only).
@@ -163,24 +162,22 @@ export async function fetchLc36OutlookLive(opts = {}) {
 
 /**
  * Cache-through fetch of the LC-36 outlook (see CACHE_TTL_SEC). Falls back to
- * an uncached live fetch when Redis isn't configured, so local dev and any
+ * an uncached live fetch when the store isn't configured, so local dev and any
  * misconfigured deploy still get an outlook rather than nothing.
  * @param {{ timeoutMs?: number }} [opts]
  */
 export async function fetchLc36Outlook(opts = {}) {
-  if (!isRedisConfigured()) return fetchLc36OutlookLive(opts);
+  if (!isStoreConfigured()) return fetchLc36OutlookLive(opts);
   try {
-    const redis = Redis.fromEnv();
-    const raw = await redis.get(CACHE_KEY);
-    if (raw) return typeof raw === "string" ? JSON.parse(raw) : raw;
+    const hit = await getJsonCache(CACHE_KEY);
+    if (hit) return hit;
   } catch (err) {
     console.error("forecast: outlook cache read failed:", err?.message || err);
   }
   const fresh = await fetchLc36OutlookLive(opts);
   if (fresh) {
     try {
-      const redis = Redis.fromEnv();
-      await redis.set(CACHE_KEY, JSON.stringify(fresh), { ex: CACHE_TTL_SEC });
+      await setJsonCache(CACHE_KEY, fresh, CACHE_TTL_SEC);
     } catch (err) {
       console.error("forecast: outlook cache write failed:", err?.message || err);
     }

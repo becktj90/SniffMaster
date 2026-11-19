@@ -1,43 +1,107 @@
 /**
- * store.js — Upstash Redis data store for SniffMaster web relay
+ * store.js — Turso (libSQL/SQLite) data store for SniffMaster web relay
  *
- * Keys:
- *   sniffmaster:latest   — most recent sensor snapshot (JSON)
- *   sniffmaster:history  — sorted list of recent snapshots (last 1440 = 24h @ 1min)
- *   sniffmaster:home_fine — compact climate points, last 26h at the post interval
- *   sniffmaster:home_coarse — compact climate points, 7d at 10-minute steps
- *   sniffmaster:sniff    — most recent priority sulfur/VSC event (JSON)
- *   sniffmaster:sniff_history — recent priority sulfur/VSC events
- *   sniffmaster:sniff_seq — monotonic sequence for live event streaming
- *   sniffmaster:command  — most recent owner-triggered device command (JSON)
- *   sniffmaster:command_history — recent owner-triggered device commands
- *   sniffmaster:command_seq — monotonic sequence for remote commands
+ * Replaces the former Upstash Redis backend (Nov 2026: the Redis free tier
+ * hit its 10 GB monthly bandwidth cap and the database was suspended).
+ * Every exported function keeps the same name, signature, and return shape
+ * as the Redis version, so API handlers and lib callers are unchanged.
+ *
+ * Schema (created on first use by ensureSchema; all tables idempotent):
+ *   kv        — single-slot JSON values (TEXT key → TEXT value):
+ *               latest snapshot, sniff/command latest, alert state/snapshot,
+ *               daily-summary latest, settings, monotonic sequences
+ *   rings     — history ring buffers: one row per entry, `id` AUTOINCREMENT
+ *               gives insertion order (newest = highest id); trimmed to max
+ *               rows after every append. `ts` is the entry's timestamp (ms).
+ *   cache     — short-lived JSON cache entries with expires_at (ms)
+ *   counters  — named counters with an optional expires_at (ms)
+ *   locks     — named locks with owner token + expires_at (ms)
+ *
+ * Rings (ring name → max rows):
+ *   snapshot_history       1440 (24h @ 1min) — full sensor snapshots
+ *   home_fine              1560 (26h @ 1min) — compact climate points
+ *   home_coarse            1008 (7d @ 10min) — compact climate points
+ *   sniff_history          96                — priority sulfur/VSC events
+ *   command_history        48                — owner-triggered commands
+ *   ble_occupancy_history  288 (24h @ 5min)  — BLE occupancy snapshots
+ *   daily_summary_history  30 (~1 month)     — morning reports
+ *
+ * Env: TURSO_DATABASE_URL (libsql://… for hosted Turso, or file:… for
+ * local dev/tests) and TURSO_AUTH_TOKEN (required for remote URLs; not
+ * needed for file: or loopback URLs).
  */
 
-import { Redis } from "@upstash/redis";
+import { createClient } from "@libsql/client";
 
-let redis = null;
+let client = null;
+let schemaReady = null;
 
-function redisEnv() {
+function storeEnv() {
   return {
-    url: process.env.UPSTASH_REDIS_REST_URL,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    url: process.env.TURSO_DATABASE_URL,
+    token: process.env.TURSO_AUTH_TOKEN,
   };
 }
 
-export function isRedisConfigured() {
-  const { url, token } = redisEnv();
-  return Boolean(url && token);
+export function isStoreConfigured() {
+  const { url, token } = storeEnv();
+  if (!url) return false;
+  // Local file / loopback URLs need no token (tests + local dev); remote
+  // libsql:// and https:// URLs need an auth token.
+  if (url.startsWith("file:") || url === ":memory:") return true;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(url)) return true;
+  return Boolean(token);
 }
 
-function getRedis() {
-  if (!isRedisConfigured()) {
-    throw new Error("Upstash Redis environment variables are missing");
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ring TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rings_ring_id ON rings(ring, id);
+CREATE TABLE IF NOT EXISTS cache (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  expires_at INTEGER -- NULL = no expiry (setJsonCache without a TTL)
+);
+CREATE TABLE IF NOT EXISTS counters (
+  key TEXT PRIMARY KEY,
+  value INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS locks (
+  name TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+`;
+
+/** Create the schema if it does not exist yet (idempotent). */
+export async function ensureStoreSchema() {
+  await getDb();
+}
+
+async function getDb() {
+  if (!isStoreConfigured()) {
+    throw new Error("Turso environment variables are missing");
   }
-  if (!redis) {
-    redis = Redis.fromEnv();
+  if (!client) {
+    const { url, token } = storeEnv();
+    client = createClient({ url, authToken: token || undefined });
+    schemaReady = client.executeMultiple(SCHEMA_SQL).catch((err) => {
+      client = null;
+      schemaReady = null;
+      throw err;
+    });
   }
-  return redis;
+  await schemaReady;
+  return client;
 }
 
 const KEY_LATEST = "sniffmaster:latest";
@@ -68,32 +132,97 @@ const MAX_BLE_OCCUPANCY_HISTORY = 288; // 24 hours at 5-minute intervals
 const MAX_DAILY_SUMMARY_HISTORY = 30; // ~1 month of morning reports
 export const COMMAND_TTL_MS = 10 * 60 * 1000;
 
-/**
- * One Upstash REST round-trip for a latest-value overwrite plus its history ring.
- * Each command inside the pipeline still counts toward the Redis quota.
- */
-async function writeLatestAndRing(redis, latestKey, historyKey, json, max) {
-  const pipe = redis.pipeline();
-  pipe.set(latestKey, json);
-  pipe.lpush(historyKey, json);
-  pipe.ltrim(historyKey, 0, max - 1);
-  await pipe.exec();
+// ── Low-level helpers ─────────────────────────────────────────────────────
+
+async function kvGet(key) {
+  const db = await getDb();
+  const r = await db.execute({ sql: "SELECT value FROM kv WHERE key = ?", args: [key] });
+  return r.rows.length ? r.rows[0].value : null;
 }
+
+async function kvSet(key, value) {
+  const db = await getDb();
+  await db.execute({
+    sql: "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    args: [key, value],
+  });
+}
+
+/** Atomically increment a monotonic sequence stored in kv; returns the new value. */
+async function nextSeq(key) {
+  const db = await getDb();
+  const r = await db.execute({
+    sql: "INSERT INTO kv(key, value) VALUES(?, '1') ON CONFLICT(key) DO UPDATE SET value = CAST(kv.value AS INTEGER) + 1 RETURNING value",
+    args: [key],
+  });
+  return Number(r.rows[0].value);
+}
+
+/**
+ * Overwrite a latest-value slot and append to its history ring, trimming
+ * the ring to `max` rows. One batch, so the three writes land together.
+ */
+async function writeLatestAndRing(latestKey, historyRing, json, max, ts) {
+  const db = await getDb();
+  await db.batch([
+    { sql: "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", args: [latestKey, json] },
+    { sql: "INSERT INTO rings(ring, ts, payload) VALUES(?, ?, ?)", args: [historyRing, ts, json] },
+    { sql: "DELETE FROM rings WHERE ring = ? AND id NOT IN (SELECT id FROM rings WHERE ring = ? ORDER BY id DESC LIMIT ?)", args: [historyRing, historyRing, max] },
+  ]);
+}
+
+/** Newest payload in a ring, or null. */
+async function ringLatest(ring) {
+  const db = await getDb();
+  const r = await db.execute({ sql: "SELECT payload FROM rings WHERE ring = ? ORDER BY id DESC LIMIT 1", args: [ring] });
+  return r.rows.length ? r.rows[0].payload : null;
+}
+
+/** Up to `limit` payloads from a ring, newest first. */
+async function ringList(ring, limit) {
+  const db = await getDb();
+  const r = await db.execute({ sql: "SELECT payload FROM rings WHERE ring = ? ORDER BY id DESC LIMIT ?", args: [ring, limit] });
+  return r.rows.map((row) => row.payload);
+}
+
+async function ringCount(ring) {
+  const db = await getDb();
+  const r = await db.execute({ sql: "SELECT COUNT(*) AS n FROM rings WHERE ring = ?", args: [ring] });
+  return Number(r.rows[0].n);
+}
+
+/**
+ * Atomically claim a named lock when it is free or expired (single
+ * UPSERT…RETURNING: a row comes back only when the claim won).
+ * @returns {Promise<boolean>} true if this caller won the lock
+ */
+async function acquireLockRow(name, token, expiresAt) {
+  const db = await getDb();
+  const now = Date.now();
+  const r = await db.execute({
+    sql: `INSERT INTO locks(name, token, expires_at) VALUES(?, ?, ?)
+          ON CONFLICT(name) DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at
+          WHERE locks.expires_at <= ? RETURNING name`,
+    args: [name, token, expiresAt, now],
+  });
+  return r.rows.length === 1;
+}
+
+// ── Snapshots ─────────────────────────────────────────────────────────────
 
 /**
  * Store a new sensor snapshot.
  * Overwrites latest and appends to history ring buffer.
  */
 export async function putSnapshot(data) {
-  const redis = getRedis();
   const entry = { ...data, receivedAt: Date.now() };
   const json = JSON.stringify(entry);
-  await writeLatestAndRing(redis, KEY_LATEST, KEY_HISTORY, json, MAX_HISTORY);
+  await writeLatestAndRing(KEY_LATEST, KEY_HISTORY, json, MAX_HISTORY, entry.receivedAt);
 
   // Compact climate series for the Home tab. A failure here must not reject
   // the snapshot the device just posted.
   try {
-    await recordHomeSeries(redis, entry);
+    await recordHomeSeries(entry);
   } catch (err) {
     console.error("home series append failed:", err);
   }
@@ -145,17 +274,23 @@ function parseStored(raw) {
   return raw;
 }
 
-async function recordHomeSeries(redis, entry) {
+async function recordHomeSeries(entry) {
   const point = compactClimatePoint(entry);
   if (!point) return;
   const json = JSON.stringify(point);
-  const last = parseStored(await redis.lindex(KEY_HOME_COARSE, 0));
-  const pipe = redis.pipeline();
-  pipe.lpush(KEY_HOME_FINE, json);
-  if (shouldSampleCoarse(last?.t, point.t)) pipe.lpush(KEY_HOME_COARSE, json);
-  pipe.ltrim(KEY_HOME_FINE, 0, MAX_HOME_FINE - 1);
-  pipe.ltrim(KEY_HOME_COARSE, 0, MAX_HOME_COARSE - 1);
-  await pipe.exec();
+  const last = parseStored(await ringLatest(KEY_HOME_COARSE));
+  const db = await getDb();
+  const stmts = [
+    { sql: "INSERT INTO rings(ring, ts, payload) VALUES(?, ?, ?)", args: [KEY_HOME_FINE, point.t, json] },
+    { sql: "DELETE FROM rings WHERE ring = ? AND id NOT IN (SELECT id FROM rings WHERE ring = ? ORDER BY id DESC LIMIT ?)", args: [KEY_HOME_FINE, KEY_HOME_FINE, MAX_HOME_FINE] },
+  ];
+  if (shouldSampleCoarse(last?.t, point.t)) {
+    stmts.push(
+      { sql: "INSERT INTO rings(ring, ts, payload) VALUES(?, ?, ?)", args: [KEY_HOME_COARSE, point.t, json] },
+      { sql: "DELETE FROM rings WHERE ring = ? AND id NOT IN (SELECT id FROM rings WHERE ring = ? ORDER BY id DESC LIMIT ?)", args: [KEY_HOME_COARSE, KEY_HOME_COARSE, MAX_HOME_COARSE] },
+    );
+  }
+  await db.batch(stmts);
 }
 
 /**
@@ -163,10 +298,9 @@ async function recordHomeSeries(redis, entry) {
  * `fine` is the last 26 hours at the device's post interval.
  */
 export async function getHomeSeries() {
-  const redis = getRedis();
   const [coarse, fine] = await Promise.all([
-    redis.lrange(KEY_HOME_COARSE, 0, MAX_HOME_COARSE - 1),
-    redis.lrange(KEY_HOME_FINE, 0, MAX_HOME_FINE - 1),
+    ringList(KEY_HOME_COARSE, MAX_HOME_COARSE),
+    ringList(KEY_HOME_FINE, MAX_HOME_FINE),
   ]);
   const parseList = (items) => (items || []).map(parseStored).filter(Boolean);
   return { coarse: parseList(coarse), fine: parseList(fine) };
@@ -176,8 +310,7 @@ export async function getHomeSeries() {
  * Get the most recent snapshot.
  */
 export async function getLatest() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_LATEST);
+  const raw = await kvGet(KEY_LATEST);
   if (!raw) return null;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
@@ -187,27 +320,27 @@ export async function getLatest() {
  * @param {number} count — max entries to return (default 48). Capped at 24h of 1-minute posts.
  */
 export async function getHistory(count = 48) {
-  const redis = getRedis();
   const n = Math.min(count, MAX_HISTORY);
-  const items = await redis.lrange(KEY_HISTORY, 0, n - 1);
+  const items = await ringList(KEY_HISTORY, n);
   return items.map((item) =>
     typeof item === "string" ? JSON.parse(item) : item
   );
 }
 
+// ── Priority sulfur/VSC events ────────────────────────────────────────────
+
 /**
  * Store a priority sulfur/VSC event so the dashboard can react immediately.
  */
 export async function putSniffEvent(data) {
-  const redis = getRedis();
-  const seq = await redis.incr(KEY_SNIFF_SEQ);
+  const seq = await nextSeq(KEY_SNIFF_SEQ);
   const entry = {
     ...data,
     seq,
     receivedAt: Date.now(),
   };
   const json = JSON.stringify(entry);
-  await writeLatestAndRing(redis, KEY_SNIFF, KEY_SNIFF_HISTORY, json, MAX_SNIFF_HISTORY);
+  await writeLatestAndRing(KEY_SNIFF, KEY_SNIFF_HISTORY, json, MAX_SNIFF_HISTORY, entry.receivedAt);
   return entry;
 }
 
@@ -215,8 +348,7 @@ export async function putSniffEvent(data) {
  * Get the most recent priority sulfur/VSC event.
  */
 export async function getLatestSniff() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_SNIFF);
+  const raw = await kvGet(KEY_SNIFF);
   if (!raw) return null;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
@@ -225,27 +357,27 @@ export async function getLatestSniff() {
  * Get recent priority sulfur/VSC events (newest first).
  */
 export async function getSniffHistory(count = 12) {
-  const redis = getRedis();
   const n = Math.min(count, MAX_SNIFF_HISTORY);
-  const items = await redis.lrange(KEY_SNIFF_HISTORY, 0, n - 1);
+  const items = await ringList(KEY_SNIFF_HISTORY, n);
   return items.map((item) =>
     typeof item === "string" ? JSON.parse(item) : item
   );
 }
 
+// ── Remote device commands ────────────────────────────────────────────────
+
 /**
  * Store a remote device command requested from the portal.
  */
 export async function putCommand(data) {
-  const redis = getRedis();
-  const seq = await redis.incr(KEY_COMMAND_SEQ);
+  const seq = await nextSeq(KEY_COMMAND_SEQ);
   const entry = {
     ...data,
     seq,
     receivedAt: Date.now(),
   };
   const json = JSON.stringify(entry);
-  await writeLatestAndRing(redis, KEY_COMMAND, KEY_COMMAND_HISTORY, json, MAX_COMMAND_HISTORY);
+  await writeLatestAndRing(KEY_COMMAND, KEY_COMMAND_HISTORY, json, MAX_COMMAND_HISTORY, entry.receivedAt);
   return entry;
 }
 
@@ -271,8 +403,7 @@ export async function getPendingCommand(after = 0) {
  * Get the most recent remote device command.
  */
 export async function getLatestCommand() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_COMMAND);
+  const raw = await kvGet(KEY_COMMAND);
   if (!raw) return null;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
@@ -281,18 +412,17 @@ export async function getLatestCommand() {
  * Get recent remote commands (newest first).
  */
 export async function getCommandHistory(count = 12) {
-  const redis = getRedis();
   const n = Math.min(count, MAX_COMMAND_HISTORY);
-  const items = await redis.lrange(KEY_COMMAND_HISTORY, 0, n - 1);
+  const items = await ringList(KEY_COMMAND_HISTORY, n);
   return items.map((item) =>
     typeof item === "string" ? JSON.parse(item) : item
   );
 }
 
 export async function getStorageHealth() {
-  if (!isRedisConfigured()) {
+  if (!isStoreConfigured()) {
     return {
-      storage: "upstash-redis",
+      storage: "turso",
       configured: false,
       reachable: false,
       latestPresent: false,
@@ -301,37 +431,39 @@ export async function getStorageHealth() {
       snapshotHistoryDepth: 0,
       sniffHistoryDepth: 0,
       commandHistoryDepth: 0,
-      error: "missing redis environment variables",
+      error: "missing turso environment variables",
     };
   }
 
   try {
-    const redis = getRedis();
-    const [pong, latest, latestSniff, latestCommand, snapshotHistoryDepth, sniffHistoryDepth, commandHistoryDepth] = await Promise.all([
-      redis.ping(),
-      redis.get(KEY_LATEST),
-      redis.get(KEY_SNIFF),
-      redis.get(KEY_COMMAND),
-      redis.llen(KEY_HISTORY),
-      redis.llen(KEY_SNIFF_HISTORY),
-      redis.llen(KEY_COMMAND_HISTORY),
+    const db = await getDb();
+    const [probe, latest, latestSniff, latestCommand, counts] = await Promise.all([
+      db.execute("SELECT 1 AS one"),
+      kvGet(KEY_LATEST),
+      kvGet(KEY_SNIFF),
+      kvGet(KEY_COMMAND),
+      db.execute({
+        sql: "SELECT ring, COUNT(*) AS n FROM rings WHERE ring IN (?, ?, ?) GROUP BY ring",
+        args: [KEY_HISTORY, KEY_SNIFF_HISTORY, KEY_COMMAND_HISTORY],
+      }),
     ]);
+    const depth = Object.fromEntries(counts.rows.map((r) => [r.ring, Number(r.n)]));
 
     return {
-      storage: "upstash-redis",
+      storage: "turso",
       configured: true,
       reachable: true,
-      pong,
+      pong: "PONG",
       latestPresent: Boolean(latest),
       latestSniffPresent: Boolean(latestSniff),
       latestCommandPresent: Boolean(latestCommand),
-      snapshotHistoryDepth: Number(snapshotHistoryDepth || 0),
-      sniffHistoryDepth: Number(sniffHistoryDepth || 0),
-      commandHistoryDepth: Number(commandHistoryDepth || 0),
+      snapshotHistoryDepth: depth[KEY_HISTORY] || 0,
+      sniffHistoryDepth: depth[KEY_SNIFF_HISTORY] || 0,
+      commandHistoryDepth: depth[KEY_COMMAND_HISTORY] || 0,
     };
   } catch (err) {
     return {
-      storage: "upstash-redis",
+      storage: "turso",
       configured: true,
       reachable: false,
       latestPresent: false,
@@ -345,12 +477,13 @@ export async function getStorageHealth() {
   }
 }
 
+// ── BLE occupancy ─────────────────────────────────────────────────────────
+
 /**
  * Store a BLE occupancy snapshot for the history ring buffer.
  * Called from the /api/update handler whenever the snapshot includes BLE data.
  */
 export async function putBleOccupancyEntry(data) {
-  const redis = getRedis();
   const entry = {
     deviceCount: data.bleDeviceCount ?? 0,
     occupancyIndex: data.bleOccupancyIndex ?? 0,
@@ -361,7 +494,7 @@ export async function putBleOccupancyEntry(data) {
     receivedAt: data.receivedAt || Date.now(),
   };
   const json = JSON.stringify(entry);
-  await writeLatestAndRing(redis, KEY_BLE_OCCUPANCY, KEY_BLE_OCCUPANCY_HISTORY, json, MAX_BLE_OCCUPANCY_HISTORY);
+  await writeLatestAndRing(KEY_BLE_OCCUPANCY, KEY_BLE_OCCUPANCY_HISTORY, json, MAX_BLE_OCCUPANCY_HISTORY, entry.receivedAt);
   return entry;
 }
 
@@ -369,8 +502,7 @@ export async function putBleOccupancyEntry(data) {
  * Get the most recent BLE occupancy snapshot.
  */
 export async function getLatestBleOccupancy() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_BLE_OCCUPANCY);
+  const raw = await kvGet(KEY_BLE_OCCUPANCY);
   if (!raw) return null;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
@@ -380,13 +512,14 @@ export async function getLatestBleOccupancy() {
  * @param {number} count — max entries to return (default 48)
  */
 export async function getBleOccupancyHistory(count = 48) {
-  const redis = getRedis();
   const n = Math.min(count, MAX_BLE_OCCUPANCY_HISTORY);
-  const items = await redis.lrange(KEY_BLE_OCCUPANCY_HISTORY, 0, n - 1);
+  const items = await ringList(KEY_BLE_OCCUPANCY_HISTORY, n);
   return items.map((item) =>
     typeof item === "string" ? JSON.parse(item) : item
   );
 }
+
+// ── Alert state ───────────────────────────────────────────────────────────
 
 /**
  * Alert de-dupe state for threshold SMS alerts.
@@ -401,8 +534,7 @@ export async function getBleOccupancyHistory(count = 48) {
  * when it is older than GAS_BASE_REFRESH_MS (see lib/thresholds.js).
  */
 export async function getAlertState() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_ALERT_STATE);
+  const raw = await kvGet(KEY_ALERT_STATE);
   if (!raw) return { activeKeys: [], sentAt: {} };
   const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
   const gasBase = Number(parsed.gasBase);
@@ -416,7 +548,6 @@ export async function getAlertState() {
 }
 
 export async function setAlertState(state) {
-  const redis = getRedis();
   const gasBase = Number(state?.gasBase);
   const gasBaseAt = Number(state?.gasBaseAt);
   const entry = {
@@ -426,7 +557,7 @@ export async function setAlertState(state) {
     ...(Number.isFinite(gasBaseAt) ? { gasBaseAt } : {}),
     updatedAt: Date.now(),
   };
-  await redis.set(KEY_ALERT_STATE, JSON.stringify(entry));
+  await kvSet(KEY_ALERT_STATE, JSON.stringify(entry));
   return entry;
 }
 
@@ -439,35 +570,31 @@ export async function setAlertState(state) {
  * alert's own numbers instead of a stale morning report.
  */
 export async function putAlertSnapshot(data) {
-  const redis = getRedis();
   const entry = { ...data, generatedAt: data?.generatedAt || Date.now() };
-  await redis.set(KEY_ALERT_SNAPSHOT, JSON.stringify(entry));
+  await kvSet(KEY_ALERT_SNAPSHOT, JSON.stringify(entry));
   return entry;
 }
 
 export async function getAlertSnapshot() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_ALERT_SNAPSHOT);
+  const raw = await kvGet(KEY_ALERT_SNAPSHOT);
   if (!raw) return null;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
 
+// ── Daily summary + locks ─────────────────────────────────────────────────
+
 /**
  * Atomically claim the right to generate+send today's daily summary.
- * Uses SET NX EX so a double cron fire (or a manual trigger racing the cron)
- * can never double-text: exactly one caller wins the lock per window.
+ * Uses a claim-or-expired row in the locks table so a double cron fire (or
+ * a manual trigger racing the cron) can never double-text: exactly one
+ * caller wins the lock per window.
  * @param {number} ttlSeconds — how long the claim blocks re-sends
  * @returns {Promise<boolean>} true if this caller won the lock
  */
 export async function acquireDailySummaryLock(ttlSeconds) {
-  const redis = getRedis();
-  const result = await redis.set(
-    "sniffmaster:daily_summary_lock",
-    String(Date.now()),
-    { nx: true, ex: Math.max(60, Math.floor(ttlSeconds)) }
-  );
-  // Upstash returns "OK" when the key was set, null when it already existed.
-  return result === "OK";
+  const now = Date.now();
+  const expiresAt = now + Math.max(60, Math.floor(ttlSeconds)) * 1000;
+  return acquireLockRow("sniffmaster:daily_summary_lock", String(now), expiresAt);
 }
 
 /**
@@ -481,13 +608,9 @@ export async function acquireDailySummaryLock(ttlSeconds) {
  * @returns {Promise<boolean>} true if this caller won the lock
  */
 export async function acquireManualReportLock(ttlSeconds) {
-  const redis = getRedis();
-  const result = await redis.set(
-    "sniffmaster:manual_report_lock",
-    String(Date.now()),
-    { nx: true, ex: Math.max(30, Math.floor(ttlSeconds)) }
-  );
-  return result === "OK";
+  const now = Date.now();
+  const expiresAt = now + Math.max(30, Math.floor(ttlSeconds)) * 1000;
+  return acquireLockRow("sniffmaster:manual_report_lock", String(now), expiresAt);
 }
 
 /**
@@ -495,10 +618,9 @@ export async function acquireManualReportLock(ttlSeconds) {
  * panel and follow-up runs can read it. Overwrites latest + appends to history.
  */
 export async function putDailySummary(data) {
-  const redis = getRedis();
   const entry = { ...data, generatedAt: data?.generatedAt || Date.now() };
   const json = JSON.stringify(entry);
-  await writeLatestAndRing(redis, KEY_DAILY_SUMMARY, KEY_DAILY_SUMMARY_HISTORY, json, MAX_DAILY_SUMMARY_HISTORY);
+  await writeLatestAndRing(KEY_DAILY_SUMMARY, KEY_DAILY_SUMMARY_HISTORY, json, MAX_DAILY_SUMMARY_HISTORY, entry.generatedAt);
   return entry;
 }
 
@@ -513,25 +635,27 @@ export async function putDailySummary(data) {
  * @param {boolean} [delivered]
  */
 export async function markDailySummaryDelivered(delivered = true) {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_DAILY_SUMMARY);
+  const raw = await kvGet(KEY_DAILY_SUMMARY);
   if (!raw) return null;
   const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
   entry.smsDelivered = delivered;
   const json = JSON.stringify(entry);
-  await redis.set(KEY_DAILY_SUMMARY, json);
+  await kvSet(KEY_DAILY_SUMMARY, json);
   // Best effort: the history head is the same record; keep it consistent. The
   // latest key above is the source of truth for the retry guard, so a failure
   // here (empty list, rotated head) is cosmetic.
   try {
-    await redis.lset(KEY_DAILY_SUMMARY_HISTORY, 0, json);
+    const db = await getDb();
+    await db.execute({
+      sql: "UPDATE rings SET payload = ? WHERE id = (SELECT id FROM rings WHERE ring = ? ORDER BY id DESC LIMIT 1)",
+      args: [json, KEY_DAILY_SUMMARY_HISTORY],
+    });
   } catch {}
   return entry;
 }
 
 export async function getDailySummary() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_DAILY_SUMMARY);
+  const raw = await kvGet(KEY_DAILY_SUMMARY);
   if (!raw) return null;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
@@ -541,8 +665,7 @@ export async function getDailySummary() {
  * when unset so callers fall back to built-in defaults.
  */
 export async function getSettings() {
-  const redis = getRedis();
-  const raw = await redis.get(KEY_SETTINGS);
+  const raw = await kvGet(KEY_SETTINGS);
   if (!raw) return {};
   const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
   return parsed && typeof parsed === "object" ? parsed : {};
@@ -553,21 +676,19 @@ export async function getSettings() {
  * the patch overwrite; returns the full merged object.
  */
 export async function putSettings(patch) {
-  const redis = getRedis();
   const current = await getSettings();
   const next = { ...current };
   for (const [k, v] of Object.entries(patch || {})) {
     if (v !== undefined) next[k] = v;
   }
   next.updatedAt = Date.now();
-  await redis.set(KEY_SETTINGS, JSON.stringify(next));
+  await kvSet(KEY_SETTINGS, JSON.stringify(next));
   return next;
 }
 
 export async function getDailySummaryHistory(count = 14) {
-  const redis = getRedis();
   const n = Math.min(count, MAX_DAILY_SUMMARY_HISTORY);
-  const items = await redis.lrange(KEY_DAILY_SUMMARY_HISTORY, 0, n - 1);
+  const items = await ringList(KEY_DAILY_SUMMARY_HISTORY, n);
   return items.map((item) =>
     typeof item === "string" ? JSON.parse(item) : item
   );
@@ -577,22 +698,30 @@ export async function getDailySummaryHistory(count = 14) {
 
 /** Read a JSON value cached with setJsonCache; null when absent/expired. */
 export async function getJsonCache(key) {
-  const redis = getRedis();
-  const raw = await redis.get(`sniffmaster:cache:${key}`);
-  if (!raw) return null;
+  const db = await getDb();
+  const fullKey = `sniffmaster:cache:${key}`;
+  const now = Date.now();
+  const r = await db.execute({ sql: "SELECT value, expires_at FROM cache WHERE key = ?", args: [fullKey] });
+  if (!r.rows.length) return null;
+  const exp = r.rows[0].expires_at;
+  if (exp !== null && Number(exp) <= now) {
+    await db.execute({ sql: "DELETE FROM cache WHERE key = ?", args: [fullKey] }).catch(() => {});
+    return null;
+  }
+  const raw = r.rows[0].value;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
 
 /**
- * Run `fn` while holding a short Redis lock (SET NX PX + token-checked
+ * Run `fn` while holding a short store lock (claim-or-expired row + token-checked
  * release). Waits up to ~3s for the lock; throws if it can't get it.
  */
 export async function withLock(name, fn, { ttlMs = 8000, waitMs = 3000 } = {}) {
-  const redis = getRedis();
+  const db = await getDb();
   const key = `sniffmaster:lock:${name}`;
   const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const deadline = Date.now() + waitMs;
-  while ((await redis.set(key, token, { nx: true, px: ttlMs })) !== "OK") {
+  while (!(await acquireLockRow(key, token, Date.now() + ttlMs))) {
     if (Date.now() > deadline) throw new Error(`lock busy: ${name}`);
     await new Promise((r) => setTimeout(r, 60 + Math.random() * 90));
   }
@@ -600,7 +729,7 @@ export async function withLock(name, fn, { ttlMs = 8000, waitMs = 3000 } = {}) {
     return await fn();
   } finally {
     try {
-      if ((await redis.get(key)) === token) await redis.del(key);
+      await db.execute({ sql: "DELETE FROM locks WHERE name = ? AND token = ?", args: [key, token] });
     } catch (err) {
       console.error(`lock release failed: ${name}`, err?.message || err);
     }
@@ -609,37 +738,48 @@ export async function withLock(name, fn, { ttlMs = 8000, waitMs = 3000 } = {}) {
 
 /** Cache a JSON value for `ttlSec` seconds. */
 export async function setJsonCache(key, value, ttlSec) {
-  const redis = getRedis();
-  await redis.set(`sniffmaster:cache:${key}`, JSON.stringify(value), { ex: Math.max(1, Math.floor(ttlSec)) });
+  const db = await getDb();
+  const fullKey = `sniffmaster:cache:${key}`;
+  // No TTL means no expiry (same as the Redis version, which set no EX).
+  const expiresAt = ttlSec == null ? null : Date.now() + Math.max(1, Math.floor(ttlSec)) * 1000;
+  await db.execute({
+    sql: "INSERT INTO cache(key, value, expires_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at",
+    args: [fullKey, JSON.stringify(value), expiresAt],
+  });
 }
 
 /**
  * Atomically increment a counter and (on first increment) give it a TTL so it
  * resets itself. Returns the new value. Used to hard-cap paid API calls.
+ * An expired counter restarts at 1 (as if the key never existed); a counter
+ * whose expiry went missing gets a fresh one on the next call (same repair
+ * the Redis version did when TTL came back -1).
  */
 /** Current value of a counter from incrCounter, or 0 when it has never been bumped. */
 export async function getCounter(key) {
-  const redis = getRedis();
-  const raw = await redis.get(`sniffmaster:counter:${key}`);
-  const n = Number(raw);
+  const db = await getDb();
+  const fullKey = `sniffmaster:counter:${key}`;
+  const r = await db.execute({
+    sql: "SELECT value FROM counters WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)",
+    args: [fullKey, Date.now()],
+  });
+  if (!r.rows.length) return 0;
+  const n = Number(r.rows[0].value);
   return Number.isFinite(n) ? n : 0;
 }
 
 export async function incrCounter(key, ttlSec) {
-  const redis = getRedis();
-  const k = `sniffmaster:counter:${key}`;
-  const n = await redis.incr(k);
-  // Repair a missing expiry on later calls too. The first increment is the
-  // common case; if that EXPIRE failed, the month counter would otherwise
-  // never reset and pollen would stay capped.
-  let ttl = -1;
-  try {
-    ttl = await redis.ttl(k);
-  } catch {
-    ttl = -1;
-  }
-  if (typeof ttl !== "number" || ttl < 0) {
-    await redis.expire(k, Math.max(1, Math.floor(ttlSec)));
-  }
-  return n;
+  const db = await getDb();
+  const fullKey = `sniffmaster:counter:${key}`;
+  const now = Date.now();
+  const expiresAt = now + Math.max(1, Math.floor(ttlSec)) * 1000;
+  const r = await db.execute({
+    sql: `INSERT INTO counters(key, value, expires_at) VALUES(?, 1, ?)
+          ON CONFLICT(key) DO UPDATE SET
+            value = CASE WHEN counters.expires_at IS NOT NULL AND counters.expires_at <= ? THEN 1 ELSE counters.value + 1 END,
+            expires_at = CASE WHEN counters.expires_at IS NULL OR counters.expires_at <= ? THEN ? ELSE counters.expires_at END
+          RETURNING value`,
+    args: [fullKey, expiresAt, now, now, expiresAt],
+  });
+  return Number(r.rows[0].value);
 }

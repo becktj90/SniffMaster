@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startFakeUpstash } from "./fakeUpstash.mjs";
+import { startLocalStore } from "./localStore.mjs";
 
-const up = await startFakeUpstash();
-Object.assign(process.env, { UPSTASH_REDIS_REST_URL: up.url, UPSTASH_REDIS_REST_TOKEN: "t" });
+const local = startLocalStore();
 const pushed = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts) => {
@@ -16,7 +15,7 @@ globalThis.fetch = async (url, opts) => {
 };
 const S = await import("../lib/subscribers.js");
 const handler = (await import("../api/extras.js")).default;
-test.after(() => { globalThis.fetch = realFetch; up.close(); });
+test.after(() => { globalThis.fetch = realFetch; local.close(); });
 
 async function signUpPush(rules, ip) {
   const before = pushed.length;

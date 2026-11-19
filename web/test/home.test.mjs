@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as h from "../lib/homeAir.js";
 import { fetchGooglePollen, parseGooglePollen, monthlyCap } from "../lib/pollen.js";
 import { parseOpenMeteoPollen } from "../lib/outdoor.js";
-import { startFakeUpstash } from "./fakeUpstash.mjs";
+import { startLocalStore, sql } from "./localStore.mjs";
 import { shouldSampleCoarse, HOME_COARSE_STEP_MS, MAX_HOME_COARSE, MAX_HISTORY } from "../lib/store.js";
 import { buildSummary, reportFallbackText, composeReportSms } from "../api/daily-summary.js";
 
@@ -167,7 +167,7 @@ test("pollen: monthly cap hard-stops calls", async () => {
 });
 
 test("pollen: counter failure => no call (fail closed)", async () => {
-  const { d, calls } = deps({ incr: async () => { throw new Error("redis down"); } });
+  const { d, calls } = deps({ incr: async () => { throw new Error("store down"); } });
   const r = await fetchGooglePollen(loc, d);
   assert.equal(r.ok, false); assert.equal(calls(), 0);
 });
@@ -187,14 +187,12 @@ test("pollen parsing + default cap", () => {
   assert.equal(parseOpenMeteoPollen({ grass_pollen: null }), null);
 });
 
-test("e2e: /api/home-stats against fake Redis + stubbed network", async () => {
-  const up = await startFakeUpstash();
-  process.env.UPSTASH_REDIS_REST_URL = up.url; process.env.UPSTASH_REDIS_REST_TOKEN = "t";
+test("e2e: /api/home-stats against local Turso + stubbed network", async () => {
+  const local = startLocalStore();
   delete process.env.GOOGLE_POLLEN_API_KEY;
   const urls = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (u, o) => {
-    if (String(u).startsWith(up.url)) return realFetch(u, o);
     urls.push(String(u));
     return { ok: true, json: async () => String(u).includes("air-quality") ? { current: { pm2_5: 6, pm10: 11, us_aqi: 25, ozone: 40, uv_index: 2, grass_pollen: null } } : { current: { temperature_2m: 12, relative_humidity_2m: 60, dew_point_2m: 4, rain: 0 } } };
   };
@@ -207,16 +205,19 @@ test("e2e: /api/home-stats against fake Redis + stubbed network", async () => {
   assert.equal(series.fine[0].rh, 53);
   assert.equal(series.coarse[0].rh, 52);
   const counterKey = "sniffmaster:counter:pollen_calls:test-repair";
+  const counterExpiry = async () =>
+    Number((await sql(local.file, "SELECT expires_at AS e FROM counters WHERE key = ?", [counterKey])).rows[0]?.e);
   assert.equal(await incrCounter("pollen_calls:test-repair", 100), 1);
-  assert.ok(up.expires.has(counterKey));
-  up.expires.delete(counterKey);
+  assert.ok((await counterExpiry()) > Date.now());
+  // Drop the expiry only: the value survives and the next incr repairs the TTL.
+  await sql(local.file, "UPDATE counters SET expires_at = NULL WHERE key = ?", [counterKey]);
   assert.equal(await incrCounter("pollen_calls:test-repair", 100), 2);
-  assert.ok(up.expires.has(counterKey));
+  assert.ok((await counterExpiry()) > Date.now());
   const extras = (await import("../api/extras.js")).default;
   let status = 0, payload = null;
   const res = { setHeader() {}, status(c) { status = c; return this; }, json(p) { payload = p; return this; }, end() { return this; } };
   await extras({ method: "GET", query: { fn: "home-stats" } }, res);
-  globalThis.fetch = realFetch; up.close();
+  globalThis.fetch = realFetch; local.close();
   assert.equal(status, 200);
   assert.equal(payload.mode, "home");
   assert.equal(payload.particulate.measured, true);

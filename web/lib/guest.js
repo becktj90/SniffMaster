@@ -17,7 +17,7 @@ import { sendViaNtfy, PUBLIC_BASE_URL } from "./notify.js";
 export function guestTopic() {
   const explicit = (process.env.NTFY_GUEST_TOPIC || "").trim();
   if (explicit) return explicit;
-  const seed = process.env.SNIFFMASTER_API_KEY || process.env.UPSTASH_REDIS_REST_URL || "";
+  const seed = process.env.SNIFFMASTER_API_KEY || process.env.TURSO_DATABASE_URL || "";
   if (!seed) return "";
   return "sniffmaster-guest-" + createHash("sha256").update("guest:" + seed).digest("hex").slice(0, 16);
 }

@@ -191,7 +191,7 @@ async function maybeSendAlerts(stored) {
   }
 
   // Persist the current breach set for next-run comparison. Prune cooldown
-  // timestamps for cleared breaches, and skip the Redis write entirely when
+  // timestamps for cleared breaches, and skip the store write entirely when
   // nothing changed — the common all-clear -> all-clear path costs no quota.
   const activeKeys = breaches.map((b) => b.key).sort();
   const prunedSentAt = {};
@@ -200,7 +200,7 @@ async function maybeSendAlerts(stored) {
   }
   // Gas baseline: refresh the stored value when it is missing/stale or has
   // drifted >10% since it was stored, so the ingest gate keeps a trustworthy
-  // baseline without a Redis write on every post.
+  // baseline without a store write on every post.
   const prevBase = Number(state.gasBase);
   const prevBaseAt = Number(state.gasBaseAt);
   const nextBase = Number.isFinite(base) ? base : prevBase;
@@ -284,9 +284,9 @@ const SUBSCRIBER_CHECK_EVERY_MS = 2 * 60 * 1000;
 async function maybeSendSubscriberAlerts(stored) {
   // No verified subscribers: skip the ~2 MB home-payload build entirely.
   // Checked before the gate, like the guest gate's early return when no
-  // guest topic is configured; one small cached read per post. A Redis
+  // guest topic is configured; one small cached read per post. A store
   // failure reads as empty here, which loses nothing — the build below
-  // needs Redis too, so alerts can't run without it anyway.
+  // needs the store too, so alerts can't run without it anyway.
   const subs = await loadSubscribers().catch(() => []);
   if (!subs.filter((s) => s.verified).length) return;
   const now = Date.now();

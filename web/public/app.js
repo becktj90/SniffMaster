@@ -5,7 +5,7 @@
  *       /api/insights (friendly briefing), /api/sensors?range= (BME688 series),
  *       /api/weather-briefing (forecast), /api/sniff-history, /api/alerts.
  *
- * Quota care (Upstash free tier + Vercel Hobby): every poll pauses while the
+ * Quota care (Turso free tier + Vercel Hobby): every poll pauses while the
  * tab is hidden, polls only what the current page shows, and backs off when
  * the device's receivedAt hasn't moved.
  */

@@ -15,8 +15,8 @@
  * credit, is reported as unavailable instead of pretending to work.
  *
  * Storage is one small JSON document (capped at MAX_SUBSCRIBERS) plus
- * short-lived pending-code entries, all through the existing Redis cache
- * helpers, so no new Redis commands are needed.
+ * short-lived pending-code entries, all through the existing store cache
+ * helpers, so no new store commands are needed.
  *
  * The rule evaluation (decideSubscriberAlerts) is pure and unit-tested.
  */

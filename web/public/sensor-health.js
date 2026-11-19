@@ -9,7 +9,7 @@
 // Data sources (all existing endpoints, no new API):
 //   /api/latest  — the device snapshot: receivedAt, uptime, wifiRssi, iaq,
 //                  co2, tempF, humidity, pressHpa, gasR, iaqAcc, ...
-//   /api/health  — server storage probe (Upstash Redis reachable?)
+//   /api/health  — server storage probe (Turso reachable?)
 //   /api/version — deployed dashboard version/commit
 
 // Same 15-minute "live" rule as the header status (app.js setStatus).
