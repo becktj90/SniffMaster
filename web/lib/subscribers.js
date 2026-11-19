@@ -485,6 +485,47 @@ export async function unsubscribe(token) {
   return removed;
 }
 
+/** One subscriber, looked up by its unsubscribe token. Timing-safe, so a
+ * wrong token is indistinguishable from an unknown one. Returns null. */
+export async function getSubscriberByToken(token) {
+  const t = String(token || "");
+  if (!t) return null;
+  const subs = await loadSubscribers();
+  return subs.find((s) => s.token && sameHash(s.token, t)) || null;
+}
+
+/** What the owner of a subscription may see about it: never the raw address. */
+export function publicSubscriber(sub) {
+  return { channel: sub.channel, masked: maskAddress(sub.channel, sub.address), rules: { ...(sub.rules || {}) } };
+}
+
+/**
+ * Change one subscriber's alert limits, authenticated by the unsubscribe
+ * token from any alert email. The new rules replace the old ones wholesale
+ * (an omitted rule stops alerting), validated/clamped with normalizeRules().
+ * Unknown token → 404; empty or fully-unknown rules → 400.
+ */
+export async function updateSubscriberRules({ token, rules }) {
+  const t = String(token || "");
+  if (!t) throw new AlertError(404, "That link isn't recognized. Use the unsubscribe link in an alert email.");
+  if (!rules || typeof rules !== "object" || Array.isArray(rules) || !Object.keys(rules).length) {
+    throw new AlertError(400, "Pick at least one thing to be alerted about.");
+  }
+  const next = normalizeRules(rules);
+  if (!Object.keys(next).length) throw new AlertError(400, "Pick at least one thing to be alerted about.");
+  let updated = null;
+  await updateSubscribers((subs) => {
+    const idx = subs.findIndex((s) => s.token && sameHash(s.token, t));
+    if (idx < 0) return subs;
+    updated = { ...subs[idx], rules: next };
+    const copy = subs.slice();
+    copy[idx] = updated;
+    return copy;
+  });
+  if (!updated) throw new AlertError(404, "That link isn't recognized. Use the unsubscribe link in an alert email.");
+  return publicSubscriber(updated);
+}
+
 /** Called after each device post (rate-gated by the caller). Never throws. */
 export async function runSubscriberAlerts(snapshot, home) {
   const subs = await loadSubscribers();

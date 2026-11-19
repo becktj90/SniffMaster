@@ -79,6 +79,9 @@ import {
   startSubscription,
   confirmSubscription,
   unsubscribe,
+  getSubscriberByToken,
+  publicSubscriber,
+  updateSubscriberRules,
 } from "../lib/subscribers.js";
 
 // ── Shared helpers (identical across the merged files; defined once here) ──
@@ -1731,8 +1734,10 @@ async function sensors(req, res) {
 // ── alerts ───────────────────────────────────────────────────────────────
 // GET  /api/alerts               → which channels work + the rule catalogue
 // GET  /api/alerts?unsub=<token> → one-tap unsubscribe (HTML page)
+// GET  /api/alerts?token=<token> → that subscriber's rules + masked address
 // POST /api/alerts {action:"subscribe", channel, address, rules}
 // POST /api/alerts {action:"verify", id, code}
+// POST /api/alerts {action:"update", token, rules}
 async function alerts(req, res) {
   res.setHeader("Cache-Control", "no-store");
   if (req.method === "GET" && req.query?.unsub) {
@@ -1748,6 +1753,11 @@ async function alerts(req, res) {
 <div style="max-width:420px;text-align:center"><h1 style="font-size:22px">${ok ? "You're unsubscribed" : "Already unsubscribed"}</h1>
 <p style="color:#9aa7b8">${ok ? "You won't get any more SniffMaster alerts." : "That link has already been used or has expired."}</p>
 <p><a href="/#/alerts" style="color:#7cc4ff">Back to the dashboard</a></p></div></body>`);
+  }
+  if (req.method === "GET" && req.query?.token) {
+    const sub = await getSubscriberByToken(req.query.token).catch(() => null);
+    if (!sub) return res.status(404).json({ error: "That link isn't recognized. Use the unsubscribe link in an alert email." });
+    return res.status(200).json(publicSubscriber(sub));
   }
   if (req.method === "GET") {
     const subs = await loadSubscribers().catch(() => []);
@@ -1768,6 +1778,9 @@ async function alerts(req, res) {
     }
     if (body.action === "verify") {
       return res.status(200).json(await confirmSubscription({ id: body.id, code: body.code }));
+    }
+    if (body.action === "update") {
+      return res.status(200).json(await updateSubscriberRules({ token: body.token, rules: body.rules }));
     }
     return res.status(400).json({ error: "Unknown action." });
   } catch (err) {
