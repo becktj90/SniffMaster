@@ -30,7 +30,7 @@ test("mold risk rises with sustained humidity, not a dry home", () => {
 
 test("home history retention covers the windows the dashboard claims", () => {
   assert.equal(MAX_HOME_COARSE * HOME_COARSE_STEP_MS, 7 * 24 * 3600 * 1000);
-  assert.equal(MAX_HISTORY, 24 * 60);
+  assert.equal(MAX_HISTORY, 6 * 60);
   assert.equal(shouldSampleCoarse(undefined, 1000), true);
   assert.equal(shouldSampleCoarse(0, HOME_COARSE_STEP_MS - 1), false);
   assert.equal(shouldSampleCoarse(0, HOME_COARSE_STEP_MS), true);

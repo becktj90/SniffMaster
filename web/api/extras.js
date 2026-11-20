@@ -30,7 +30,9 @@ import {
   getDailySummary,
   getAlertSnapshot,
   getJsonCache,
+  getJsonCacheStale,
   setJsonCache,
+  isReadBreakerTripped,
   incrCounter,
   getHomeSeries,
 } from "../lib/store.js";
@@ -807,7 +809,7 @@ const HOME_PAYLOAD_TTL_SEC = 300;
  * Whole-home payload, cached 300 s per trigger set in the store. This is the hot
  * path: /api/oled, /api/home-stats, /api/guest, /api/insights and both
  * /api/update alert gates all build it, ~4,000×/day, and a fresh build
- * re-reads + re-parses the full 24 h history (~2 MB) every time. A 5-minute
+ * re-reads + re-parses the last 6 h of full history (~0.5 MB) every time. A 5-minute
  * stale window is cheap at the dashboard's 2-minute poll and the device's
  * 1-minute post cadence — readings are 1-minute cadence, so the payload is
  * at most a few minutes stale — and a cache miss rebuilds identically.
@@ -817,6 +819,19 @@ export async function buildHomePayload(triggersInput, severitiesInput) {
   // triggers but different severities get different outlooks.
   const sevKey = canonicalSeverities(severitiesInput);
   const key = `home-payload:${parseTriggers(triggersInput).join(",") || "none"}|${sevKey || "std"}`;
+  // Read-cap breaker (free-plan guardrail): when the month's rows read hit
+  // 80% of Turso's free-tier cap, serve the last cached payload — even past
+  // its TTL — instead of re-reading history. Checked BEFORE the cache
+  // lookup because getJsonCache deletes expired rows on a miss, which would
+  // destroy the stale payload we need to serve. With no cached payload to
+  // serve, return null rather than spend reads on a rebuild.
+  try {
+    if (await isReadBreakerTripped()) {
+      const stale = await getJsonCacheStale(key);
+      if (stale) return { ...stale, breakerTripped: true, stale: true };
+      return null;
+    }
+  } catch {}
   try {
     const hit = await getJsonCache(key);
     if (hit) return hit;
@@ -832,11 +847,12 @@ export async function buildHomePayload(triggersInput, severitiesInput) {
 
 async function buildHomePayloadFresh(triggersInput, severitiesInput) {
     const triggers = parseTriggers(triggersInput);
-    // Full snapshots cover the last 24h. Mold (72h) and dust mites (7d) read
-    // the compact 10-minute series, which survives after the full buffer rolls.
+    // Full snapshots cover the last 6h (free-plan retention cut, Nov 2026).
+    // Mold (72h) and dust mites (7d) read the compact 10-minute series,
+    // which survives after the full buffer rolls.
     const [latest, legacy, series] = await Promise.all([
       getLatest(),
-      getHistory(24 * 60),
+      getHistory(390),
       getHomeSeries(),
     ]);
     if (!latest) return null;
@@ -908,7 +924,8 @@ async function buildHomePayloadFresh(triggersInput, severitiesInput) {
       gases: metrics.gases,
     });
 
-    // 24 h oldest→newest series for the trend sparklines.
+    // 6 h oldest→newest series for the trend sparklines (the full buffer
+    // only keeps 6 h now; older trend data lives in the compact series).
     const dayAgo = Date.now() - 24 * 3600 * 1000;
     const rows = history.filter((h) => Number(h?.receivedAt) >= dayAgo);
     const pick = (f) => rows.map((h) => {
