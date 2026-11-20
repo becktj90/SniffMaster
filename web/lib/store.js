@@ -16,9 +16,11 @@
  *   cache     — short-lived JSON cache entries with expires_at (ms)
  *   counters  — named counters with an optional expires_at (ms)
  *   locks     — named locks with owner token + expires_at (ms)
+ *   usage_monthly — free-plan guardrail counters: one row per UTC month
+ *               ('YYYY-MM' → rows read/written through the store)
  *
  * Rings (ring name → max rows):
- *   snapshot_history       1440 (24h @ 1min) — full sensor snapshots
+ *   snapshot_history       360 (6h @ 1min) — full sensor snapshots
  *   home_fine              1560 (26h @ 1min) — compact climate points
  *   home_coarse            1008 (7d @ 10min) — compact climate points
  *   sniff_history          96                — priority sulfur/VSC events
@@ -33,8 +35,135 @@
 
 import { createClient } from "@libsql/client";
 
-let client = null;
+let client = null; // raw libSQL client (schema + usage bookkeeping only)
+let wrappedClient = null; // counting wrapper — what getDb() returns
 let schemaReady = null;
+
+/** Create the raw client + schema if needed; shared by getDb/getRawDb. */
+async function ensureClient() {
+  if (!isStoreConfigured()) {
+    throw new Error("Turso environment variables are missing");
+  }
+  if (!client) {
+    const { url, token } = storeEnv();
+    client = createClient({ url, authToken: token || undefined });
+    wrappedClient = makeCountingClient(client);
+    schemaReady = client.executeMultiple(SCHEMA_SQL).catch((err) => {
+      client = null;
+      wrappedClient = null;
+      schemaReady = null;
+      throw err;
+    });
+  }
+  await schemaReady;
+}
+
+async function getDb() {
+  await ensureClient();
+  return wrappedClient;
+}
+
+/** Raw client for usage bookkeeping: its rows must not count themselves. */
+async function getRawDb() {
+  await ensureClient();
+  return client;
+}
+
+// ── Free-plan usage accounting ────────────────────────────────────────────
+// Turso's free tier caps reads at 500M rows/month and writes at 10M
+// rows/month. Every statement that flows through the store is counted here
+// (reads = rows returned, writes = rows affected) into a per-month row in
+// usage_monthly. These counters are an APPROXIMATION for guardrail
+// purposes, NOT a billing meter: they count what this process asked the
+// store to do, while Turso meters what its servers actually scanned
+// (indexes, internal queries, and retries can differ). The circuit breaker
+// trips conservatively at 80% of the read cap, leaving headroom for that
+// difference.
+const USAGE_FLUSH_THRESHOLD_ROWS = 1000; // flush pending counts after this many rows
+const BREAKER_CACHE_TTL_MS = 60_000; // breaker state is re-read at most once a minute
+
+let pendingReads = 0;
+let pendingWrites = 0;
+let usageFlushQueue = Promise.resolve();
+let breakerCache = null; // { month, tripped, at }
+
+/** Count one result set: rows returned are reads, rows affected are writes. */
+function countResult(res) {
+  if (!res) return;
+  const affected = Number(res.rowsAffected) || 0;
+  if (affected > 0) {
+    pendingWrites += affected;
+  } else if (Array.isArray(res.rows)) {
+    pendingReads += res.rows.length;
+  }
+  if (pendingReads + pendingWrites >= USAGE_FLUSH_THRESHOLD_ROWS) {
+    void flushUsageCounters();
+  }
+}
+
+/** Wrap a libSQL client so execute/batch count rows (schema setup bypasses it). */
+function makeCountingClient(raw) {
+  return {
+    execute(...args) {
+      return raw.execute(...args).then((res) => {
+        countResult(res);
+        return res;
+      });
+    },
+    batch(...args) {
+      return raw.batch(...args).then((results) => {
+        for (const res of results || []) countResult(res);
+        return results;
+      });
+    },
+    executeMultiple(...args) {
+      return raw.executeMultiple(...args);
+    },
+    close(...args) {
+      return raw.close(...args);
+    },
+  };
+}
+
+/** UTC month key for the usage row, e.g. "2026-11". */
+export function currentMonthKey(now = new Date()) {
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Flush pending usage counts into usage_monthly (raw client: uncounted).
+ * Serialized through a promise chain; never throws — a failure re-queues
+ * (capped) so a transient error doesn't silently drop the counts, and the
+ * guardrail must never break a store call.
+ */
+function flushUsageCounters() {
+  usageFlushQueue = usageFlushQueue.catch(() => {}).then(async () => {
+    const reads = pendingReads;
+    const writes = pendingWrites;
+    pendingReads = 0;
+    pendingWrites = 0;
+    if (!reads && !writes) return;
+    try {
+      const db = await getRawDb();
+      await db.execute({
+        sql: `INSERT INTO usage_monthly(month, rows_read, rows_written, updated_at)
+              VALUES(?, ?, ?, ?)
+              ON CONFLICT(month) DO UPDATE SET
+                rows_read = usage_monthly.rows_read + excluded.rows_read,
+                rows_written = usage_monthly.rows_written + excluded.rows_written,
+                updated_at = excluded.updated_at`,
+        args: [currentMonthKey(), reads, writes, Date.now()],
+      });
+    } catch (err) {
+      if (pendingReads + pendingWrites < 1_000_000) {
+        pendingReads += reads;
+        pendingWrites += writes;
+      }
+      console.error("usage counter flush failed:", err?.message || err);
+    }
+  });
+  return usageFlushQueue;
+}
 
 function storeEnv() {
   return {
@@ -80,28 +209,17 @@ CREATE TABLE IF NOT EXISTS locks (
   token TEXT NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS usage_monthly (
+  month TEXT PRIMARY KEY, -- UTC 'YYYY-MM'
+  rows_read INTEGER NOT NULL DEFAULT 0,
+  rows_written INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** Create the schema if it does not exist yet (idempotent). */
 export async function ensureStoreSchema() {
   await getDb();
-}
-
-async function getDb() {
-  if (!isStoreConfigured()) {
-    throw new Error("Turso environment variables are missing");
-  }
-  if (!client) {
-    const { url, token } = storeEnv();
-    client = createClient({ url, authToken: token || undefined });
-    schemaReady = client.executeMultiple(SCHEMA_SQL).catch((err) => {
-      client = null;
-      schemaReady = null;
-      throw err;
-    });
-  }
-  await schemaReady;
-  return client;
 }
 
 const KEY_LATEST = "sniffmaster:latest";
@@ -119,8 +237,13 @@ const KEY_ALERT_SNAPSHOT = "sniffmaster:alert_snapshot";
 const KEY_DAILY_SUMMARY = "sniffmaster:daily_summary";
 const KEY_DAILY_SUMMARY_HISTORY = "sniffmaster:daily_summary_history";
 const KEY_SETTINGS = "sniffmaster:settings";
-const MAX_HISTORY = 24 * 60; // 24 hours at the firmware's 1-minute post interval
+const MAX_HISTORY = 6 * 60; // 6 hours at the firmware's 1-minute post interval (free-plan guardrails, Nov 2026: the 24h window is kept in the compact fine/coarse series instead)
 export { MAX_HISTORY };
+// Turso free-tier caps (Nov 2026): 500M rows read/month, 10M rows written/month.
+export const READ_CAP_ROWS = 500_000_000;
+export const WRITE_CAP_ROWS = 10_000_000;
+export const BREAKER_TRIP_FRACTION = 0.8;
+export const READ_BREAKER_TRIP_ROWS = Math.floor(READ_CAP_ROWS * BREAKER_TRIP_FRACTION); // 400,000,000
 export const HOME_COARSE_STEP_MS = 10 * 60 * 1000;
 export const MAX_HOME_COARSE = 7 * 24 * 6; // 7 days at 10-minute steps
 export const MAX_HOME_FINE = 26 * 60; // 26 hours at a 1-minute post
@@ -477,6 +600,69 @@ export async function getStorageHealth() {
   }
 }
 
+// ── Free-plan usage + circuit breaker ─────────────────────────────────────
+
+/**
+ * Current month's usage vs the Turso free-tier caps. Flushes pending counts
+ * first, so the numbers include everything this process has done. Never
+ * throws: unconfigured or unreachable stores report zeros (plus `error`).
+ */
+export async function getMonthlyUsage() {
+  const month = currentMonthKey();
+  const base = {
+    month,
+    rowsRead: 0,
+    rowsWritten: 0,
+    readCap: READ_CAP_ROWS,
+    writeCap: WRITE_CAP_ROWS,
+    readPct: 0,
+    writePct: 0,
+    breakerTripped: false,
+  };
+  if (!isStoreConfigured()) return base;
+  try {
+    await flushUsageCounters();
+    const db = await getRawDb();
+    const r = await db.execute({ sql: "SELECT rows_read, rows_written FROM usage_monthly WHERE month = ?", args: [month] });
+    if (!r.rows.length) return base;
+    const rowsRead = Number(r.rows[0].rows_read) || 0;
+    const rowsWritten = Number(r.rows[0].rows_written) || 0;
+    return {
+      ...base,
+      rowsRead,
+      rowsWritten,
+      readPct: Math.round((rowsRead / READ_CAP_ROWS) * 1000) / 10,
+      writePct: Math.round((rowsWritten / WRITE_CAP_ROWS) * 1000) / 10,
+      breakerTripped: rowsRead >= READ_BREAKER_TRIP_ROWS,
+    };
+  } catch (err) {
+    return { ...base, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * True when the current month's rows read hit 80% of the free-tier read cap.
+ * Cached in-process for 60 s: the home-payload rebuild runs at most every
+ * 300 s, so this costs ~1 row read per rebuild, never one per row. Resets
+ * automatically when the month rolls over (counters are per-month).
+ */
+export async function isReadBreakerTripped() {
+  const month = currentMonthKey();
+  const now = Date.now();
+  if (breakerCache && breakerCache.month === month && now - breakerCache.at < BREAKER_CACHE_TTL_MS) {
+    return breakerCache.tripped;
+  }
+  const usage = await getMonthlyUsage();
+  const tripped = Boolean(usage.breakerTripped);
+  breakerCache = { month, tripped, at: now };
+  return tripped;
+}
+
+/** Test-only: clear the in-process breaker cache so a seeded counter takes effect immediately. */
+export function resetBreakerCacheForTests() {
+  breakerCache = null;
+}
+
 // ── BLE occupancy ─────────────────────────────────────────────────────────
 
 /**
@@ -708,6 +894,20 @@ export async function getJsonCache(key) {
     await db.execute({ sql: "DELETE FROM cache WHERE key = ?", args: [fullKey] }).catch(() => {});
     return null;
   }
+  const raw = r.rows[0].value;
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+/**
+ * Read a cache entry ignoring expiry (no delete). Used by the read-cap
+ * circuit breaker to serve the last home payload stale instead of
+ * re-reading history. Unlike getJsonCache, an expired row survives here.
+ */
+export async function getJsonCacheStale(key) {
+  const db = await getDb();
+  const fullKey = `sniffmaster:cache:${key}`;
+  const r = await db.execute({ sql: "SELECT value FROM cache WHERE key = ?", args: [fullKey] });
+  if (!r.rows.length) return null;
   const raw = r.rows[0].value;
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }

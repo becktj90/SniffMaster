@@ -89,7 +89,7 @@ test("latest put/get and history ring trims at MAX_HISTORY", async () => {
   const latest = await getLatest();
   assert.equal(latest.humidity, 41);
   assert.ok(Math.abs(latest.receivedAt - now) < 5000);
-  // Seed the full 24h ring, then one more snapshot must trim it back to the cap.
+  // Seed the full 6h ring, then one more snapshot must trim it back to the cap.
   await seedRing(local.file, "sniffmaster:history", MAX_HISTORY, now - 60000, 60000, (i, t) => ({ receivedAt: t, humidity: i }));
   await putSnapshot(snap(42));
   const hist = await getHistory(MAX_HISTORY);
